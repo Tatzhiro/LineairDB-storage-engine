@@ -169,7 +169,19 @@ static handler *lineairdb_create_handler(handlerton *hton, TABLE_SHARE *table,
 
 ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg),
-      current_position(0) {}
+      current_position(0),
+      myDB(LineairDB::Config{
+        0,  // # of worker threads
+        40, // epoch duration
+        LineairDB::Config::ConcurrencyControl::TwoPhaseLocking,
+        LineairDB::Config::Loger::ThreadLocalLogger,
+        LineairDB::Config::IndexStructure::HashTableWithPrecisionLockingIndex,
+        LineairDB::Config::CallbackEngine::ThreadLocal,
+        true, // recovery
+        true, // logging
+        true, // checkpointing
+        1     // period of checkpointing (sec) 
+      }){}
 
 /*
   List of all system tables specific to the SE.
