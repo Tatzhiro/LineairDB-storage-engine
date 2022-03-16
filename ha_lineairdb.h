@@ -68,8 +68,8 @@ class LineairDB_share : public Handler_share {
 */
 class ha_lineairdb : public handler {
   THR_LOCK_DATA lock;          ///< MySQL lock
-  Lineair_share *share;        ///< Shared lock info
-  Lineair_share *get_share();  ///< Get the share
+  LineairDB_share *share;        ///< Shared lock info
+  LineairDB_share *get_share();  ///< Get the share
   File data_file;
   File write_file;
   char data_file_name[FN_REFLEN]; // stores "file_name.CSV" in ha_lineairdb::create by fn_format
@@ -84,7 +84,6 @@ class ha_lineairdb : public handler {
 
   bool primary_key_strcmp(const char *s1, const char *s2);
   int encode_query();
-  int take_rowid();
   /** @brief
     The name that will be used for display purposes.
    */

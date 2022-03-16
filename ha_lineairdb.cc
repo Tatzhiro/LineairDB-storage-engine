@@ -174,12 +174,13 @@ ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
         0,  // # of worker threads
         40, // epoch duration
         LineairDB::Config::ConcurrencyControl::TwoPhaseLocking,
-        LineairDB::Config::Loger::ThreadLocalLogger,
-        LineairDB::Config::IndexStructure::HashTableWithPrecisionLockingIndex,
+        LineairDB::Config::Logger::ThreadLocalLogger,
+        LineairDB::Config::ConcurrentPointIndex::MPMCConcurrentHashSet,
+        LineairDB::Config::RangeIndex::EpochROWEX,
         LineairDB::Config::CallbackEngine::ThreadLocal,
         true, // recovery
         true, // logging
-        true, // checkpointing
+        false, // checkpointing
         1     // period of checkpointing (sec) 
       }){}
 
@@ -243,8 +244,8 @@ static bool lineairdb_is_supported_system_table(const char *db,
 
 int ha_lineairdb::open(const char *name, int, uint, const dd::Table *) {
   DBUG_TRACE;
-  // if (!(share = get_share())) return 1;
-  // thr_lock_data_init(&share->lock, &lock, nullptr);
+  if (!(share = get_share())) return 1;
+  thr_lock_data_init(&share->lock, &lock, nullptr);
 
   // fn_format(data_file_name, name, "", ha_lineairdb_exts[0],
   //             MY_REPLACE_EXT | MY_UNPACK_FILENAME);
@@ -335,27 +336,13 @@ int ha_lineairdb::encode_query()
   return (buffer.length());
 }
 
-int ha_lineairdb::take_rowid () {
-  while (true)
-  {
-    x = *s1;
-    y = *s2;
-    if(x == ',' || y == ',')
-      return true;
-    if (x == y){
-      s1++;
-      s2++;
-    }
-    else
-      return false;
-  }
-}
-
 int ha_lineairdb::write_row(uchar *buf) {
   DBUG_TRACE;
 
   LineairDB::TxStatus status;
   // little endian
+  std::cout << table->s->reclength << std::endl;
+  std::cout << table->s->rec_buff_length << std::endl;
   auto temp_id = (buf[4] << 24) | (buf[3] << 16) | (buf[2] << 8) | buf[1];
   auto c1 = (buf[8] << 24) | (buf[7] << 16) | (buf[6] << 8) | buf[5];
   std::string row_id = std::to_string(temp_id);
@@ -366,8 +353,11 @@ int ha_lineairdb::write_row(uchar *buf) {
   // 1st step
   auto& tx = myDB.BeginTransaction();
   auto& exists = tx.Read(row_id);
-  if (exists.second) return 1; // すでに存在する場合はエラーを返す，という仮定
-  tx.Write(row_id, c1);
+  if (exists.second) {
+    tx.Abort();
+    return 1; // すでに存在する場合はエラーを返す，という仮定
+  }
+  tx.Write(row_id, (std::byte*)buf, table->s->reclength);
   myDB.EndTransaction(tx, [&](auto s) { status = s; });
   return 0;
 }
@@ -414,14 +404,14 @@ bool ha_lineairdb::primary_key_strcmp(const char *s1, const char *s2){
 
 int ha_lineairdb::update_row(const uchar *old_data, uchar *new_buf) {
   // 1st step
-  LineairDB::TxStatus status;
+  // LineairDB::TxStatus status;
   auto temp_id = (new_buf[4] << 24) | (new_buf[3] << 16) | (new_buf[2] << 8) | new_buf[1];
   auto c1 = (new_buf[8] << 24) | (new_buf[7] << 16) | (new_buf[6] << 8) | new_buf[5];
   std::string row_id = std::to_string(temp_id);
 
-  auto& tx = myDB.BeginTransaction();
-  tx.Write(row_id, c1);
-  myDB.EndTransaction(tx, [&](auto s) { status = s; });
+  // auto& tx = myDB.BeginTransaction();
+  // tx.Write(row_id, c1);
+  // myDB.EndTransaction(tx, [&](auto s) { status = s; });
 
   // next step
   // auto* tx = getTransaction();
@@ -1033,15 +1023,15 @@ int ha_lineairdb::create(const char *name, TABLE *, HA_CREATE_INFO *,
   // /*
   //   It's just an lineairdb of THDVAR_SET() usage below.
   // */
-  // THD *thd = ha_thd();
-  // char *buf = (char *)my_malloc(PSI_NOT_INSTRUMENTED, SHOW_VAR_FUNC_BUFF_SIZE,
-  //                               MYF(MY_FAE));
-  // snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE, "Last creation '%s'", name);
-  // THDVAR_SET(thd, last_create_thdvar, buf);
-  // my_free(buf);
+  THD *thd = ha_thd();
+  char *buf = (char *)my_malloc(PSI_NOT_INSTRUMENTED, SHOW_VAR_FUNC_BUFF_SIZE,
+                                MYF(MY_FAE));
+  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE, "Last creation '%s'", name);
+  THDVAR_SET(thd, last_create_thdvar, buf);
+  my_free(buf);
 
-  // uint count = THDVAR(thd, create_count_thdvar) + 1;
-  // THDVAR_SET(thd, create_count_thdvar, &count);
+  uint count = THDVAR(thd, create_count_thdvar) + 1;
+  THDVAR_SET(thd, create_count_thdvar, &count);
 
   return 0;
 }
