@@ -290,4 +290,4 @@ class ha_lineairdb : public handler {
       enum thr_lock_type lock_type) override;  ///< required
 };
 
-LineairDB::Database* MyDB = nullptr;
+LineairDB::Database* ha_lineairdb::MyDB = nullptr;
