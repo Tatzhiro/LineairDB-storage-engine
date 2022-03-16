@@ -68,15 +68,15 @@ class LineairDB_share : public Handler_share {
 */
 class ha_lineairdb : public handler {
   THR_LOCK_DATA lock;          ///< MySQL lock
-  Lineair_share *share;        ///< Shared lock info
-  Lineair_share *get_share();  ///< Get the share
+  LineairDB_share *share;        ///< Shared lock info
+  LineairDB_share *get_share();  ///< Get the share
   File data_file;
   File write_file;
   char data_file_name[FN_REFLEN]; // stores "file_name.CSV" in ha_lineairdb::create by fn_format
   my_off_t
       current_position;   /* Current position in the file during a file scan */
   String buffer;
-  LineairDB::Database myDB;
+  static LineairDB::Database* MyDB;
 
  public:
   ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg);
@@ -289,3 +289,5 @@ class ha_lineairdb : public handler {
       THD *thd, THR_LOCK_DATA **to,
       enum thr_lock_type lock_type) override;  ///< required
 };
+
+LineairDB::Database* MyDB = nullptr;

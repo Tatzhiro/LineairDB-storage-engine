@@ -169,19 +169,22 @@ static handler *lineairdb_create_handler(handlerton *hton, TABLE_SHARE *table,
 
 ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg),
-      current_position(0),
-      myDB(LineairDB::Config{
-        0,  // # of worker threads
-        40, // epoch duration
-        LineairDB::Config::ConcurrencyControl::TwoPhaseLocking,
-        LineairDB::Config::Loger::ThreadLocalLogger,
-        LineairDB::Config::IndexStructure::HashTableWithPrecisionLockingIndex,
-        LineairDB::Config::CallbackEngine::ThreadLocal,
-        true, // recovery
-        true, // logging
-        true, // checkpointing
-        1     // period of checkpointing (sec) 
-      }){}
+      current_position(0){
+        if (MyDB == nullptr) {
+          MyDB = new LineairDB::Database(LineairDB::Config{
+            0,  // # of worker threads
+            40, // epoch duration
+            LineairDB::Config::ConcurrencyControl::TwoPhaseLocking,
+            LineairDB::Config::Logger::ThreadLocalLogger,
+            LineairDB::Config::IndexStructure::HashTableWithPrecisionLockingIndex,
+            LineairDB::Config::CallbackEngine::ThreadLocal,
+            true, // recovery
+            true, // logging
+            true, // checkpointing
+            1     // period of checkpointing (sec) 
+          });
+        }
+}
 
 /*
   List of all system tables specific to the SE.
@@ -364,11 +367,11 @@ int ha_lineairdb::write_row(uchar *buf) {
   // INSERT のとき => どういう仕様が正しい？すでに存在する場合はエラーを返す？
 
   // 1st step
-  auto& tx = myDB.BeginTransaction();
+  auto& tx = MyDB->BeginTransaction();
   auto& exists = tx.Read(row_id);
   if (exists.second) return 1; // すでに存在する場合はエラーを返す，という仮定
   tx.Write(row_id, c1);
-  myDB.EndTransaction(tx, [&](auto s) { status = s; });
+  MyDB->EndTransaction(tx, [&](auto s) { status = s; });
   return 0;
 }
 
@@ -419,14 +422,14 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_buf) {
   auto c1 = (new_buf[8] << 24) | (new_buf[7] << 16) | (new_buf[6] << 8) | new_buf[5];
   std::string row_id = std::to_string(temp_id);
 
-  auto& tx = myDB.BeginTransaction();
+  auto& tx = MyDB->BeginTransaction();
   tx.Write(row_id, c1);
-  myDB.EndTransaction(tx, [&](auto s) { status = s; });
+  MyDB->EndTransaction(tx, [&](auto s) { status = s; });
 
   // next step
   // auto* tx = getTransaction();
   // if (tx == nullptr){ // まだはじまっていない？
-  //   tx = myDB.BeginTransaction();
+  //   tx = MyDB->BeginTransaction();
   //   setTransactionContext(tx, this_transaction_context);
   // }
   // tx.Write(key, buffer);
