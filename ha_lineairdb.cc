@@ -169,20 +169,23 @@ static handler *lineairdb_create_handler(handlerton *hton, TABLE_SHARE *table,
 
 ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg),
-      current_position(0),
-      myDB(LineairDB::Config{
-        0,  // # of worker threads
-        40, // epoch duration
-        LineairDB::Config::ConcurrencyControl::TwoPhaseLocking,
-        LineairDB::Config::Logger::ThreadLocalLogger,
-        LineairDB::Config::ConcurrentPointIndex::MPMCConcurrentHashSet,
-        LineairDB::Config::RangeIndex::EpochROWEX,
-        LineairDB::Config::CallbackEngine::ThreadLocal,
-        true, // recovery
-        true, // logging
-        false, // checkpointing
-        1     // period of checkpointing (sec) 
-      }){}
+      current_position(0){
+        if (MyDB == nullptr) {
+          MyDB = new LineairDB::Database(LineairDB::Config{
+            0,  // # of worker threads
+            40, // epoch duration
+            LineairDB::Config::ConcurrencyControl::TwoPhaseLocking,
+            LineairDB::Config::Logger::ThreadLocalLogger,
+            LineairDB::Config::ConcurrentPointIndex::MPMCConcurrentHashSet,
+            LineairDB::Config::RangeIndex::EpochROWEX,
+            LineairDB::Config::CallbackEngine::ThreadLocal,
+            true, // recovery
+            true, // logging
+            false, // checkpointing
+            1     // period of checkpointing (sec) 
+          });
+        }
+      }
 
 /*
   List of all system tables specific to the SE.
@@ -344,7 +347,7 @@ int ha_lineairdb::write_row(uchar *buf) {
   std::cout << table->s->reclength << std::endl;
   std::cout << table->s->rec_buff_length << std::endl;
   auto temp_id = (buf[4] << 24) | (buf[3] << 16) | (buf[2] << 8) | buf[1];
-  auto c1 = (buf[8] << 24) | (buf[7] << 16) | (buf[6] << 8) | buf[5];
+  // auto c1 = (buf[8] << 24) | (buf[7] << 16) | (buf[6] << 8) | buf[5];
   std::string row_id = std::to_string(temp_id);
   // write_row == INSERT
   // INSERT IF NOT EXISTS のとき => tx.Write
@@ -355,10 +358,11 @@ int ha_lineairdb::write_row(uchar *buf) {
   auto& exists = tx.Read(row_id);
   if (exists.second) {
     tx.Abort();
+    MyDB->EndTransaction(tx, [&](auto s) { status = s; });
     return 1; // すでに存在する場合はエラーを返す，という仮定
   }
   tx.Write(row_id, (std::byte*)buf, table->s->reclength);
-  myDB.EndTransaction(tx, [&](auto s) { status = s; });
+  MyDB->EndTransaction(tx, [&](auto s) { status = s; });
   return 0;
 }
 
@@ -403,14 +407,15 @@ bool ha_lineairdb::primary_key_strcmp(const char *s1, const char *s2){
 }
 
 int ha_lineairdb::update_row(const uchar *old_data, uchar *new_buf) {
+  DBUG_TRACE;
   // 1st step
-  // LineairDB::TxStatus status;
+  LineairDB::TxStatus status;
   auto temp_id = (new_buf[4] << 24) | (new_buf[3] << 16) | (new_buf[2] << 8) | new_buf[1];
-  auto c1 = (new_buf[8] << 24) | (new_buf[7] << 16) | (new_buf[6] << 8) | new_buf[5];
+  // auto c1 = (new_buf[8] << 24) | (new_buf[7] << 16) | (new_buf[6] << 8) | new_buf[5];
   std::string row_id = std::to_string(temp_id);
 
   auto& tx = MyDB->BeginTransaction();
-  tx.Write(row_id, c1);
+  tx.Write(row_id, (std::byte*)new_buf, table->s->reclength);
   MyDB->EndTransaction(tx, [&](auto s) { status = s; });
 
   // next step
