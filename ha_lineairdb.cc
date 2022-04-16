@@ -167,6 +167,10 @@ err:
   return tmp_share;
 }
 
+LineairDB::Database* ha_lineairdb::get_db() {
+  return get_share()->lineairdb_.get();
+}
+
 static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
                                          bool, MEM_ROOT* mem_root) {
   return new (mem_root) ha_lineairdb(hton, table);
@@ -268,85 +272,20 @@ int ha_lineairdb::close(void) {
 
 /**
   @brief
-  write_row() inserts a row. No extra() hint is given currently if a bulk load
-  is happening. buf() is a byte array of data. You can use the field
-  information to extract the data from the native byte array type.
-
-  @details
-  Example of this would be:
-  @code
-  for (Field **field=table->field ; *field ; field++)
-  {
-    ...
-  }
-  @endcode
-
-  See ha_tina.cc for an lineairdb of extracting all of the data as strings.
-  ha_berekly.cc has an lineairdb of how to store it intact by "packing" it
-  for ha_berkeley's own native storage type.
-
-  See the note for update_row() on auto_increments. This case also applies to
-  write_row().
-
-  Called from item_sum.cc, item_sum.cc, sql_acl.cc, sql_insert.cc,
-  sql_insert.cc, sql_select.cc, sql_table.cc, sql_udf.cc, and sql_update.cc.
-
-  @see
-  item_sum.cc, item_sum.cc, sql_acl.cc, sql_insert.cc,
-  sql_insert.cc, sql_select.cc, sql_table.cc, sql_udf.cc and sql_update.cc
+  write_row() inserts a row.
+  No extra() hint is given currently if a bulk load is happening.
+  @param buf is a byte array of data.
 */
-
-int ha_lineairdb::encode_query() {
-  char attribute_buffer[1024];
-  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
-
-  my_bitmap_map* org_bitmap = tmp_use_all_columns(
-      table, table->read_set);  // カラム情報の読み取りフラグを立てる
-  buffer.length(0);             // buffer を初期化
-
-  for (Field** field = table->field; *field; field++) {
-    const char* p;
-    const char* end;
-
-    (*field)->val_str(
-        &attribute, &attribute);  // クエリ文字列の実際の長さを attribute に格納
-    p = attribute.ptr();  // 書き込む文字列の先頭にポインタをセット
-    end = attribute.length() + p;  // 書き込む文字列の終端にポインタをセット
-
-    // buffer.append('"');
-    for (; p < end; p++) buffer.append(*p);
-    // buffer.append('"');
-    buffer.append(',');
-  }
-
-  buffer.length(buffer.length() - 1);
-  buffer.append('\n');
-
-  tmp_restore_column_map(table->read_set,
-                         org_bitmap);  // 読み取りフラグを寝かせる
-  return (buffer.length());
-}
-
 int ha_lineairdb::write_row(uchar* buf) {
   DBUG_TRACE;
 
   LineairDB::TxStatus status;
-
-  auto& tx = get_share()->lineairdb_->BeginTransaction();
+  auto& tx = get_db()->BeginTransaction();
 
   auto primary_key = get_primary_key_from_row(buf);
-  auto& exists     = tx.Read(primary_key);
-
-  if (exists.second) {  // IF EXISTS
-    tx.Abort();
-    MyDB->EndTransaction(tx, [&](auto s) { status = s; });
-    return 1;
-  } else {  // IF NOT EXISTS (going to insert)
-    tx.Write(primary_key, reinterpret_cast<std::byte*>(buf),
-             table->s->reclength);
-    MyDB->EndTransaction(tx, [&](auto s) { status = s; });
-    return 0;
-  }
+  tx.Write(primary_key, reinterpret_cast<std::byte*>(buf), table->s->reclength);
+  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  return 0;
 }
 
 int ha_lineairdb::update_row(const uchar* old_data, uchar* new_buf) {
@@ -858,17 +797,6 @@ static MYSQL_THDVAR_UINT(create_count_thdvar, 0, nullptr, nullptr, nullptr, 0,
   @brief
   create() is called to create a database. The variable name will have the
   name of the table.
-
-  @details
-  When create() is called you do not need to worry about
-  opening the table. Also, the .frm file will have already been
-  created so adjusting create_info is not necessary. You can overwrite
-  the .frm file at this point if you wish to change the table
-  definition, but there are no methods currently provided for doing
-  so.
-
-  Called from handle.cc by ha_create_table().
-
   @see
   ha_create_table() in handle.cc
 */
@@ -876,30 +804,6 @@ static MYSQL_THDVAR_UINT(create_count_thdvar, 0, nullptr, nullptr, nullptr, 0,
 int ha_lineairdb::create(const char* name, TABLE*, HA_CREATE_INFO*,
                          dd::Table*) {
   DBUG_TRACE;
-  /*
-    This is not implemented but we want someone to be able to see that it
-    works.
-  */
-  // File create_file;
-  // DBUG_ENTER("ha_lineairdb::create");
-  // fn_format(data_file_name, name, "", ha_lineairdb_exts[0],
-  //             MY_REPLACE_EXT | MY_UNPACK_FILENAME);
-  // if ((create_file= my_create(data_file_name,0,O_RDWR |
-  // O_TRUNC,MYF(MY_WME))) < 0) DBUG_RETURN(-1); my_close(create_file,MYF(0));
-  // DBUG_RETURN(0);
-
-  // /*
-  //   It's just an lineairdb of THDVAR_SET() usage below.
-  // */
-  THD* thd  = ha_thd();
-  char* buf = (char*)my_malloc(PSI_NOT_INSTRUMENTED, SHOW_VAR_FUNC_BUFF_SIZE,
-                               MYF(MY_FAE));
-  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE, "Last creation '%s'", name);
-  THDVAR_SET(thd, last_create_thdvar, buf);
-  my_free(buf);
-
-  uint count = THDVAR(thd, create_count_thdvar) + 1;
-  THDVAR_SET(thd, create_count_thdvar, &count);
 
   return 0;
 }
@@ -915,12 +819,25 @@ std::string ha_lineairdb::get_primary_key_from_row(uchar* const buf) {
   if (is_primary_key_exists) {
     const auto pk_index           = table->s->primary_key;
     const size_t key_length       = table->s->key_info[pk_index].key_length;
-    const size_t offset_in_buffer = 0;  // TODO IMPL
+    const size_t offset_in_buffer = 0;  // TODO IMPL;
     pk = std::string(buf[offset_in_buffer], key_length);
   } else {
-    // NEXT WEEK
+    const auto cstr       = table->s->table_name;
+    const auto table_name = std::string(cstr.str, cstr.length);
+    auto inserted_count   = auto_generated_keys_[table_name]++;
+    pk                    = std::to_string(inserted_count);
   }
+  return pk;
 }
+
+struct lineairdb_vars_t {
+  ulong var1;
+  double var2;
+  char var3[64];
+  bool var4;
+  bool var5;
+  ulong var6;
+};
 
 struct st_mysql_storage_engine lineairdb_storage_engine = {
     MYSQL_HANDLERTON_INTERFACE_VERSION};
@@ -1010,15 +927,6 @@ static int show_func_lineairdb(MYSQL_THD, SHOW_VAR* var, char* buf) {
   return 0;
 }
 
-struct lineairdb_vars_t {
-  ulong var1;
-  double var2;
-  char var3[64];
-  bool var4;
-  bool var5;
-  ulong var6;
-};
-
 lineairdb_vars_t lineairdb_vars = {100,  20.01, "three hundred",
                                    true, false, 8250};
 
@@ -1046,12 +954,9 @@ static SHOW_VAR func_status[] = {
      SHOW_SCOPE_GLOBAL},
     {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
 
-mysql_declare_plugin(lineairdb){
-    MYSQL_STORAGE_ENGINE_PLUGIN,
-    &lineairdb_storage_engine,
-    "LINEAIRDB",
-    PLUGIN_AUTHOR_ORACLE,
-    "LineairDB storage engine",
+mysql_declare_plugin(lineairdb) {
+  MYSQL_STORAGE_ENGINE_PLUGIN, &lineairdb_storage_engine, "LINEAIRDB",
+      PLUGIN_AUTHOR_ORACLE, "LineairDB storage engine",
     PLUGIN_LICENSE_GPL,
     lineairdb_init_func, /* Plugin Init */
     nullptr,             /* Plugin check uninstall */

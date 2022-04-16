@@ -42,6 +42,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include <unordered_map>
 #include <vector>
 
 #include "my_base.h" /* ha_rows */
@@ -70,6 +71,7 @@ class ha_lineairdb : public handler {
   THR_LOCK_DATA lock;            ///< MySQL lock
   LineairDB_share* share;        ///< Shared lock info
   LineairDB_share* get_share();  ///< Get the share
+  LineairDB::Database* get_db();
   File data_file;
   File write_file;
   char data_file_name[FN_REFLEN];  // stores "file_name.CSV" in
@@ -77,6 +79,7 @@ class ha_lineairdb : public handler {
   my_off_t
       current_position; /* Current position in the file during a file scan */
   String buffer;
+  std::unordered_map<std::string, size_t> auto_generated_keys_;
 
  public:
   ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg);
@@ -94,24 +97,17 @@ class ha_lineairdb : public handler {
     @sa handler::adjust_index_algorithm().
   */
   enum ha_key_alg get_default_index_algorithm() const override {
-    return HA_KEY_ALG_HASH;
+    return HA_KEY_ALG_BTREE;
   }
   bool is_index_algorithm_supported(enum ha_key_alg key_alg) const override {
-    return key_alg == HA_KEY_ALG_HASH;
+    return key_alg == HA_KEY_ALG_BTREE;
   }
 
   /** @brief
     This is a list of flags that indicate what functionality the storage engine
     implements. The current table flags are documented in handler.h
   */
-  ulonglong table_flags() const override {
-    /*
-      We are saying that this engine is just statement capable to have
-      an engine that can only handle statement-based logging. This is
-      used in testing.
-    */
-    return HA_BINLOG_STMT_CAPABLE;
-  }
+  ulonglong table_flags() const override { return HA_HAS_OWN_BINLOGGING; }
 
   /** @brief
     This is a bitmap of flags that indicates how the storage engine
@@ -139,16 +135,8 @@ class ha_lineairdb : public handler {
     return HA_MAX_REC_LENGTH;
   }
 
-  /** @brief
-    unireg.cc will call this to make sure that the storage engine can handle
-    the data it is about to send. Return *real* limits of your storage engine
-    here; MySQL will do min(your_limits, MySQL_limits) automatically.
-
-      @details
-    There is no need to implement ..._key_... methods if your engine doesn't
-    support indexes.
-   */
-  uint max_supported_keys() const override { return 0; }
+  uint max_supported_keys() const override { return 1; }
+  uint max_supported_key_parts() const override { return UINT32_MAX; }
 
   /** @brief
     unireg.cc will call this to make sure that the storage engine can handle
@@ -159,18 +147,10 @@ class ha_lineairdb : public handler {
     There is no need to implement ..._key_... methods if your engine doesn't
     support indexes.
    */
-  uint max_supported_key_parts() const override { return 0; }
-
-  /** @brief
-    unireg.cc will call this to make sure that the storage engine can handle
-    the data it is about to send. Return *real* limits of your storage engine
-    here; MySQL will do min(your_limits, MySQL_limits) automatically.
-
-      @details
-    There is no need to implement ..._key_... methods if your engine doesn't
-    support indexes.
-   */
-  uint max_supported_key_length() const override { return 0; }
+  uint max_supported_key_length() const override {
+    [[maybe_unused]] std::string s;
+    return s.max_size();
+  }
 
   /** @brief
     Called in test_quick_select to determine if indexes should be used.

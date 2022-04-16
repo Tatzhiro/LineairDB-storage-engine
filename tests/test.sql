@@ -8,3 +8,11 @@ CREATE TABLE ha_lineairdb_test.items (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE = LineairDB;
 -- ) ENGINE = InnoDB;
+
+INSERT INTO ha_lineairdb_test.items (
+    title, content
+) VALUES ("alice", "alice meets bob");
+
+INSERT INTO ha_lineairdb_test.items (
+    title, content
+) VALUES ("bob", "bob meets carol");
