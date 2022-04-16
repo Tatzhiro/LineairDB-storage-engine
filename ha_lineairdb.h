@@ -23,9 +23,9 @@
 /** @file ha_lineairdb.h
 
     @brief
-  The ha_lineairdb engine is a stubbed storage engine for lineairdb purposes only;
-  it does nothing at this point. Its purpose is to provide a source
-  code illustration of how to begin writing new storage engines; see also
+  The ha_lineairdb engine is a stubbed storage engine for lineairdb purposes
+  only; it does nothing at this point. Its purpose is to provide a source code
+  illustration of how to begin writing new storage engines; see also
   /storage/lineairdb/ha_lineairdb.cc.
 
     @note
@@ -38,18 +38,18 @@
   /sql/handler.h and /storage/lineairdb/ha_lineairdb.cc
 */
 
+#include <lineairdb/lineairdb.h>
+#include <string.h>
 #include <sys/types.h>
+
 #include <vector>
-#include<string.h>
 
 #include "my_base.h" /* ha_rows */
 #include "my_compiler.h"
 #include "my_inttypes.h"
 #include "sql/handler.h" /* handler */
-#include "thr_lock.h"    /* THR_LOCK, THR_LOCK_DATA */
 #include "sql_string.h"
-
-#include <lineairdb/lineairdb.h>
+#include "thr_lock.h" /* THR_LOCK, THR_LOCK_DATA */
 
 /** @brief
   LineairDB_share is a class that will be shared among all open handlers.
@@ -60,34 +60,32 @@ class LineairDB_share : public Handler_share {
   THR_LOCK lock;
   LineairDB_share();
   ~LineairDB_share() override { thr_lock_delete(&lock); }
-  
+  std::unique_ptr<LineairDB::Database> lineairdb_;
 };
 
 /** @brief
   Class definition for the storage engine
 */
 class ha_lineairdb : public handler {
-  THR_LOCK_DATA lock;          ///< MySQL lock
-  LineairDB_share *share;        ///< Shared lock info
-  LineairDB_share *get_share();  ///< Get the share
+  THR_LOCK_DATA lock;            ///< MySQL lock
+  LineairDB_share* share;        ///< Shared lock info
+  LineairDB_share* get_share();  ///< Get the share
   File data_file;
   File write_file;
-  char data_file_name[FN_REFLEN]; // stores "file_name.CSV" in ha_lineairdb::create by fn_format
+  char data_file_name[FN_REFLEN];  // stores "file_name.CSV" in
+                                   // ha_lineairdb::create by fn_format
   my_off_t
-      current_position;   /* Current position in the file during a file scan */
+      current_position; /* Current position in the file during a file scan */
   String buffer;
-  static LineairDB::Database* MyDB;
 
  public:
-  ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg);
+  ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg);
   ~ha_lineairdb() override = default;
 
-  bool primary_key_strcmp(const char *s1, const char *s2);
-  int encode_query();
   /** @brief
     The name that will be used for display purposes.
    */
-  const char *table_type() const override { return "LINEAIRDB"; }
+  const char* table_type() const override { return "LineairDB"; }
 
   /**
     Replace key algorithm with one supported by SE, return the default key
@@ -197,8 +195,8 @@ class ha_lineairdb : public handler {
   /** @brief
     We implement this in ha_lineairdb.cc; it's a required method.
   */
-  int open(const char *name, int mode, uint test_if_locked,
-           const dd::Table *table_def) override;  // required
+  int open(const char* name, int mode, uint test_if_locked,
+           const dd::Table* table_def) override;  // required
 
   /** @brief
     We implement this in ha_lineairdb.cc; it's a required method.
@@ -209,14 +207,14 @@ class ha_lineairdb : public handler {
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int write_row(uchar *buf) override;
+  int write_row(uchar* buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int update_row(const uchar *old_data, uchar *new_data) override;
-  // #ifdef INPLACE_UPDATE  
+  int update_row(const uchar* old_data, uchar* new_data) override;
+  // #ifdef INPLACE_UPDATE
   // int update_inplace(const uchar *old_data, uchar *new_data);
   // #endif
 
@@ -224,38 +222,38 @@ class ha_lineairdb : public handler {
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int delete_row(const uchar *buf) override;
+  int delete_row(const uchar* buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,
+  int index_read_map(uchar* buf, const uchar* key, key_part_map keypart_map,
                      enum ha_rkey_function find_flag) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_next(uchar *buf) override;
+  int index_next(uchar* buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_prev(uchar *buf) override;
+  int index_prev(uchar* buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_first(uchar *buf) override;
+  int index_first(uchar* buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_last(uchar *buf) override;
+  int index_last(uchar* buf) override;
 
   /** @brief
     Unlike index_init(), rnd_init() can be called two consecutive times
@@ -267,26 +265,27 @@ class ha_lineairdb : public handler {
   */
   int rnd_init(bool scan) override;  // required
   int rnd_end() override;
-  int find_current_row(uchar *buf);
-  int rnd_next(uchar *buf) override;             ///< required
-  int rnd_pos(uchar *buf, uchar *pos) override;  ///< required
-  void position(const uchar *record) override;   ///< required
+  int find_current_row(uchar* buf);
+  int rnd_next(uchar* buf) override;             ///< required
+  int rnd_pos(uchar* buf, uchar* pos) override;  ///< required
+  void position(const uchar* record) override;   ///< required
   int info(uint) override;                       ///< required
   int extra(enum ha_extra_function operation) override;
-  int external_lock(THD *thd, int lock_type) override;  ///< required
+  int external_lock(THD* thd, int lock_type) override;  ///< required
   int delete_all_rows(void) override;
-  ha_rows records_in_range(uint inx, key_range *min_key,
-                           key_range *max_key) override;
-  int delete_table(const char *from, const dd::Table *table_def) override;
-  int rename_table(const char *from, const char *to,
-                   const dd::Table *from_table_def,
-                   dd::Table *to_table_def) override;
-  int create(const char *name, TABLE *form, HA_CREATE_INFO *create_info,
-             dd::Table *table_def) override;  ///< required
+  ha_rows records_in_range(uint inx, key_range* min_key,
+                           key_range* max_key) override;
+  int delete_table(const char* from, const dd::Table* table_def) override;
+  int rename_table(const char* from, const char* to,
+                   const dd::Table* from_table_def,
+                   dd::Table* to_table_def) override;
+  int create(const char* name, TABLE* form, HA_CREATE_INFO* create_info,
+             dd::Table* table_def) override;  ///< required
 
-  THR_LOCK_DATA **store_lock(
-      THD *thd, THR_LOCK_DATA **to,
+  THR_LOCK_DATA** store_lock(
+      THD* thd, THR_LOCK_DATA** to,
       enum thr_lock_type lock_type) override;  ///< required
-};
 
-LineairDB::Database* ha_lineairdb::MyDB = nullptr;
+ private:
+  std::string get_primary_key_from_row(uchar* const);
+};

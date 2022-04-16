@@ -116,7 +116,15 @@ static bool lineairdb_is_supported_system_table(const char* db,
                                                 const char* table_name,
                                                 bool is_sql_layer_system_table);
 
-LineairDB_share::LineairDB_share() { thr_lock_init(&lock); }
+LineairDB_share::LineairDB_share() {
+  thr_lock_init(&lock);
+  if (lineairdb_ == nullptr) {
+    LineairDB::Config conf;
+    conf.enable_checkpointing = false;
+    conf.max_thread           = 0;
+    lineairdb_.reset(new LineairDB::Database(conf));
+  }
+}
 
 static int lineairdb_init_func(void* p) {
   DBUG_TRACE;
@@ -165,14 +173,7 @@ static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
 }
 
 ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
-    : handler(hton, table_arg), current_position(0) {
-  if (MyDB == nullptr) {
-    LineairDB::Config conf;
-    conf.enable_checkpointing = false;
-    conf.max_thread           = 0;
-    MyDB                      = new LineairDB::Database(conf);
-  }
-}
+    : handler(hton, table_arg), current_position(0) {}
 
 /*
   List of all system tables specific to the SE.
@@ -330,63 +331,21 @@ int ha_lineairdb::write_row(uchar* buf) {
   DBUG_TRACE;
 
   LineairDB::TxStatus status;
-  // little endian
-  std::cout << table->s->reclength << std::endl;
-  std::cout << table->s->rec_buff_length << std::endl;
-  auto temp_id = (buf[4] << 24) | (buf[3] << 16) | (buf[2] << 8) | buf[1];
-  // auto c1 = (buf[8] << 24) | (buf[7] << 16) | (buf[6] << 8) | buf[5];
-  std::string row_id = std::to_string(temp_id);
-  // write_row == INSERT
-  // INSERT IF NOT EXISTS のとき => tx.Write
-  // INSERT のとき => どういう仕様が正しい？すでに存在する場合はエラーを返す？
 
-  // 1st step
-  auto& tx     = MyDB->BeginTransaction();
-  auto& exists = tx.Read(row_id);
-  if (exists.second) {
+  auto& tx = get_share()->lineairdb_->BeginTransaction();
+
+  auto primary_key = get_primary_key_from_row(buf);
+  auto& exists     = tx.Read(primary_key);
+
+  if (exists.second) {  // IF EXISTS
     tx.Abort();
     MyDB->EndTransaction(tx, [&](auto s) { status = s; });
-    return 1;  // すでに存在する場合はエラーを返す，という仮定
-  }
-  tx.Write(row_id, (std::byte*)buf, table->s->reclength);
-  MyDB->EndTransaction(tx, [&](auto s) { status = s; });
-  return 0;
-}
-
-/**
-  @brief
-  Yes, update_row() does what you expect, it updates a row. old_data will have
-  the previous row record in it, while new_data will have the newest data in it.
-  Keep in mind that the server can do updates based on ordering if an ORDER BY
-  clause was used. Consecutive ordering is not guaranteed.
-
-  @details
-  Currently new_data will not have an updated auto_increament record. You can
-  do this for lineairdb by doing:
-
-  @code
-
-  if (table->next_number_field && record == table->record[0])
-    update_auto_increment();
-
-  @endcode
-
-  Called from sql_select.cc, sql_acl.cc, sql_update.cc, and sql_insert.cc.
-
-  @see
-  sql_select.cc, sql_acl.cc, sql_update.cc and sql_insert.cc
-*/
-bool ha_lineairdb::primary_key_strcmp(const char* s1, const char* s2) {
-  char x, y;
-  while (true) {
-    x = *s1;
-    y = *s2;
-    if (x == ',' || y == ',') return true;
-    if (x == y) {
-      s1++;
-      s2++;
-    } else
-      return false;
+    return 1;
+  } else {  // IF NOT EXISTS (going to insert)
+    tx.Write(primary_key, reinterpret_cast<std::byte*>(buf),
+             table->s->reclength);
+    MyDB->EndTransaction(tx, [&](auto s) { status = s; });
+    return 0;
   }
 }
 
@@ -400,9 +359,9 @@ int ha_lineairdb::update_row(const uchar* old_data, uchar* new_buf) {
   // new_buf[5];
   std::string row_id = std::to_string(temp_id);
 
-  auto& tx = MyDB->BeginTransaction();
-  tx.Write(row_id, (std::byte*)new_buf, table->s->reclength);
-  MyDB->EndTransaction(tx, [&](auto s) { status = s; });
+  // auto& tx = MyDB->BeginTransaction();
+  // tx.Write(row_id, (std::byte*)new_buf, table->s->reclength);
+  // MyDB->EndTransaction(tx, [&](auto s) { status = s; });
 
   // next step
   // auto* tx = getTransaction();
@@ -414,74 +373,7 @@ int ha_lineairdb::update_row(const uchar* old_data, uchar* new_buf) {
   return 0;
 }
 
-/**
-  @brief
-  This will delete a row. buf will contain a copy of the row to be deleted.
-  The server will call this right after the current row has been called (from
-  either a previous rnd_nexT() or index call).
-
-  @details
-  If you keep a pointer to the last row or can access a primary key it will
-  make doing the deletion quite a bit easier. Keep in mind that the server does
-  not guarantee consecutive deletions. ORDER BY clauses can be used.
-
-  Called in sql_acl.cc and sql_udf.cc to manage internal table
-  information.  Called in sql_delete.cc, sql_insert.cc, and
-  sql_select.cc. In sql_select it is used for removing duplicates
-  while in insert it is used for REPLACE calls.
-
-  @see
-  sql_acl.cc, sql_udf.cc, sql_delete.cc, sql_insert.cc and sql_select.cc
-*/
-
-int ha_lineairdb::delete_row(const uchar*) {
-  DBUG_TRACE;
-  int line                    = 0;  // 行数
-  bool deletion_is_successful = false;
-  char arr[100][50];
-  FILE* f;
-
-  f = fopen(data_file_name, "r");
-  if (f == NULL) {
-    printf("load error");
-    return -1;
-  }
-
-  for (int i = 0; i < (int)sizeof(arr) / (int)sizeof(arr[0]) &&
-                  fgets(arr[i], sizeof(arr[i]), f);
-       i++) {
-    line++;  // テキストファイルの行数
-  }
-  fclose(f);
-
-  f = fopen(data_file_name, "w");
-  if (f == NULL) {
-    printf("load error");
-    return -1;
-  }
-
-  encode_query();
-
-  for (int i = 0; i < line; i++) {
-    if (primary_key_strcmp(arr[i], (char*)(buffer.ptr())) == false) {
-      fputs(arr[i], f);
-    } else {
-      deletion_is_successful = true;
-    }
-  }
-
-  // ファイル閉じる
-  fclose(f);
-  if (!deletion_is_successful) return -1;
-  return 0;
-}
-
-/**
-  @brief
-  Positions an index cursor to the index specified in the handle. Fetches the
-  row if available. If the key value is null, begin at the first key of the
-  index.
-*/
+int ha_lineairdb::delete_row(const uchar*) { return 0; }
 
 int ha_lineairdb::index_read_map(uchar*, const uchar*, key_part_map,
                                  enum ha_rkey_function) {
@@ -613,7 +505,8 @@ int ha_lineairdb::find_current_row(uchar* buf) {
 
   buffer.length(0);
 
-  /* Avoid asserts in ::store() for columns that are not going to be updated */
+  /* Avoid asserts in ::store() for columns that are not going to be updated
+   */
   my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
 
   /* Initialize the NULL indicator flags in the record. */
@@ -963,8 +856,8 @@ static MYSQL_THDVAR_UINT(create_count_thdvar, 0, nullptr, nullptr, nullptr, 0,
 
 /**
   @brief
-  create() is called to create a database. The variable name will have the name
-  of the table.
+  create() is called to create a database. The variable name will have the
+  name of the table.
 
   @details
   When create() is called you do not need to worry about
@@ -991,8 +884,9 @@ int ha_lineairdb::create(const char* name, TABLE*, HA_CREATE_INFO*,
   // DBUG_ENTER("ha_lineairdb::create");
   // fn_format(data_file_name, name, "", ha_lineairdb_exts[0],
   //             MY_REPLACE_EXT | MY_UNPACK_FILENAME);
-  // if ((create_file= my_create(data_file_name,0,O_RDWR | O_TRUNC,MYF(MY_WME)))
-  // < 0) DBUG_RETURN(-1); my_close(create_file,MYF(0)); DBUG_RETURN(0);
+  // if ((create_file= my_create(data_file_name,0,O_RDWR |
+  // O_TRUNC,MYF(MY_WME))) < 0) DBUG_RETURN(-1); my_close(create_file,MYF(0));
+  // DBUG_RETURN(0);
 
   // /*
   //   It's just an lineairdb of THDVAR_SET() usage below.
@@ -1008,6 +902,24 @@ int ha_lineairdb::create(const char* name, TABLE*, HA_CREATE_INFO*,
   THDVAR_SET(thd, create_count_thdvar, &count);
 
   return 0;
+}
+
+std::string ha_lineairdb::get_primary_key_from_row(uchar* const buf) {
+  // 1.
+  bool is_primary_key_exists = (0 == table->s->primary_key);
+
+  std::string pk{""};
+
+  is_primary_key_exists = false;  // TODO WANTFIX
+
+  if (is_primary_key_exists) {
+    const auto pk_index           = table->s->primary_key;
+    const size_t key_length       = table->s->key_info[pk_index].key_length;
+    const size_t offset_in_buffer = 0;  // TODO IMPL
+    pk = std::string(buf[offset_in_buffer], key_length);
+  } else {
+    // NEXT WEEK
+  }
 }
 
 struct st_mysql_storage_engine lineairdb_storage_engine = {
