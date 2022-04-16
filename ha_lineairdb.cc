@@ -814,6 +814,11 @@ std::string ha_lineairdb::get_primary_key_from_row() {
   const bool is_primary_key_exists = (0 < table->s->keys);
 
   std::string pk{""};
+  pk.append("table-");
+  const auto& table_name = table->s->table_name;
+  pk.append(table_name.str, table_name.length);
+
+  pk.append("-key-");
   if (is_primary_key_exists) {
     assert(max_supported_key_parts() ==
            1);  // now we assume that there is no composite index
@@ -824,7 +829,7 @@ std::string ha_lineairdb::get_primary_key_from_row() {
       if (f->m_indexed) {  // it is the key column
 
         (*field)->val_str(&b, &b);
-        pk = std::string(b.ptr(), b.length());
+        pk.append(std::string(b.ptr(), b.length()));
         break;
       }
     }
@@ -833,7 +838,7 @@ std::string ha_lineairdb::get_primary_key_from_row() {
     const auto cstr       = table->s->table_name;
     const auto table_name = std::string(cstr.str, cstr.length);
     auto inserted_count   = auto_generated_keys_[table_name]++;
-    pk                    = std::to_string(inserted_count);
+    pk.append(std::to_string(inserted_count);
   }
   return pk;
 }
@@ -1004,3 +1009,12 @@ mysql_declare_plugin(lineairdb){
     nullptr,                    /* config options */
     0,                          /* flags */
 } mysql_declare_plugin_end;
+"LineairDB storage engine", PLUGIN_LICENSE_GPL,
+    lineairdb_init_func,           /* Plugin Init */
+    nullptr,                       /* Plugin check uninstall */
+    0x0001 /* 0.1 */, func_status, /* status variables */
+    lineairdb_system_variables,    /* system variables */
+    nullptr,                       /* config options */
+    0,                             /* flags */
+}
+mysql_declare_plugin_end;
