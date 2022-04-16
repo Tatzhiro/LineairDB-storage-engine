@@ -276,14 +276,16 @@ int ha_lineairdb::close(void) {
   No extra() hint is given currently if a bulk load is happening.
   @param buf is a byte array of data.
 */
-int ha_lineairdb::write_row(uchar* buf) {
+int ha_lineairdb::write_row(uchar*) {
   DBUG_TRACE;
 
   LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
 
-  auto primary_key = get_primary_key_from_row(buf);
-  tx.Write(primary_key, reinterpret_cast<std::byte*>(buf), table->s->reclength);
+  auto primary_key = get_primary_key_from_row();
+  encode_query();
+  tx.Write(primary_key, reinterpret_cast<std::byte*>(buffer.ptr()),
+           buffer.length());
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   return 0;
 }
@@ -808,19 +810,25 @@ int ha_lineairdb::create(const char* name, TABLE*, HA_CREATE_INFO*,
   return 0;
 }
 
-std::string ha_lineairdb::get_primary_key_from_row(uchar* const buf) {
-  // 1.
-  bool is_primary_key_exists = (0 == table->s->primary_key);
+std::string ha_lineairdb::get_primary_key_from_row() {
+  const bool is_primary_key_exists = (0 < table->s->keys);
 
   std::string pk{""};
-
-  is_primary_key_exists = false;  // TODO WANTFIX
-
   if (is_primary_key_exists) {
-    const auto pk_index           = table->s->primary_key;
-    const size_t key_length       = table->s->key_info[pk_index].key_length;
-    const size_t offset_in_buffer = 0;  // TODO IMPL;
-    pk = std::string(buf[offset_in_buffer], key_length);
+    assert(max_supported_key_parts() ==
+           1);  // now we assume that there is no composite index
+    my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+    String b;
+    for (Field** field = table->field; *field; field++) {
+      auto* f = *field;
+      if (f->m_indexed) {  // it is the key column
+
+        (*field)->val_str(&b, &b);
+        pk = std::string(b.ptr(), b.length());
+        break;
+      }
+    }
+    tmp_restore_column_map(table->read_set, org_bitmap);
   } else {
     const auto cstr       = table->s->table_name;
     const auto table_name = std::string(cstr.str, cstr.length);
@@ -828,6 +836,32 @@ std::string ha_lineairdb::get_primary_key_from_row(uchar* const buf) {
     pk                    = std::to_string(inserted_count);
   }
   return pk;
+}
+
+int ha_lineairdb::encode_query() {
+  char attribute_buffer[1024];
+  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
+
+  my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+  buffer.length(0);
+
+  for (Field** field = table->field; *field; field++) {
+    const char* p;
+    const char* end;
+
+    (*field)->val_str(&attribute, &attribute);
+    p   = attribute.ptr();
+    end = p + attribute.length();
+
+    buffer.append('"');
+    for (; p < end; p++) buffer.append(*p);
+    buffer.append('"');
+    buffer.append(',');
+  }
+
+  buffer.length(buffer.length() - 1);
+  tmp_restore_column_map(table->read_set, org_bitmap);
+  return (buffer.length());
 }
 
 struct lineairdb_vars_t {
@@ -954,9 +988,12 @@ static SHOW_VAR func_status[] = {
      SHOW_SCOPE_GLOBAL},
     {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
 
-mysql_declare_plugin(lineairdb) {
-  MYSQL_STORAGE_ENGINE_PLUGIN, &lineairdb_storage_engine, "LINEAIRDB",
-      PLUGIN_AUTHOR_ORACLE, "LineairDB storage engine",
+mysql_declare_plugin(lineairdb){
+    MYSQL_STORAGE_ENGINE_PLUGIN,
+    &lineairdb_storage_engine,
+    "LINEAIRDB",
+    PLUGIN_AUTHOR_ORACLE,
+    "LineairDB storage engine",
     PLUGIN_LICENSE_GPL,
     lineairdb_init_func, /* Plugin Init */
     nullptr,             /* Plugin check uninstall */

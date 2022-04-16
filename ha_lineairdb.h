@@ -136,7 +136,9 @@ class ha_lineairdb : public handler {
   }
 
   uint max_supported_keys() const override { return 1; }
-  uint max_supported_key_parts() const override { return UINT32_MAX; }
+  uint max_supported_key_parts() const override {
+    return 1;
+  }  // TODO WANTFIX support composite index
 
   /** @brief
     unireg.cc will call this to make sure that the storage engine can handle
@@ -267,5 +269,6 @@ class ha_lineairdb : public handler {
       enum thr_lock_type lock_type) override;  ///< required
 
  private:
-  std::string get_primary_key_from_row(uchar* const);
+  std::string get_primary_key_from_row();
+  int encode_query();
 };
