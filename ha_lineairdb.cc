@@ -116,7 +116,15 @@ static bool lineairdb_is_supported_system_table(const char* db,
                                                 const char* table_name,
                                                 bool is_sql_layer_system_table);
 
-LineairDB_share::LineairDB_share() { thr_lock_init(&lock); }
+LineairDB_share::LineairDB_share() {
+  thr_lock_init(&lock);
+  if (lineairdb_ == nullptr) {
+    LineairDB::Config conf;
+    conf.enable_checkpointing = false;
+    conf.max_thread           = 0;
+    lineairdb_.reset(new LineairDB::Database(conf));
+  }
+}
 
 static int lineairdb_init_func(void* p) {
   DBUG_TRACE;
@@ -159,20 +167,17 @@ err:
   return tmp_share;
 }
 
+LineairDB::Database* ha_lineairdb::get_db() {
+  return get_share()->lineairdb_.get();
+}
+
 static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
                                          bool, MEM_ROOT* mem_root) {
   return new (mem_root) ha_lineairdb(hton, table);
 }
 
 ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
-    : handler(hton, table_arg), current_position(0) {
-  if (MyDB == nullptr) {
-    LineairDB::Config conf;
-    conf.enable_checkpointing = false;
-    conf.max_thread           = 0;
-    MyDB                      = new LineairDB::Database(conf);
-  }
-}
+    : handler(hton, table_arg), current_position(0) {}
 
 /*
   List of all system tables specific to the SE.
@@ -267,127 +272,22 @@ int ha_lineairdb::close(void) {
 
 /**
   @brief
-  write_row() inserts a row. No extra() hint is given currently if a bulk load
-  is happening. buf() is a byte array of data. You can use the field
-  information to extract the data from the native byte array type.
-
-  @details
-  Example of this would be:
-  @code
-  for (Field **field=table->field ; *field ; field++)
-  {
-    ...
-  }
-  @endcode
-
-  See ha_tina.cc for an lineairdb of extracting all of the data as strings.
-  ha_berekly.cc has an lineairdb of how to store it intact by "packing" it
-  for ha_berkeley's own native storage type.
-
-  See the note for update_row() on auto_increments. This case also applies to
-  write_row().
-
-  Called from item_sum.cc, item_sum.cc, sql_acl.cc, sql_insert.cc,
-  sql_insert.cc, sql_select.cc, sql_table.cc, sql_udf.cc, and sql_update.cc.
-
-  @see
-  item_sum.cc, item_sum.cc, sql_acl.cc, sql_insert.cc,
-  sql_insert.cc, sql_select.cc, sql_table.cc, sql_udf.cc and sql_update.cc
+  write_row() inserts a row.
+  No extra() hint is given currently if a bulk load is happening.
+  @param buf is a byte array of data.
 */
-
-int ha_lineairdb::encode_query() {
-  char attribute_buffer[1024];
-  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
-
-  my_bitmap_map* org_bitmap = tmp_use_all_columns(
-      table, table->read_set);  // カラム情報の読み取りフラグを立てる
-  buffer.length(0);             // buffer を初期化
-
-  for (Field** field = table->field; *field; field++) {
-    const char* p;
-    const char* end;
-
-    (*field)->val_str(
-        &attribute, &attribute);  // クエリ文字列の実際の長さを attribute に格納
-    p = attribute.ptr();  // 書き込む文字列の先頭にポインタをセット
-    end = attribute.length() + p;  // 書き込む文字列の終端にポインタをセット
-
-    // buffer.append('"');
-    for (; p < end; p++) buffer.append(*p);
-    // buffer.append('"');
-    buffer.append(',');
-  }
-
-  buffer.length(buffer.length() - 1);
-  buffer.append('\n');
-
-  tmp_restore_column_map(table->read_set,
-                         org_bitmap);  // 読み取りフラグを寝かせる
-  return (buffer.length());
-}
-
-int ha_lineairdb::write_row(uchar* buf) {
+int ha_lineairdb::write_row(uchar*) {
   DBUG_TRACE;
 
   LineairDB::TxStatus status;
-  // little endian
-  std::cout << table->s->reclength << std::endl;
-  std::cout << table->s->rec_buff_length << std::endl;
-  auto temp_id = (buf[4] << 24) | (buf[3] << 16) | (buf[2] << 8) | buf[1];
-  // auto c1 = (buf[8] << 24) | (buf[7] << 16) | (buf[6] << 8) | buf[5];
-  std::string row_id = std::to_string(temp_id);
-  // write_row == INSERT
-  // INSERT IF NOT EXISTS のとき => tx.Write
-  // INSERT のとき => どういう仕様が正しい？すでに存在する場合はエラーを返す？
+  auto& tx = get_db()->BeginTransaction();
 
-  // 1st step
-  auto& tx     = MyDB->BeginTransaction();
-  auto& exists = tx.Read(row_id);
-  if (exists.second) {
-    tx.Abort();
-    MyDB->EndTransaction(tx, [&](auto s) { status = s; });
-    return 1;  // すでに存在する場合はエラーを返す，という仮定
-  }
-  tx.Write(row_id, (std::byte*)buf, table->s->reclength);
-  MyDB->EndTransaction(tx, [&](auto s) { status = s; });
+  auto primary_key = get_primary_key_from_row();
+  encode_query();
+  tx.Write(primary_key, reinterpret_cast<std::byte*>(buffer.ptr()),
+           buffer.length());
+  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   return 0;
-}
-
-/**
-  @brief
-  Yes, update_row() does what you expect, it updates a row. old_data will have
-  the previous row record in it, while new_data will have the newest data in it.
-  Keep in mind that the server can do updates based on ordering if an ORDER BY
-  clause was used. Consecutive ordering is not guaranteed.
-
-  @details
-  Currently new_data will not have an updated auto_increament record. You can
-  do this for lineairdb by doing:
-
-  @code
-
-  if (table->next_number_field && record == table->record[0])
-    update_auto_increment();
-
-  @endcode
-
-  Called from sql_select.cc, sql_acl.cc, sql_update.cc, and sql_insert.cc.
-
-  @see
-  sql_select.cc, sql_acl.cc, sql_update.cc and sql_insert.cc
-*/
-bool ha_lineairdb::primary_key_strcmp(const char* s1, const char* s2) {
-  char x, y;
-  while (true) {
-    x = *s1;
-    y = *s2;
-    if (x == ',' || y == ',') return true;
-    if (x == y) {
-      s1++;
-      s2++;
-    } else
-      return false;
-  }
 }
 
 int ha_lineairdb::update_row(const uchar* old_data, uchar* new_buf) {
@@ -400,9 +300,9 @@ int ha_lineairdb::update_row(const uchar* old_data, uchar* new_buf) {
   // new_buf[5];
   std::string row_id = std::to_string(temp_id);
 
-  auto& tx = MyDB->BeginTransaction();
-  tx.Write(row_id, (std::byte*)new_buf, table->s->reclength);
-  MyDB->EndTransaction(tx, [&](auto s) { status = s; });
+  // auto& tx = MyDB->BeginTransaction();
+  // tx.Write(row_id, (std::byte*)new_buf, table->s->reclength);
+  // MyDB->EndTransaction(tx, [&](auto s) { status = s; });
 
   // next step
   // auto* tx = getTransaction();
@@ -414,74 +314,7 @@ int ha_lineairdb::update_row(const uchar* old_data, uchar* new_buf) {
   return 0;
 }
 
-/**
-  @brief
-  This will delete a row. buf will contain a copy of the row to be deleted.
-  The server will call this right after the current row has been called (from
-  either a previous rnd_nexT() or index call).
-
-  @details
-  If you keep a pointer to the last row or can access a primary key it will
-  make doing the deletion quite a bit easier. Keep in mind that the server does
-  not guarantee consecutive deletions. ORDER BY clauses can be used.
-
-  Called in sql_acl.cc and sql_udf.cc to manage internal table
-  information.  Called in sql_delete.cc, sql_insert.cc, and
-  sql_select.cc. In sql_select it is used for removing duplicates
-  while in insert it is used for REPLACE calls.
-
-  @see
-  sql_acl.cc, sql_udf.cc, sql_delete.cc, sql_insert.cc and sql_select.cc
-*/
-
-int ha_lineairdb::delete_row(const uchar*) {
-  DBUG_TRACE;
-  int line                    = 0;  // 行数
-  bool deletion_is_successful = false;
-  char arr[100][50];
-  FILE* f;
-
-  f = fopen(data_file_name, "r");
-  if (f == NULL) {
-    printf("load error");
-    return -1;
-  }
-
-  for (int i = 0; i < (int)sizeof(arr) / (int)sizeof(arr[0]) &&
-                  fgets(arr[i], sizeof(arr[i]), f);
-       i++) {
-    line++;  // テキストファイルの行数
-  }
-  fclose(f);
-
-  f = fopen(data_file_name, "w");
-  if (f == NULL) {
-    printf("load error");
-    return -1;
-  }
-
-  encode_query();
-
-  for (int i = 0; i < line; i++) {
-    if (primary_key_strcmp(arr[i], (char*)(buffer.ptr())) == false) {
-      fputs(arr[i], f);
-    } else {
-      deletion_is_successful = true;
-    }
-  }
-
-  // ファイル閉じる
-  fclose(f);
-  if (!deletion_is_successful) return -1;
-  return 0;
-}
-
-/**
-  @brief
-  Positions an index cursor to the index specified in the handle. Fetches the
-  row if available. If the key value is null, begin at the first key of the
-  index.
-*/
+int ha_lineairdb::delete_row(const uchar*) { return 0; }
 
 int ha_lineairdb::index_read_map(uchar*, const uchar*, key_part_map,
                                  enum ha_rkey_function) {
@@ -613,7 +446,8 @@ int ha_lineairdb::find_current_row(uchar* buf) {
 
   buffer.length(0);
 
-  /* Avoid asserts in ::store() for columns that are not going to be updated */
+  /* Avoid asserts in ::store() for columns that are not going to be updated
+   */
   my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
 
   /* Initialize the NULL indicator flags in the record. */
@@ -963,19 +797,8 @@ static MYSQL_THDVAR_UINT(create_count_thdvar, 0, nullptr, nullptr, nullptr, 0,
 
 /**
   @brief
-  create() is called to create a database. The variable name will have the name
-  of the table.
-
-  @details
-  When create() is called you do not need to worry about
-  opening the table. Also, the .frm file will have already been
-  created so adjusting create_info is not necessary. You can overwrite
-  the .frm file at this point if you wish to change the table
-  definition, but there are no methods currently provided for doing
-  so.
-
-  Called from handle.cc by ha_create_table().
-
+  create() is called to create a database. The variable name will have the
+  name of the table.
   @see
   ha_create_table() in handle.cc
 */
@@ -983,32 +806,77 @@ static MYSQL_THDVAR_UINT(create_count_thdvar, 0, nullptr, nullptr, nullptr, 0,
 int ha_lineairdb::create(const char* name, TABLE*, HA_CREATE_INFO*,
                          dd::Table*) {
   DBUG_TRACE;
-  /*
-    This is not implemented but we want someone to be able to see that it
-    works.
-  */
-  // File create_file;
-  // DBUG_ENTER("ha_lineairdb::create");
-  // fn_format(data_file_name, name, "", ha_lineairdb_exts[0],
-  //             MY_REPLACE_EXT | MY_UNPACK_FILENAME);
-  // if ((create_file= my_create(data_file_name,0,O_RDWR | O_TRUNC,MYF(MY_WME)))
-  // < 0) DBUG_RETURN(-1); my_close(create_file,MYF(0)); DBUG_RETURN(0);
-
-  // /*
-  //   It's just an lineairdb of THDVAR_SET() usage below.
-  // */
-  THD* thd  = ha_thd();
-  char* buf = (char*)my_malloc(PSI_NOT_INSTRUMENTED, SHOW_VAR_FUNC_BUFF_SIZE,
-                               MYF(MY_FAE));
-  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE, "Last creation '%s'", name);
-  THDVAR_SET(thd, last_create_thdvar, buf);
-  my_free(buf);
-
-  uint count = THDVAR(thd, create_count_thdvar) + 1;
-  THDVAR_SET(thd, create_count_thdvar, &count);
 
   return 0;
 }
+
+std::string ha_lineairdb::get_primary_key_from_row() {
+  const bool is_primary_key_exists = (0 < table->s->keys);
+
+  std::string pk{""};
+  pk.append("table-");
+  const auto& table_name = table->s->table_name;
+  pk.append(table_name.str, table_name.length);
+
+  pk.append("-key-");
+  if (is_primary_key_exists) {
+    assert(max_supported_key_parts() ==
+           1);  // now we assume that there is no composite index
+    my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+    String b;
+    for (Field** field = table->field; *field; field++) {
+      auto* f = *field;
+      if (f->m_indexed) {  // it is the key column
+
+        (*field)->val_str(&b, &b);
+        pk.append(std::string(b.ptr(), b.length()));
+        break;
+      }
+    }
+    tmp_restore_column_map(table->read_set, org_bitmap);
+  } else {
+    const auto cstr       = table->s->table_name;
+    const auto table_name = std::string(cstr.str, cstr.length);
+    auto inserted_count   = auto_generated_keys_[table_name]++;
+    pk.append(std::to_string(inserted_count);
+  }
+  return pk;
+}
+
+int ha_lineairdb::encode_query() {
+  char attribute_buffer[1024];
+  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
+
+  my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+  buffer.length(0);
+
+  for (Field** field = table->field; *field; field++) {
+    const char* p;
+    const char* end;
+
+    (*field)->val_str(&attribute, &attribute);
+    p   = attribute.ptr();
+    end = p + attribute.length();
+
+    buffer.append('"');
+    for (; p < end; p++) buffer.append(*p);
+    buffer.append('"');
+    buffer.append(',');
+  }
+
+  buffer.length(buffer.length() - 1);
+  tmp_restore_column_map(table->read_set, org_bitmap);
+  return (buffer.length());
+}
+
+struct lineairdb_vars_t {
+  ulong var1;
+  double var2;
+  char var3[64];
+  bool var4;
+  bool var5;
+  ulong var6;
+};
 
 struct st_mysql_storage_engine lineairdb_storage_engine = {
     MYSQL_HANDLERTON_INTERFACE_VERSION};
@@ -1098,15 +966,6 @@ static int show_func_lineairdb(MYSQL_THD, SHOW_VAR* var, char* buf) {
   return 0;
 }
 
-struct lineairdb_vars_t {
-  ulong var1;
-  double var2;
-  char var3[64];
-  bool var4;
-  bool var5;
-  ulong var6;
-};
-
 lineairdb_vars_t lineairdb_vars = {100,  20.01, "three hundred",
                                    true, false, 8250};
 
@@ -1150,3 +1009,12 @@ mysql_declare_plugin(lineairdb){
     nullptr,                    /* config options */
     0,                          /* flags */
 } mysql_declare_plugin_end;
+"LineairDB storage engine", PLUGIN_LICENSE_GPL,
+    lineairdb_init_func,           /* Plugin Init */
+    nullptr,                       /* Plugin check uninstall */
+    0x0001 /* 0.1 */, func_status, /* status variables */
+    lineairdb_system_variables,    /* system variables */
+    nullptr,                       /* config options */
+    0,                             /* flags */
+}
+mysql_declare_plugin_end;
