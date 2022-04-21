@@ -1009,12 +1009,3 @@ mysql_declare_plugin(lineairdb){
     nullptr,                    /* config options */
     0,                          /* flags */
 } mysql_declare_plugin_end;
-"LineairDB storage engine", PLUGIN_LICENSE_GPL,
-    lineairdb_init_func,           /* Plugin Init */
-    nullptr,                       /* Plugin check uninstall */
-    0x0001 /* 0.1 */, func_status, /* status variables */
-    lineairdb_system_variables,    /* system variables */
-    nullptr,                       /* config options */
-    0,                             /* flags */
-}
-mysql_declare_plugin_end;
