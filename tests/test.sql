@@ -16,6 +16,8 @@ INSERT INTO ha_lineairdb_test.items (
     title, content
 ) VALUES ("bob", "bob meets carol");
 
+SELECT * FROM ha_lineairdb_test.items;
+
 CREATE TABLE ha_lineairdb_test.items_w_pk (
     id INT AUTO_INCREMENT NOT NULL PRIMARY KEY, 
     title VARCHAR(50),

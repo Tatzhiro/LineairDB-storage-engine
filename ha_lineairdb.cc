@@ -106,14 +106,14 @@
 
 #define INPLACE_UPDATE
 
-static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
-                                         bool partitioned, MEM_ROOT* mem_root);
+static handler *lineairdb_create_handler(handlerton *hton, TABLE_SHARE *table,
+                                         bool partitioned, MEM_ROOT *mem_root);
 
-handlerton* lineairdb_hton;
+handlerton *lineairdb_hton;
 
 /* Interface to mysqld, to check system tables supported by SE */
-static bool lineairdb_is_supported_system_table(const char* db,
-                                                const char* table_name,
+static bool lineairdb_is_supported_system_table(const char *db,
+                                                const char *table_name,
                                                 bool is_sql_layer_system_table);
 
 LineairDB_share::LineairDB_share() {
@@ -121,18 +121,18 @@ LineairDB_share::LineairDB_share() {
   if (lineairdb_ == nullptr) {
     LineairDB::Config conf;
     conf.enable_checkpointing = false;
-    conf.max_thread           = 0;
+    conf.max_thread = 0;
     lineairdb_.reset(new LineairDB::Database(conf));
   }
 }
 
-static int lineairdb_init_func(void* p) {
+static int lineairdb_init_func(void *p) {
   DBUG_TRACE;
 
-  lineairdb_hton         = (handlerton*)p;
-  lineairdb_hton->state  = SHOW_OPTION_YES;
+  lineairdb_hton = (handlerton *)p;
+  lineairdb_hton->state = SHOW_OPTION_YES;
   lineairdb_hton->create = lineairdb_create_handler;
-  lineairdb_hton->flags  = HTON_CAN_RECREATE;
+  lineairdb_hton->flags = HTON_CAN_RECREATE;
   lineairdb_hton->is_supported_system_table =
       lineairdb_is_supported_system_table;
   lineairdb_hton->db_type = DB_TYPE_UNKNOWN;
@@ -140,7 +140,7 @@ static int lineairdb_init_func(void* p) {
   return 0;
 }
 
-static const char* ha_lineairdb_exts[] = {".CSV", NullS};
+static const char *ha_lineairdb_exts[] = {".CSV", NullS};
 
 /**
   @brief
@@ -150,33 +150,33 @@ static const char* ha_lineairdb_exts[] = {".CSV", NullS};
   they are needed to function.
 */
 
-LineairDB_share* ha_lineairdb::get_share() {
-  LineairDB_share* tmp_share;
+LineairDB_share *ha_lineairdb::get_share() {
+  LineairDB_share *tmp_share;
 
   DBUG_TRACE;
 
   lock_shared_ha_data();
-  if (!(tmp_share = static_cast<LineairDB_share*>(get_ha_share_ptr()))) {
+  if (!(tmp_share = static_cast<LineairDB_share *>(get_ha_share_ptr()))) {
     tmp_share = new LineairDB_share;
     if (!tmp_share) goto err;
 
-    set_ha_share_ptr(static_cast<Handler_share*>(tmp_share));
+    set_ha_share_ptr(static_cast<Handler_share *>(tmp_share));
   }
 err:
   unlock_shared_ha_data();
   return tmp_share;
 }
 
-LineairDB::Database* ha_lineairdb::get_db() {
+LineairDB::Database *ha_lineairdb::get_db() {
   return get_share()->lineairdb_.get();
 }
 
-static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
-                                         bool, MEM_ROOT* mem_root) {
+static handler *lineairdb_create_handler(handlerton *hton, TABLE_SHARE *table,
+                                         bool, MEM_ROOT *mem_root) {
   return new (mem_root) ha_lineairdb(hton, table);
 }
 
-ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
+ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg), current_position(0) {}
 
 /*
@@ -189,7 +189,7 @@ ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
   This array is optional, so every SE need not implement it.
 */
 static st_handler_tablename ha_lineairdb_system_tables[] = {
-    {(const char*)nullptr, (const char*)nullptr}};
+    {(const char *)nullptr, (const char *)nullptr}};
 
 /**
   @brief Check if the given db.tablename is a system table for this SE.
@@ -203,8 +203,8 @@ static st_handler_tablename ha_lineairdb_system_tables[] = {
   @retval false  Given db.table_name is not a supported system table.
 */
 static bool lineairdb_is_supported_system_table(
-    const char* db, const char* table_name, bool is_sql_layer_system_table) {
-  st_handler_tablename* systab;
+    const char *db, const char *table_name, bool is_sql_layer_system_table) {
+  st_handler_tablename *systab;
 
   // Does this SE support "ALL" SQL layer system tables ?
   if (is_sql_layer_system_table) return false;
@@ -236,7 +236,7 @@ static bool lineairdb_is_supported_system_table(
   handler::ha_open() in handler.cc
 */
 
-int ha_lineairdb::open(const char* name, int, uint, const dd::Table*) {
+int ha_lineairdb::open(const char *, int, uint, const dd::Table *) {
   DBUG_TRACE;
   if (!(share = get_share())) return 1;
   thr_lock_data_init(&share->lock, &lock, nullptr);
@@ -276,24 +276,24 @@ int ha_lineairdb::close(void) {
   No extra() hint is given currently if a bulk load is happening.
   @param buf is a byte array of data.
 */
-int ha_lineairdb::write_row(uchar*) {
+int ha_lineairdb::write_row(uchar *) {
   DBUG_TRACE;
 
   LineairDB::TxStatus status;
-  auto& tx = get_db()->BeginTransaction();
+  auto &tx = get_db()->BeginTransaction();
 
   auto primary_key = get_primary_key_from_row();
   encode_query();
-  tx.Write(primary_key, reinterpret_cast<std::byte*>(buffer.ptr()),
+  tx.Write(primary_key, reinterpret_cast<std::byte *>(buffer.ptr()),
            buffer.length());
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   return 0;
 }
 
-int ha_lineairdb::update_row(const uchar* old_data, uchar* new_buf) {
+int ha_lineairdb::update_row(const uchar *, uchar *new_buf) {
   DBUG_TRACE;
   // 1st step
-  LineairDB::TxStatus status;
+  // LineairDB::TxStatus status;
   auto temp_id =
       (new_buf[4] << 24) | (new_buf[3] << 16) | (new_buf[2] << 8) | new_buf[1];
   // auto c1 = (new_buf[8] << 24) | (new_buf[7] << 16) | (new_buf[6] << 8) |
@@ -314,9 +314,9 @@ int ha_lineairdb::update_row(const uchar* old_data, uchar* new_buf) {
   return 0;
 }
 
-int ha_lineairdb::delete_row(const uchar*) { return 0; }
+int ha_lineairdb::delete_row(const uchar *) { return 0; }
 
-int ha_lineairdb::index_read_map(uchar*, const uchar*, key_part_map,
+int ha_lineairdb::index_read_map(uchar *, const uchar *, key_part_map,
                                  enum ha_rkey_function) {
   int rc;
   DBUG_TRACE;
@@ -329,7 +329,7 @@ int ha_lineairdb::index_read_map(uchar*, const uchar*, key_part_map,
   Used to read forward through the index.
 */
 
-int ha_lineairdb::index_next(uchar*) {
+int ha_lineairdb::index_next(uchar *) {
   int rc;
   DBUG_TRACE;
   rc = HA_ERR_WRONG_COMMAND;
@@ -341,7 +341,7 @@ int ha_lineairdb::index_next(uchar*) {
   Used to read backwards through the index.
 */
 
-int ha_lineairdb::index_prev(uchar*) {
+int ha_lineairdb::index_prev(uchar *) {
   int rc;
   DBUG_TRACE;
   rc = HA_ERR_WRONG_COMMAND;
@@ -358,7 +358,7 @@ int ha_lineairdb::index_prev(uchar*) {
   @see
   opt_range.cc, opt_sum.cc, sql_handler.cc and sql_select.cc
 */
-int ha_lineairdb::index_first(uchar*) {
+int ha_lineairdb::index_first(uchar *) {
   int rc;
   DBUG_TRACE;
   rc = HA_ERR_WRONG_COMMAND;
@@ -375,7 +375,7 @@ int ha_lineairdb::index_first(uchar*) {
   @see
   opt_range.cc, opt_sum.cc, sql_handler.cc and sql_select.cc
 */
-int ha_lineairdb::index_last(uchar*) {
+int ha_lineairdb::index_last(uchar *) {
   int rc;
   DBUG_TRACE;
   rc = HA_ERR_WRONG_COMMAND;
@@ -400,7 +400,16 @@ int ha_lineairdb::rnd_init(bool) {
   DBUG_ENTER("ha_lineairdb::rnd_init");
 
   current_position = 0;
-  stats.records    = 0;
+  stats.records = 0;
+  auto &tx = get_db()->BeginTransaction();
+  tx.Scan("", "bob", [&](auto key, auto) { 
+    keys.push_back(std::string(key)); 
+  });
+  // const std::optional<size_t> Scan(
+  //     const std::string_view begin, const std::string_view end,
+  //     std::function<bool(std::string_view,
+  //                        const std::pair<const void*, const size_t>)>
+  //         operation);
 
   DBUG_RETURN(0);
 }
@@ -426,7 +435,7 @@ int ha_lineairdb::rnd_end() {
   sql_update.cc
 */
 
-int ha_lineairdb::find_current_row(uchar* buf) {
+int ha_lineairdb::find_current_row(uchar *buf) {
   DBUG_ENTER("ha_lineairdb::find_current_row");
 
   my_off_t cur_pos = current_position;
@@ -436,7 +445,7 @@ int ha_lineairdb::find_current_row(uchar* buf) {
      table field pointers to store the parsed data in the right
      place and the right format.
    */
-  Field** field = table->field;
+  Field **field = table->field;
 
   /* How many bytes we have seen so far in this line. */
   int bytes_parsed = 0;
@@ -448,7 +457,7 @@ int ha_lineairdb::find_current_row(uchar* buf) {
 
   /* Avoid asserts in ::store() for columns that are not going to be updated
    */
-  my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+  my_bitmap_map *org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
 
   /* Initialize the NULL indicator flags in the record. */
   memset(buf, 0, table->s->null_bytes);
@@ -464,13 +473,13 @@ int ha_lineairdb::find_current_row(uchar* buf) {
       DBUG_RETURN(HA_ERR_END_OF_FILE);
     }
 
-    uchar* p       = linebuf;
-    uchar* buf_end = linebuf + bytes_read;
+    uchar *p = linebuf;
+    uchar *buf_end = linebuf + bytes_read;
 
     for (; p < buf_end;) {
-      uchar c          = *p;
+      uchar c = *p;
       int end_of_field = 0;
-      int end_of_line  = 0;
+      int end_of_line = 0;
 
       switch (c) {
         case ',':
@@ -479,7 +488,7 @@ int ha_lineairdb::find_current_row(uchar* buf) {
 
         case '\r':
         case '\n':
-          end_of_line  = 1;
+          end_of_line = 1;
           end_of_field = 1;
           break;
 
@@ -512,7 +521,9 @@ int ha_lineairdb::find_current_row(uchar* buf) {
     The parsed line may not have had the values of all of the fields.
     Set the remaining fields to their default values.
    */
-  for (; *field; field++) { (*field)->set_default(); }
+  for (; *field; field++) {
+    (*field)->set_default();
+  }
 
   /* Move the cursor to the next record. */
   current_position += bytes_parsed;
@@ -521,15 +532,53 @@ int ha_lineairdb::find_current_row(uchar* buf) {
   DBUG_RETURN(0);
 }
 
-int ha_lineairdb::rnd_next(uchar* buf) {
+// assumption: takes 1 row
+int ha_lineairdb::rnd_next(uchar *) {
   DBUG_ENTER("ha_lineairdb::rnd_next");
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
+  Field **field = table->field;
 
-  int rc = find_current_row(buf);
+  auto &tx = get_db()->BeginTransaction();
+  auto &key = keys[current_position];
+  auto read_buffer = tx.Read(key);
+  if (read_buffer.first == nullptr) return 1;
 
-  if (!rc) stats.records++;
+  /* Avoid asserts in ::store() for columns that are not going to be updated
+   */
+  my_bitmap_map *org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+  // if (!bytes_read || bytes_read == MY_FILE_ERROR) {
+  //   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
+  //   DBUG_RETURN(HA_ERR_END_OF_FILE);
+  // }
+  std::byte *p;
+  memcpy(p, read_buffer.first, read_buffer.second);
+  std::byte *buf_end = p + read_buffer.second;
+  for (; p < buf_end;) {
+    uchar c = *reinterpret_cast<uchar* >(p);
+    bool is_end_of_field = 0;
+    switch (c) {
+      case ',':
+        is_end_of_field = 1;
+        break;
+      default:
+        buffer.append(c);
+        break;
+    }
+    if (is_end_of_field && *field) {
+      (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
+                      CHECK_FIELD_WARN);
+      field++;
+      buffer.length(0);
+    }
+    p++;
+  }
 
-  DBUG_RETURN(rc);
+  // int rc = find_current_row(buf);
+
+  // if (!rc) stats.records++;
+
+  // DBUG_RETURN(rc);
+  return 0;
 }
 
 /**
@@ -553,7 +602,7 @@ int ha_lineairdb::rnd_next(uchar* buf) {
   @see
   filesort.cc, sql_select.cc, sql_delete.cc and sql_update.cc
 */
-void ha_lineairdb::position(const uchar*) { DBUG_TRACE; }
+void ha_lineairdb::position(const uchar *) { DBUG_TRACE; }
 
 /**
   @brief
@@ -569,7 +618,7 @@ void ha_lineairdb::position(const uchar*) { DBUG_TRACE; }
   @see
   filesort.cc, records.cc, sql_insert.cc, sql_select.cc and sql_update.cc
 */
-int ha_lineairdb::rnd_pos(uchar*, uchar*) {
+int ha_lineairdb::rnd_pos(uchar *, uchar *) {
   int rc;
   DBUG_TRACE;
   rc = HA_ERR_WRONG_COMMAND;
@@ -677,7 +726,7 @@ int ha_lineairdb::delete_all_rows() {
   the section "locking functions for mysql" in lock.cc;
   copy_data_between_tables() in sql_table.cc.
 */
-int ha_lineairdb::external_lock(THD*, int) {
+int ha_lineairdb::external_lock(THD *, int) {
   DBUG_TRACE;
   return 0;
 }
@@ -719,7 +768,7 @@ int ha_lineairdb::external_lock(THD*, int) {
   @see
   get_lock_data() in lock.cc
 */
-THR_LOCK_DATA** ha_lineairdb::store_lock(THD*, THR_LOCK_DATA** to,
+THR_LOCK_DATA **ha_lineairdb::store_lock(THD *, THR_LOCK_DATA **to,
                                          enum thr_lock_type lock_type) {
   if (lock_type != TL_IGNORE && lock.type == TL_UNLOCK) lock.type = lock_type;
   *to++ = &lock;
@@ -745,7 +794,7 @@ THR_LOCK_DATA** ha_lineairdb::store_lock(THD*, THR_LOCK_DATA** to,
   @see
   delete_table and ha_create_table() in handler.cc
 */
-int ha_lineairdb::delete_table(const char*, const dd::Table*) {
+int ha_lineairdb::delete_table(const char *, const dd::Table *) {
   DBUG_TRACE;
   /* This is not implemented but we want someone to be able that it works. */
   return 0;
@@ -765,8 +814,8 @@ int ha_lineairdb::delete_table(const char*, const dd::Table*) {
   @see
   mysql_rename_table() in sql_table.cc
 */
-int ha_lineairdb::rename_table(const char*, const char*, const dd::Table*,
-                               dd::Table*) {
+int ha_lineairdb::rename_table(const char *, const char *, const dd::Table *,
+                               dd::Table *) {
   DBUG_TRACE;
   return HA_ERR_WRONG_COMMAND;
 }
@@ -784,7 +833,7 @@ int ha_lineairdb::rename_table(const char*, const char*, const dd::Table*,
   @see
   check_quick_keys() in opt_range.cc
 */
-ha_rows ha_lineairdb::records_in_range(uint, key_range*, key_range*) {
+ha_rows ha_lineairdb::records_in_range(uint, key_range *, key_range *) {
   DBUG_TRACE;
   return 10;  // low number to force index usage
 }
@@ -803,8 +852,8 @@ static MYSQL_THDVAR_UINT(create_count_thdvar, 0, nullptr, nullptr, nullptr, 0,
   ha_create_table() in handle.cc
 */
 
-int ha_lineairdb::create(const char* name, TABLE*, HA_CREATE_INFO*,
-                         dd::Table*) {
+int ha_lineairdb::create(const char *, TABLE *, HA_CREATE_INFO *,
+                         dd::Table *) {
   DBUG_TRACE;
 
   return 0;
@@ -815,17 +864,17 @@ std::string ha_lineairdb::get_primary_key_from_row() {
 
   std::string pk{""};
   pk.append("table-");
-  const auto& table_name = table->s->table_name;
+  const auto &table_name = table->s->table_name;
   pk.append(table_name.str, table_name.length);
 
   pk.append("-key-");
   if (is_primary_key_exists) {
     assert(max_supported_key_parts() ==
            1);  // now we assume that there is no composite index
-    my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+    my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
     String b;
-    for (Field** field = table->field; *field; field++) {
-      auto* f = *field;
+    for (Field **field = table->field; *field; field++) {
+      auto *f = *field;
       if (f->m_indexed) {  // it is the key column
 
         (*field)->val_str(&b, &b);
@@ -835,10 +884,10 @@ std::string ha_lineairdb::get_primary_key_from_row() {
     }
     tmp_restore_column_map(table->read_set, org_bitmap);
   } else {
-    const auto cstr       = table->s->table_name;
+    const auto cstr = table->s->table_name;
     const auto table_name = std::string(cstr.str, cstr.length);
-    auto inserted_count   = auto_generated_keys_[table_name]++;
-    pk.append(std::to_string(inserted_count);
+    auto inserted_count = auto_generated_keys_[table_name]++;
+    pk.append(std::to_string(inserted_count));
   }
   return pk;
 }
@@ -847,15 +896,15 @@ int ha_lineairdb::encode_query() {
   char attribute_buffer[1024];
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
-  my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
   buffer.length(0);
 
-  for (Field** field = table->field; *field; field++) {
-    const char* p;
-    const char* end;
+  for (Field **field = table->field; *field; field++) {
+    const char *p;
+    const char *end;
 
     (*field)->val_str(&attribute, &attribute);
-    p   = attribute.ptr();
+    p = attribute.ptr();
     end = p + attribute.length();
 
     buffer.append('"');
@@ -881,14 +930,14 @@ struct lineairdb_vars_t {
 struct st_mysql_storage_engine lineairdb_storage_engine = {
     MYSQL_HANDLERTON_INTERFACE_VERSION};
 
-static ulong srv_enum_var               = 0;
-static ulong srv_ulong_var              = 0;
-static double srv_double_var            = 0;
-static int srv_signed_int_var           = 0;
-static long srv_signed_long_var         = 0;
+static ulong srv_enum_var = 0;
+static ulong srv_ulong_var = 0;
+static double srv_double_var = 0;
+static int srv_signed_int_var = 0;
+static long srv_signed_long_var = 0;
 static longlong srv_signed_longlong_var = 0;
 
-const char* enum_var_names[] = {"e1", "e2", NullS};
+const char *enum_var_names[] = {"e1", "e2", NullS};
 
 TYPELIB enum_var_typelib = {array_elements(enum_var_names) - 1,
                             "enum_var_typelib", enum_var_names, nullptr};
@@ -938,7 +987,7 @@ static MYSQL_THDVAR_LONGLONG(signed_longlong_thdvar, PLUGIN_VAR_RQCMDARG,
                              "LLONG_MIN..LLONG_MAX", nullptr, nullptr, -10,
                              LLONG_MIN, LLONG_MAX, 0);
 
-static SYS_VAR* lineairdb_system_variables[] = {
+static SYS_VAR *lineairdb_system_variables[] = {
     MYSQL_SYSVAR(enum_var),
     MYSQL_SYSVAR(ulong_var),
     MYSQL_SYSVAR(double_var),
@@ -954,8 +1003,8 @@ static SYS_VAR* lineairdb_system_variables[] = {
     nullptr};
 
 // this is an lineairdb of SHOW_FUNC
-static int show_func_lineairdb(MYSQL_THD, SHOW_VAR* var, char* buf) {
-  var->type  = SHOW_CHAR;
+static int show_func_lineairdb(MYSQL_THD, SHOW_VAR *var, char *buf) {
+  var->type = SHOW_CHAR;
   var->value = buf;  // it's of SHOW_VAR_FUNC_BUFF_SIZE bytes
   snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
            "enum_var is %lu, ulong_var is %lu, "
@@ -970,26 +1019,26 @@ lineairdb_vars_t lineairdb_vars = {100,  20.01, "three hundred",
                                    true, false, 8250};
 
 static SHOW_VAR show_status_lineairdb[] = {
-    {"var1", (char*)&lineairdb_vars.var1, SHOW_LONG, SHOW_SCOPE_GLOBAL},
-    {"var2", (char*)&lineairdb_vars.var2, SHOW_DOUBLE, SHOW_SCOPE_GLOBAL},
+    {"var1", (char *)&lineairdb_vars.var1, SHOW_LONG, SHOW_SCOPE_GLOBAL},
+    {"var2", (char *)&lineairdb_vars.var2, SHOW_DOUBLE, SHOW_SCOPE_GLOBAL},
     {nullptr, nullptr, SHOW_UNDEF,
      SHOW_SCOPE_UNDEF}  // null terminator required
 };
 
 static SHOW_VAR show_array_lineairdb[] = {
-    {"array", (char*)show_status_lineairdb, SHOW_ARRAY, SHOW_SCOPE_GLOBAL},
-    {"var3", (char*)&lineairdb_vars.var3, SHOW_CHAR, SHOW_SCOPE_GLOBAL},
-    {"var4", (char*)&lineairdb_vars.var4, SHOW_BOOL, SHOW_SCOPE_GLOBAL},
+    {"array", (char *)show_status_lineairdb, SHOW_ARRAY, SHOW_SCOPE_GLOBAL},
+    {"var3", (char *)&lineairdb_vars.var3, SHOW_CHAR, SHOW_SCOPE_GLOBAL},
+    {"var4", (char *)&lineairdb_vars.var4, SHOW_BOOL, SHOW_SCOPE_GLOBAL},
     {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
 
 static SHOW_VAR func_status[] = {
-    {"lineairdb_func_lineairdb", (char*)show_func_lineairdb, SHOW_FUNC,
+    {"lineairdb_func_lineairdb", (char *)show_func_lineairdb, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status_var5", (char*)&lineairdb_vars.var5, SHOW_BOOL,
+    {"lineairdb_status_var5", (char *)&lineairdb_vars.var5, SHOW_BOOL,
      SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status_var6", (char*)&lineairdb_vars.var6, SHOW_LONG,
+    {"lineairdb_status_var6", (char *)&lineairdb_vars.var6, SHOW_LONG,
      SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status", (char*)show_array_lineairdb, SHOW_ARRAY,
+    {"lineairdb_status", (char *)show_array_lineairdb, SHOW_ARRAY,
      SHOW_SCOPE_GLOBAL},
     {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
 
@@ -1009,12 +1058,3 @@ mysql_declare_plugin(lineairdb){
     nullptr,                    /* config options */
     0,                          /* flags */
 } mysql_declare_plugin_end;
-"LineairDB storage engine", PLUGIN_LICENSE_GPL,
-    lineairdb_init_func,           /* Plugin Init */
-    nullptr,                       /* Plugin check uninstall */
-    0x0001 /* 0.1 */, func_status, /* status variables */
-    lineairdb_system_variables,    /* system variables */
-    nullptr,                       /* config options */
-    0,                             /* flags */
-}
-mysql_declare_plugin_end;
