@@ -404,6 +404,7 @@ int ha_lineairdb::rnd_init(bool) {
   auto &tx = get_db()->BeginTransaction();
   tx.Scan("", "bob", [&](auto key, auto) { 
     keys.push_back(std::string(key)); 
+    return true;
   });
   // const std::optional<size_t> Scan(
   //     const std::string_view begin, const std::string_view end,
