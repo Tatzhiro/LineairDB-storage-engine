@@ -398,22 +398,16 @@ int ha_lineairdb::index_last(uchar *) {
 */
 int ha_lineairdb::rnd_init(bool) {
   DBUG_ENTER("ha_lineairdb::rnd_init");
-
   LineairDB::TxStatus status;
+  keys.clear();
   current_position = 0;
   stats.records = 0;
   auto &tx = get_db()->BeginTransaction();
-  tx.Scan("", "bob", [&](auto key, auto) { 
-    keys.push_back(std::string(key)); 
+  tx.Scan("", "ZZZZZZZZZZZZZZZZ", [&](auto key, auto) { 
+    keys.push_back(std::string(key));
     return true;
   });
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-  // const std::optional<size_t> Scan(
-  //     const std::string_view begin, const std::string_view end,
-  //     std::function<bool(std::string_view,
-  //                        const std::pair<const void*, const size_t>)>
-  //         operation);
-
   DBUG_RETURN(0);
 }
 
@@ -542,21 +536,20 @@ int ha_lineairdb::rnd_next(uchar *) {
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
   Field **field = table->field;
 
+  if(keys.size() == 0) return HA_ERR_END_OF_FILE;
+  
   auto &tx = get_db()->BeginTransaction();
   auto &key = keys[current_position];
   auto read_buffer = tx.Read(key);
+
   if (read_buffer.first == nullptr) {
     get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-    return 1;
+    return HA_ERR_END_OF_FILE;
   }
 
   /* Avoid asserts in ::store() for columns that are not going to be updated
    */
   my_bitmap_map *org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
-  // if (!bytes_read || bytes_read == MY_FILE_ERROR) {
-  //   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
-  //   DBUG_RETURN(HA_ERR_END_OF_FILE);
-  // }
   std::byte *p = nullptr;
   memcpy(p, read_buffer.first, read_buffer.second);
   std::byte *buf_end = p + read_buffer.second;
