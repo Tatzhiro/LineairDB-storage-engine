@@ -121,7 +121,8 @@ LineairDB_share::LineairDB_share() {
   if (lineairdb_ == nullptr) {
     LineairDB::Config conf;
     conf.enable_checkpointing = false;
-    conf.max_thread = 0;
+    conf.enable_recovery = false;
+    conf.max_thread = 1;
     lineairdb_.reset(new LineairDB::Database(conf));
   }
 }
@@ -287,6 +288,10 @@ int ha_lineairdb::write_row(uchar *) {
   tx.Write(primary_key, reinterpret_cast<std::byte *>(buffer.ptr()),
            buffer.length());
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->Fence();
+  get_db()->Fence();
+  get_db()->Fence();
+  get_db()->Fence();
   return 0;
 }
 
@@ -403,9 +408,9 @@ int ha_lineairdb::rnd_init(bool) {
   current_position = 0;
   stats.records = 0;
   auto &tx = get_db()->BeginTransaction();
-  tx.Scan("", "ZZZZZZZZZZZZZZZZ", [&](auto key, auto) { 
+  tx.Scan("", std::nullopt, [&](auto key, auto) { 
     keys.push_back(std::string(key));
-    return true;
+    return false;
   });
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   DBUG_RETURN(0);
@@ -536,7 +541,8 @@ int ha_lineairdb::rnd_next(uchar *) {
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
   Field **field = table->field;
 
-  if(keys.size() == 0) return HA_ERR_END_OF_FILE;
+  if(keys.size() == 0) DBUG_RETURN(1);
+  if(current_position == keys.size()) DBUG_RETURN(HA_ERR_END_OF_FILE);
   
   auto &tx = get_db()->BeginTransaction();
   auto &key = keys[current_position];
@@ -544,13 +550,14 @@ int ha_lineairdb::rnd_next(uchar *) {
 
   if (read_buffer.first == nullptr) {
     get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-    return HA_ERR_END_OF_FILE;
+    DBUG_RETURN(1);
   }
 
+  printf("%s\n", read_buffer.first);
   /* Avoid asserts in ::store() for columns that are not going to be updated
    */
   my_bitmap_map *org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
-  std::byte *p = nullptr;
+  std::byte *p = (std::byte *)malloc(read_buffer.second);
   memcpy(p, read_buffer.first, read_buffer.second);
   std::byte *buf_end = p + read_buffer.second;
   for (; p < buf_end;) {
@@ -576,11 +583,13 @@ int ha_lineairdb::rnd_next(uchar *) {
   // int rc = find_current_row(buf);
 
   // if (!rc) stats.records++;
-
-  // DBUG_RETURN(rc);
+  // printf("%s\n", buffer.ptr());
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  // free(p);
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
-  return 0;
+  current_position++;
+  DBUG_RETURN(0);
+  // return 0;
 }
 
 /**
