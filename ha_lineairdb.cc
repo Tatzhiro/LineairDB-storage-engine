@@ -287,6 +287,7 @@ int ha_lineairdb::write_row(uchar *) {
   encode_query();
   tx.Write(primary_key, reinterpret_cast<std::byte *>(buffer.ptr()),
            buffer.length());
+  buffer.length(0);
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   get_db()->Fence();
   get_db()->Fence();
@@ -407,6 +408,7 @@ int ha_lineairdb::rnd_init(bool) {
   keys.clear();
   current_position = 0;
   stats.records = 0;
+  buffer.length(0);
   auto &tx = get_db()->BeginTransaction();
   tx.Scan("", std::nullopt, [&](auto key, auto) { 
     keys.push_back(std::string(key));
@@ -541,7 +543,7 @@ int ha_lineairdb::rnd_next(uchar *) {
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
   Field **field = table->field;
 
-  if(keys.size() == 0) DBUG_RETURN(1);
+  if(keys.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);
   if(current_position == keys.size()) DBUG_RETURN(HA_ERR_END_OF_FILE);
   
   auto &tx = get_db()->BeginTransaction();
@@ -564,6 +566,8 @@ int ha_lineairdb::rnd_next(uchar *) {
     uchar c = *reinterpret_cast<uchar* >(p);
     bool is_end_of_field = 0;
     switch (c) {
+      case '\"':
+        break;
       case ',':
         is_end_of_field = 1;
         break;
@@ -579,7 +583,10 @@ int ha_lineairdb::rnd_next(uchar *) {
     }
     p++;
   }
-
+  (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
+            CHECK_FIELD_WARN);
+  buffer.length(0);
+    
   // int rc = find_current_row(buf);
 
   // if (!rc) stats.records++;
