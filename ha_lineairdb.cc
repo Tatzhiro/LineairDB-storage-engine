@@ -537,7 +537,7 @@ int ha_lineairdb::find_current_row(uchar *buf) {
 }
 
 // assumption: takes 1 row
-int ha_lineairdb::rnd_next(uchar *) {
+int ha_lineairdb::rnd_next(uchar *buf) {
   DBUG_ENTER("ha_lineairdb::rnd_next");
   LineairDB::TxStatus status;
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
@@ -559,6 +559,8 @@ int ha_lineairdb::rnd_next(uchar *) {
   /* Avoid asserts in ::store() for columns that are not going to be updated
    */
   my_bitmap_map *org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+  memset(buf, 0, table->s->null_bytes);
+  
   std::byte *p = (std::byte *)malloc(read_buffer.second);
   memcpy(p, read_buffer.first, read_buffer.second);
   std::byte *buf_end = p + read_buffer.second;
