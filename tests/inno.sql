@@ -6,7 +6,7 @@ CREATE TABLE ha_lineairdb_test.items (
     content TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX title_idx (title)
-) ENGINE = LineairDB;
+) ENGINE = innodb;
 
 INSERT INTO ha_lineairdb_test.items (
     title, content
