@@ -95,6 +95,7 @@
 #include "storage/lineairdb/ha_lineairdb.h"
 
 #include <iostream>
+#include <bitset>
 
 #include "my_dbug.h"
 #include "mysql/plugin.h"
@@ -105,6 +106,7 @@
 #include "typelib.h"
 
 #define INPLACE_UPDATE
+#define BYTE_BIT_NUMBER (8)
 
 static handler *lineairdb_create_handler(handlerton *hton, TABLE_SHARE *table,
                                          bool partitioned, MEM_ROOT *mem_root);
@@ -559,9 +561,20 @@ int ha_lineairdb::rnd_next(uchar *buf) {
   /* Avoid asserts in ::store() for columns that are not going to be updated
    */
   my_bitmap_map *org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
-  memset(buf, 0, table->s->null_bytes);
-  
+  /* nullBit is used to manipulate the nullbit in buf parameter
+  for each 8 potentially null columns, buf holds 1 byte flag at the front
+  the number of null flag bytes in buf is shown in table->s->nullbytes
+  the flag is originally set to 0xff, or b11111111
+  if you want to make the first potentially null column to show a non-null value, store 0xfe, or b11111110, in buf
+  */
+  std::bitset<BYTE_BIT_NUMBER> nullBit(0xff);
+  /* index to store the null flag */
+  int null_byte_cnt = 0;
+  /* index to store the bit wihtin a flag */
+  int clm_cnt = 0;
   std::byte *p = (std::byte *)malloc(read_buffer.second);
+  std::byte *inital_p = p;
+
   memcpy(p, read_buffer.first, read_buffer.second);
   std::byte *buf_end = p + read_buffer.second;
   for (; p < buf_end;) {
@@ -579,7 +592,20 @@ int ha_lineairdb::rnd_next(uchar *buf) {
     }
     if (is_end_of_field && *field) {
       (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
-                      CHECK_FIELD_WARN);
+                    CHECK_FIELD_WARN);
+      if ((*field)->is_nullable())  {
+        if (buffer.length()) {
+          nullBit.flip(clm_cnt);
+        }
+        clm_cnt++;
+        if (clm_cnt == BYTE_BIT_NUMBER) {
+          uchar mask = nullBit.to_ulong();
+          memcpy(&buf[null_byte_cnt], &mask, 1);
+          null_byte_cnt++;
+          clm_cnt = 0;
+          nullBit.set();
+        }
+      }
       field++;
       buffer.length(0);
     }
@@ -587,14 +613,19 @@ int ha_lineairdb::rnd_next(uchar *buf) {
   }
   (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
             CHECK_FIELD_WARN);
+  if ((*field)->is_nullable())  {
+    if (buffer.length()) {
+      nullBit.flip(clm_cnt);
+    }
+    clm_cnt++;
+  }
   buffer.length(0);
-    
-  // int rc = find_current_row(buf);
+  uchar mask = nullBit.to_ulong();
+  memcpy(&buf[null_byte_cnt], &mask, 1);
 
-  // if (!rc) stats.records++;
-  // printf("%s\n", buffer.ptr());
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-  // free(p);
+  p = inital_p;
+  free(p);
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
   current_position++;
   DBUG_RETURN(0);
