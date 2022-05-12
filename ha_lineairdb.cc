@@ -573,7 +573,7 @@ int ha_lineairdb::rnd_next(uchar *buf) {
   /* index to store the bit wihtin a flag */
   int clm_cnt = 0;
   std::byte *p = (std::byte *)malloc(read_buffer.second);
-  std::byte *inital_p = p;
+  const std::byte * const init_p = p;
 
   memcpy(p, read_buffer.first, read_buffer.second);
   std::byte *buf_end = p + read_buffer.second;
@@ -624,8 +624,7 @@ int ha_lineairdb::rnd_next(uchar *buf) {
   memcpy(&buf[null_byte_cnt], &mask, 1);
 
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-  p = inital_p;
-  free(p);
+  free((void *)init_p);
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
   current_position++;
   DBUG_RETURN(0);
