@@ -1,0 +1,50 @@
+name: Makefile CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+#     - uses: actions/checkout@v3
+    
+#     - name: configure
+#       run: ./configure
+      
+#     - name: Install dependencies
+#       run: make
+      
+#     - name: Run check
+#       run: make check
+      
+#     - name: Run distcheck
+#       run: make distcheck
+
+    - name: Install BATS
+      run: npm install -g bats
+      
+    - name: Clone MySQL-server
+      run: 
+        git clone github.com/mysql-server.git
+        
+    - name: Build MySQL-server
+      run:
+        ln -s LineairDB-storage-engine mysql-server/storage/lineairdb
+        mkdir -p mysql-server/build; cd $_
+        cmake ..
+        make -j 8 || make -j 6 || make -j 4 || make
+        
+    - name: MySQL initialization and start server
+      run:
+        bin/mysqld --initialize --basedir=$(pwd) --datadir=$(pwd)/data 
+        bin/mysqld
+        
+    - name: BATS test
+      run:
+        bats ../storage/lineairdb/tests/test.bats
