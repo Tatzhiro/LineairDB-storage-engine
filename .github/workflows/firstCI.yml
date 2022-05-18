@@ -33,11 +33,18 @@ jobs:
       run: 
         git clone https://github.com/mysql/mysql-server.git
         
-    - name: Build MySQL-server
+    - name: Set symbolic link in MySQL-server
       run:
         ln -s LineairDB-storage-engine mysql-server/storage/lineairdb
-        mkdir mysql-server/build; cd $_
+    - name: Make build directory
+      run:
+        mkdir mysql-server/build
+        cd $_
+    - name: CMake
+      run:
         cmake ..
+    - name: Make
+      run:
         make -j 8 || make -j 6 || make -j 4 || make
         
     - name: MySQL initialization and start server
