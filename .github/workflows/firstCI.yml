@@ -39,7 +39,7 @@ jobs:
     - name: Make build directory
       run:
         mkdir mysql-server/build
-        cd $_
+        cd mysql-server/build
     - name: CMake
       run:
         cmake ..
