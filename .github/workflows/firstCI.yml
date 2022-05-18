@@ -41,7 +41,7 @@ jobs:
         mkdir mysql-server/build
     - name: CMake
         cd mysql-server/build
-        cmake .. 
+        cmake ..
         make -j 8 || make -j 6 || make -j 4 || make
         
     - name: MySQL initialization and start server
