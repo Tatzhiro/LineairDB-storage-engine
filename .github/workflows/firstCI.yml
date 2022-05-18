@@ -36,7 +36,7 @@ jobs:
     - name: Build MySQL-server
       run:
         ln -s LineairDB-storage-engine mysql-server/storage/lineairdb
-        mkdir -p mysql-server/build; cd $_
+        mkdir mysql-server/build; cd $_
         cmake ..
         make -j 8 || make -j 6 || make -j 4 || make
         
