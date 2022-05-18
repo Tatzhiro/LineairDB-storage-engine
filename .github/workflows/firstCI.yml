@@ -39,6 +39,8 @@ jobs:
     - name: Make build directory
       run:
         mkdir mysql-server/build
+    - name: Change directory
+      run:
         cd mysql-server/build
     - name: CMake
       run:
