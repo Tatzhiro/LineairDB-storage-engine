@@ -40,6 +40,7 @@ jobs:
       run:
         mkdir mysql-server/build
     - name: CMake
+      run:
         cd mysql-server/build
         cmake ..
         make -j 8 || make -j 6 || make -j 4 || make
