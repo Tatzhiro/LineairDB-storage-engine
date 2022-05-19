@@ -12,27 +12,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-#     - uses: actions/checkout@v3
-    
-#     - name: configure
-#       run: ./configure
-      
-#     - name: Install dependencies
-#       run: make
-      
-#     - name: Run check
-#       run: make check
-      
-#     - name: Run distcheck
-#       run: make distcheck
 
     - name: Install BATS
       run: npm install -g bats
-      
+
     - name: Clone MySQL-server
-      run: 
+      run:
         git clone https://github.com/mysql/mysql-server.git
-        
+
     - name: Set symbolic link in MySQL-server
       run:
         ln -s LineairDB-storage-engine mysql-server/storage/lineairdb
@@ -44,8 +31,5 @@ jobs:
         cd mysql-server/build;
         cmake .. -DWITH_DEBUG=ON -DDOWNLOAD_BOOST=ON -DWITH_BOOST=../boost;
         make -j 8 || make -j 6 || make -j 4 || make;
-        bin/mysqld --initialize --basedir=$(pwd) --datadir=$(pwd)/data;
-        touch my.cnf;
-        echo "[mysqld]\nbasedir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build\ndatadir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build/data" > my.cnf
-        bin/mysqld --defaults-file=./my.cnf;
+        bin/mysqld --initialize --defaults-file=../storage/lineairdb/.github/my.cnf;
         bats ../storage/lineairdb/tests/test.bats;
