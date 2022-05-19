@@ -1,0 +1,1 @@
+SELECT * FROM ha_lineairdb_test.items;

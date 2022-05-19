@@ -16,4 +16,10 @@ INSERT INTO ha_lineairdb_test.items (
     title, content
 ) VALUES ("bob", "bob meets carol");
 
+INSERT INTO ha_lineairdb_test.items (
+    title
+) VALUES ("carol");
+
+SELECT * FROM ha_lineairdb_test.items WHERE content is NULL;
+SELECT * FROM ha_lineairdb_test.items WHERE content = "alice meets bob";
 SELECT * FROM ha_lineairdb_test.items WHERE title = "alice";
