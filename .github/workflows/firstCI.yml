@@ -39,17 +39,11 @@ jobs:
     - name: Make build directory
       run:
         mkdir mysql-server/build
-    - name: CMake
+    - name: CMake, MySQL initialization and start server
       run:
         cd mysql-server/build;
         cmake .. -DWITH_DEBUG=ON -DDOWNLOAD_BOOST=ON -DWITH_BOOST=../boost;
         make -j 8 || make -j 6 || make -j 4 || make;
-        
-    - name: MySQL initialization and start server
-      run:
         bin/mysqld --initialize --basedir=$(pwd) --datadir=$(pwd)/data;
         bin/mysqld;
-        
-    - name: BATS test
-      run:
-        bats ../storage/lineairdb/tests/test.bats
+        bats ../storage/lineairdb/tests/test.bats;
