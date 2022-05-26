@@ -338,11 +338,76 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*, key_part_map,
   const bool key_type_is_supported_by_lineairdb = true;
 
   // TODO: specify the key type
-
+  auto primary_key = get_primary_key_from_row();
   if (key_type_is_supported_by_lineairdb) {
     // TODO: set the cursor into the first record.
     // TODO: set the record into uchar* (1st arguments).
+    LineairDB::TxStatus status;
+    ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
+    Field** field = table->field;
+    auto& tx         = get_db()->BeginTransaction();
+    auto read_buffer = tx.Read(primary_key);
+    if (read_buffer.first == nullptr) {
+      get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+      return HA_ERR_END_OF_FILE;
+    }
+    my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+    std::bitset<BYTE_BIT_NUMBER> nullBit(0xff);
+    /* index to store the null flag */
+    int null_byte_cnt = 0;
+    /* index to store the bit wihtin a flag */
+    int clm_cnt                   = 0;
+    std::byte* p                  = (std::byte*)malloc(read_buffer.second);
+    const std::byte* const init_p = p;
 
+    memcpy(p, read_buffer.first, read_buffer.second);
+    std::byte* buf_end = p + read_buffer.second;
+    buffer.length(0);
+    for (; p < buf_end;) {
+      uchar c              = *reinterpret_cast<uchar*>(p);
+      bool is_end_of_field = 0;
+      switch (c) {
+        case '\"':
+          break;
+        case ',':
+          is_end_of_field = 1;
+          break;
+        default:
+          buffer.append(c);
+          break;
+      }
+      if (is_end_of_field && *field) {
+        (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
+                        CHECK_FIELD_WARN);
+        if ((*field)->is_nullable()) {
+          if (buffer.length()) { nullBit.flip(clm_cnt); }
+          clm_cnt++;
+          if (clm_cnt == BYTE_BIT_NUMBER) {
+            uchar mask = nullBit.to_ulong();
+            memcpy(&buf[null_byte_cnt], &mask, 1);
+            null_byte_cnt++;
+            clm_cnt = 0;
+            nullBit.set();
+          }
+        }
+        field++;
+        buffer.length(0);
+      }
+      p++;
+    }
+    (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
+                    CHECK_FIELD_WARN);
+    if ((*field)->is_nullable()) {
+      if (buffer.length()) { nullBit.flip(clm_cnt); }
+      clm_cnt++;
+    }
+    buffer.length(0);
+    uchar mask = nullBit.to_ulong();
+    memcpy(&buf[null_byte_cnt], &mask, 1);
+
+    get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+    free((void*)init_p);
+    dbug_tmp_restore_column_map(table->write_set, org_bitmap);
     return 0;
   } else {
     return HA_ERR_WRONG_COMMAND;
@@ -358,7 +423,7 @@ int ha_lineairdb::index_next(uchar*) {
   int rc;
   DBUG_TRACE;
   rc = HA_ERR_WRONG_COMMAND;
-  return rc;
+  return HA_ERR_END_OF_FILE;
 }
 
 /**
