@@ -6,6 +6,9 @@ exec_sql() {
 }
 
 setup() {
+    # TODO: initialize MySQL data files and restart mysqld daemon
+    # TODO: mysql may use caching and thus all testcases need to execute twice or more
+
     # drop and create database
     exec_sql reset.sql
     # insert initial data with PK "alice" and "bob"
@@ -29,6 +32,5 @@ teardown() {
 }
 
 @test "SELECT with WHERE clause" {
-    skip "WHERE clause is not implemented yet. WANTFIX!"
     exec_sql where.sql
 }

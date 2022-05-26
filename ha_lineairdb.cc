@@ -337,21 +337,19 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*, key_part_map,
   // "this key type is unsupported".
   const bool key_type_is_supported_by_lineairdb = true;
 
-  // TODO: specify the key type
   auto primary_key = get_primary_key_from_row();
   if (key_type_is_supported_by_lineairdb) {
-    // TODO: set the cursor into the first record.
-    // TODO: set the record into uchar* (1st arguments).
     LineairDB::TxStatus status;
     ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
-    Field** field = table->field;
+    Field** field    = table->field;
     auto& tx         = get_db()->BeginTransaction();
     auto read_buffer = tx.Read(primary_key);
     if (read_buffer.first == nullptr) {
       get_db()->EndTransaction(tx, [&](auto s) { status = s; });
       return HA_ERR_END_OF_FILE;
     }
-    my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+    my_bitmap_map* org_bitmap =
+        dbug_tmp_use_all_columns(table, table->write_set);
     std::bitset<BYTE_BIT_NUMBER> nullBit(0xff);
     /* index to store the null flag */
     int null_byte_cnt = 0;
