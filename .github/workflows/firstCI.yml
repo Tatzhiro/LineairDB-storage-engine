@@ -9,7 +9,7 @@ on:
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: macos-11
 
     steps:
 #     - uses: actions/checkout@v3
@@ -44,7 +44,7 @@ jobs:
         cd mysql-server/build;
         mkdir data;
         cmake .. -DWITH_DEBUG=ON -DDOWNLOAD_BOOST=ON -DWITH_BOOST=../boost;
-        make;
+        make -j 3;
         bin/mysqld --initialize --basedir=$(pwd) --datadir=$(pwd)/data;
         touch my.cnf;
         echo "[mysqld]\nbasedir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build\ndatadir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build/data" > my.cnf;
