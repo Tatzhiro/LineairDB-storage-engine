@@ -624,6 +624,7 @@ int ha_lineairdb::rnd_next(uchar* buf) {
   Field** field = table->field;
 
   if (keys.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);
+read_from_lineairdb:
   if (current_position == keys.size()) DBUG_RETURN(HA_ERR_END_OF_FILE);
 
   auto& tx         = get_db()->BeginTransaction();
@@ -632,7 +633,8 @@ int ha_lineairdb::rnd_next(uchar* buf) {
 
   if (read_buffer.first == nullptr) {
     get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-    DBUG_RETURN(1);
+    current_position++;
+    goto read_from_lineairdb;
   }
 
   printf("%s\n", read_buffer.first);
