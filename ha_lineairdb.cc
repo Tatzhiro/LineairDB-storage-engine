@@ -143,8 +143,6 @@ static int lineairdb_init_func(void* p) {
   return 0;
 }
 
-static const char* ha_lineairdb_exts[] = {".CSV", NullS};
-
 /**
   @brief
   Example of simple lock controls. The "share" it creates is a
@@ -291,10 +289,13 @@ int ha_lineairdb::write_row(uchar*) {
            buffer.length());
   buffer.length(0);
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+/*
+  // NOTE: NOT SURE IF WE NEED THESE
   get_db()->Fence();
   get_db()->Fence();
   get_db()->Fence();
   get_db()->Fence();
+*/
   return 0;
 }
 
@@ -338,74 +339,19 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*, key_part_map,
   const bool key_type_is_supported_by_lineairdb = true;
 
   auto primary_key = get_primary_key_from_row();
+  LineairDB::TxStatus status;
+  stats.records    = 0;
+  buffer.length(0);
+
   if (key_type_is_supported_by_lineairdb) {
-    LineairDB::TxStatus status;
-    ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
-    Field** field    = table->field;
     auto& tx         = get_db()->BeginTransaction();
     auto read_buffer = tx.Read(primary_key);
     if (read_buffer.first == nullptr) {
       get_db()->EndTransaction(tx, [&](auto s) { status = s; });
       return HA_ERR_END_OF_FILE;
     }
-    my_bitmap_map* org_bitmap =
-        dbug_tmp_use_all_columns(table, table->write_set);
-    std::bitset<BYTE_BIT_NUMBER> nullBit(0xff);
-    /* index to store the null flag */
-    int null_byte_cnt = 0;
-    /* index to store the bit wihtin a flag */
-    int clm_cnt                   = 0;
-    std::byte* p                  = (std::byte*)malloc(read_buffer.second);
-    const std::byte* const init_p = p;
-
-    memcpy(p, read_buffer.first, read_buffer.second);
-    std::byte* buf_end = p + read_buffer.second;
-    buffer.length(0);
-    for (; p < buf_end;) {
-      uchar c              = *reinterpret_cast<uchar*>(p);
-      bool is_end_of_field = 0;
-      switch (c) {
-        case '\"':
-          break;
-        case ',':
-          is_end_of_field = 1;
-          break;
-        default:
-          buffer.append(c);
-          break;
-      }
-      if (is_end_of_field && *field) {
-        (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
-                        CHECK_FIELD_WARN);
-        if ((*field)->is_nullable()) {
-          if (buffer.length()) { nullBit.flip(clm_cnt); }
-          clm_cnt++;
-          if (clm_cnt == BYTE_BIT_NUMBER) {
-            uchar mask = nullBit.to_ulong();
-            memcpy(&buf[null_byte_cnt], &mask, 1);
-            null_byte_cnt++;
-            clm_cnt = 0;
-            nullBit.set();
-          }
-        }
-        field++;
-        buffer.length(0);
-      }
-      p++;
-    }
-    (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
-                    CHECK_FIELD_WARN);
-    if ((*field)->is_nullable()) {
-      if (buffer.length()) { nullBit.flip(clm_cnt); }
-      clm_cnt++;
-    }
-    buffer.length(0);
-    uchar mask = nullBit.to_ulong();
-    memcpy(&buf[null_byte_cnt], &mask, 1);
-
+    store_read_result_in_field(buf, read_buffer.first, read_buffer.second);
     get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-    free((void*)init_p);
-    dbug_tmp_restore_column_map(table->write_set, org_bitmap);
     return 0;
   } else {
     return HA_ERR_WRONG_COMMAND;
@@ -521,123 +467,8 @@ int ha_lineairdb::rnd_end() {
   sql_update.cc
 */
 
-int ha_lineairdb::find_current_row(uchar* buf) {
-  DBUG_ENTER("ha_lineairdb::find_current_row");
-
-  my_off_t cur_pos = current_position;
-
-  /*
-     We will use this to iterate through the array of
-     table field pointers to store the parsed data in the right
-     place and the right format.
-   */
+void ha_lineairdb::store_read_result_in_field(uchar* buf, const std::byte * const read_buf, const size_t read_buf_size) {
   Field** field = table->field;
-
-  /* How many bytes we have seen so far in this line. */
-  int bytes_parsed = 0;
-
-  /* Loop breaker flag. */
-  int line_read_done = 0;
-
-  buffer.length(0);
-
-  /* Avoid asserts in ::store() for columns that are not going to be updated
-   */
-  my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
-
-  /* Initialize the NULL indicator flags in the record. */
-  memset(buf, 0, table->s->null_bytes);
-
-  for (; !line_read_done;) {
-    uchar linebuf[IO_SIZE];
-
-    size_t bytes_read =
-        my_pread(data_file, linebuf, sizeof(linebuf), cur_pos, MYF(MY_WME));
-
-    if (!bytes_read || bytes_read == MY_FILE_ERROR) {
-      dbug_tmp_restore_column_map(table->write_set, org_bitmap);
-      DBUG_RETURN(HA_ERR_END_OF_FILE);
-    }
-
-    uchar* p       = linebuf;
-    uchar* buf_end = linebuf + bytes_read;
-
-    for (; p < buf_end;) {
-      uchar c          = *p;
-      int end_of_field = 0;
-      int end_of_line  = 0;
-
-      switch (c) {
-        case ',':
-          end_of_field = 1;
-          break;
-
-        case '\r':
-        case '\n':
-          end_of_line  = 1;
-          end_of_field = 1;
-          break;
-
-        default:
-          buffer.append(c);
-          break;
-      }
-
-      if (end_of_field && *field) {
-        (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
-                        CHECK_FIELD_WARN);
-        field++;
-        buffer.length(0);
-      }
-
-      p++;
-
-      if (end_of_line) {
-        if (c == '\r') p++;
-        line_read_done = 1;
-        break;
-      }
-    }
-
-    bytes_parsed += (p - linebuf);
-    cur_pos += bytes_read;
-  }
-
-  /*
-    The parsed line may not have had the values of all of the fields.
-    Set the remaining fields to their default values.
-   */
-  for (; *field; field++) { (*field)->set_default(); }
-
-  /* Move the cursor to the next record. */
-  current_position += bytes_parsed;
-
-  dbug_tmp_restore_column_map(table->write_set, org_bitmap);
-  DBUG_RETURN(0);
-}
-
-// assumption: takes 1 row
-int ha_lineairdb::rnd_next(uchar* buf) {
-  DBUG_ENTER("ha_lineairdb::rnd_next");
-  LineairDB::TxStatus status;
-  ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
-  Field** field = table->field;
-
-  if (keys.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);
-read_from_lineairdb:
-  if (current_position == keys.size()) DBUG_RETURN(HA_ERR_END_OF_FILE);
-
-  auto& tx         = get_db()->BeginTransaction();
-  auto& key        = keys[current_position];
-  auto read_buffer = tx.Read(key);
-
-  if (read_buffer.first == nullptr) {
-    get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-    current_position++;
-    goto read_from_lineairdb;
-  }
-
-  printf("%s\n", read_buffer.first);
   /* Avoid asserts in ::store() for columns that are not going to be updated
    */
   my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
@@ -653,11 +484,11 @@ read_from_lineairdb:
   int null_byte_cnt = 0;
   /* index to store the bit wihtin a flag */
   int clm_cnt                   = 0;
-  std::byte* p                  = (std::byte*)malloc(read_buffer.second);
+  std::byte* p                  = (std::byte*)malloc(read_buf_size);
   const std::byte* const init_p = p;
 
-  memcpy(p, read_buffer.first, read_buffer.second);
-  std::byte* buf_end = p + read_buffer.second;
+  memcpy(p, read_buf, read_buf_size);
+  std::byte* buf_end = p + read_buf_size;
   for (; p < buf_end;) {
     uchar c              = *reinterpret_cast<uchar*>(p);
     bool is_end_of_field = 0;
@@ -700,9 +531,31 @@ read_from_lineairdb:
   uchar mask = nullBit.to_ulong();
   memcpy(&buf[null_byte_cnt], &mask, 1);
 
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   free((void*)init_p);
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
+}
+
+// assumption: takes 1 row
+int ha_lineairdb::rnd_next(uchar* buf) {
+  DBUG_ENTER("ha_lineairdb::rnd_next");
+  LineairDB::TxStatus status;
+  ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
+
+  if (keys.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);
+read_from_lineairdb:
+  if (current_position == keys.size()) DBUG_RETURN(HA_ERR_END_OF_FILE);
+
+  auto& tx         = get_db()->BeginTransaction();
+  auto& key        = keys[current_position];
+  auto read_buffer = tx.Read(key);
+
+  if (read_buffer.first == nullptr) {
+    get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+    current_position++;
+    goto read_from_lineairdb;
+  }
+  store_read_result_in_field(buf, read_buffer.first, read_buffer.second);
+  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   current_position++;
   DBUG_RETURN(0);
   // return 0;
