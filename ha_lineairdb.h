@@ -248,7 +248,7 @@ class ha_lineairdb : public handler {
   */
   int rnd_init(bool scan) override;  // required
   int rnd_end() override;
-  int find_current_row(uchar* buf);
+  void store_read_result_in_field(uchar* buf, const std::byte * const read_buf, const size_t read_buf_size);
   int rnd_next(uchar* buf) override;             ///< required
   int rnd_pos(uchar* buf, uchar* pos) override;  ///< required
   void position(const uchar* record) override;   ///< required
