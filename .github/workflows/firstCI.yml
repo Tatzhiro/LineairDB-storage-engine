@@ -12,41 +12,21 @@ jobs:
     runs-on: macos-11
 
     steps:
-#     - uses: actions/checkout@v3
-    
-#     - name: configure
-#       run: ./configure
-      
-#     - name: Install dependencies
-#       run: make
-      
-#     - name: Run check
-#       run: make check
-      
-#     - name: Run distcheck
-#       run: make distcheck
-
-    - name: Install BATS
-      run: npm install -g bats
-      
-    - name: Clone MySQL-server
-      run: 
-        git clone https://github.com/mysql/mysql-server.git
-        
-    - name: Set symbolic link in MySQL-server
-      run:
-        ln -s LineairDB-storage-engine mysql-server/storage/lineairdb
-    - name: Make build directory
-      run:
-        mkdir mysql-server/build
-    - name: CMake, MySQL initialization and start server
-      run:
-        cd mysql-server/build;
-        mkdir data;
-        cmake .. -DWITH_DEBUG=ON -DDOWNLOAD_BOOST=ON -DWITH_BOOST=../boost;
-        make -j 3;
-        bin/mysqld --initialize --basedir=$(pwd) --datadir=$(pwd)/data;
-        touch my.cnf;
-        echo "[mysqld]\nbasedir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build\ndatadir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build/data" > my.cnf;
+    - name: Install BATS-core and Ninja
+      run: |
+        npm install -g bats-core
+        npm install -g ninja
+    - name: Build LineairDB and MySQL-server
+      run: |
+        git clone --recursive git@github.com:Tatzhiro/LineairDB-storage-engine.git
+        cd LineairDB-storage-engine
+        ./build.sh
+    - name: MySQL initialization and start server
+      run: |
+        cd LineairDB-storage-engine/build
+        bin/mysqld --initialize-insecure --basedir=$(pwd) --datadir=$(pwd)/data;
         bin/mysqld --defaults-file=./my.cnf --daemonize;
-        bats ../storage/lineairdb/tests/test.bats;
+    - name: BATS-core test
+      run: |
+        cd LineairDB-storage-engine/tests
+        bats test.bats
