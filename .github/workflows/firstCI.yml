@@ -15,8 +15,8 @@ jobs:
     - uses: actions/checkout@v2
       with:
         submodules: recursive
-    - name: Update submodules
-      run: git submodule update --remote --recursive 
+    - name: Clone
+      run: git clone --recursive git@github.com:Tatzhiro/LineairDB-storage-engine.git
     - name: Install BATS-core and Ninja
       run: |
         npm install -g bats
