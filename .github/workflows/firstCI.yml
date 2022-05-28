@@ -8,14 +8,12 @@ on:
 
 jobs:
   build:
-
     runs-on: macos-latest
-
     steps:
     - name: Install BATS-core and Ninja
       run: |
         npm install -g bats
-        npm install -g ninja
+        brew install ninja
     - name: submodule
       uses: actions/checkout@v2
       with:
