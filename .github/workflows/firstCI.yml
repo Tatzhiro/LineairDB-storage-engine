@@ -12,18 +12,18 @@ jobs:
     runs-on: macos-11
 
     steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: recursive
-    - name: Clone
-      run: git clone --recursive https://github.com/Tatzhiro/LineairDB-storage-engine.git
     - name: Install BATS-core and Ninja
       run: |
         npm install -g bats
         npm install -g ninja
+    - name: submodule
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+          token: ${{ secrets.PERSONAL_TOKEN }}
     - name: Build LineairDB and MySQL-server
       run: |
-        # git clone --recursive https://github.com/Tatzhiro/LineairDB-storage-engine.git
+        git clone --recursive https://github.com/Tatzhiro/LineairDB-storage-engine.git
         cd LineairDB-storage-engine
         ./build.sh
     - name: MySQL initialization and start server
