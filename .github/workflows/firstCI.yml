@@ -12,6 +12,9 @@ jobs:
     runs-on: macos-11
 
     steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: recursive
     - name: Install BATS-core and Ninja
       run: |
         npm install -g bats
