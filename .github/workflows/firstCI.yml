@@ -49,4 +49,7 @@ jobs:
         touch my.cnf;
         echo "[mysqld]\nbasedir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build\ndatadir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build/data" > my.cnf;
         bin/mysqld --defaults-file=./my.cnf;
+    - name: Bats test
+      run:
+        cd mysql-server/build
         bats ../storage/lineairdb/tests/test.bats;
