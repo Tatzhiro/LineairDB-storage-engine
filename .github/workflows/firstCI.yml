@@ -23,15 +23,11 @@ jobs:
         token: ${{ secrets.PERSONAL_TOKEN }}
     - name: Build LineairDB and MySQL-server
       run: |
-        git clone --recursive https://github.com/Tatzhiro/LineairDB-storage-engine.git
-        cd LineairDB-storage-engine
         ./build.sh
     - name: MySQL initialization and start server
       run: |
-        cd LineairDB-storage-engine/build
-        bin/mysqld --initialize-insecure --basedir=$(pwd) --datadir=$(pwd)/data;
-        bin/mysqld --defaults-file=./my.cnf --daemonize;
+        build/bin/mysqld --initialize-insecure --basedir=$(pwd) --datadir=$(pwd)/data;
+        build/bin/mysqld --defaults-file=./my.cnf --daemonize;
     - name: BATS-core test
       run: |
-        cd LineairDB-storage-engine/tests
         bats test.bats
