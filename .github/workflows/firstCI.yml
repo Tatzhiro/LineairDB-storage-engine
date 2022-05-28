@@ -16,7 +16,7 @@ jobs:
       with:
         submodules: recursive
     - name: Clone
-      run: git clone --recursive git@github.com:Tatzhiro/LineairDB-storage-engine.git
+      run: git clone --recursive https://github.com/Tatzhiro/LineairDB-storage-engine.git
     - name: Install BATS-core and Ninja
       run: |
         npm install -g bats

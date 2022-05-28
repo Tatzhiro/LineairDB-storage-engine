@@ -1,6 +1,6 @@
 [submodule "third_party/LineairDB"]
 path = third_party/LineairDB
-url = git@github.com:nikezono/LineairDB.git
+url = https://github.com/nikezono/LineairDB.git
 [submodule "third_party/mysql-server"]
 	path = third_party/mysql-server
-	url = git@github.com:mysql/mysql-server.git
+	url = https://github.com/mysql/mysql-server.git
