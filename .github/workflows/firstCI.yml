@@ -18,7 +18,7 @@ jobs:
         npm install -g ninja
     - name: Build LineairDB and MySQL-server
       run: |
-        git clone --recursive git@github.com:Tatzhiro/LineairDB-storage-engine.git
+        git clone --recursive https://github.com/Tatzhiro/LineairDB-storage-engine.git
         cd LineairDB-storage-engine
         ./build.sh
     - name: MySQL initialization and start server
