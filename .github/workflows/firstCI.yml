@@ -10,11 +10,11 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-    - name: Install BATS-core and Ninja
+    - name: Install dependencies
       run: |
         npm install -g bats
-        brew install ninja
-    - name: submodule
+        brew install ninja boost
+    - name: Checkout
       uses: actions/checkout@v2
       with:
         submodules: recursive
