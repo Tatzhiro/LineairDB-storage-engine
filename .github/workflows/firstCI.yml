@@ -17,10 +17,10 @@ jobs:
         npm install -g bats
         npm install -g ninja
     - name: submodule
-        uses: actions/checkout@v2
-        with:
-          submodules: recursive
-          token: ${{ secrets.PERSONAL_TOKEN }}
+      uses: actions/checkout@v2
+      with:
+        submodules: recursive
+        token: ${{ secrets.PERSONAL_TOKEN }}
     - name: Build LineairDB and MySQL-server
       run: |
         git clone --recursive https://github.com/Tatzhiro/LineairDB-storage-engine.git
