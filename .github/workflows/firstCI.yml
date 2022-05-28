@@ -9,7 +9,7 @@ on:
 jobs:
   build:
 
-    runs-on: macos-11
+    runs-on: ubuntu-latest
 
     steps:
     - name: Install BATS-core and Ninja
