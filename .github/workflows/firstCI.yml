@@ -27,12 +27,14 @@ jobs:
           make -j 3
       - name: initialize and start MySQL server daemon
         run: |
+          cd mysql-server/build
           bin/mysqld --initialize-insecure --basedir=$(pwd) --datadir=$(pwd)/data
           touch my.cnf
           echo "[mysqld]\nbasedir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build\ndatadir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build/data" > my.cnf
           bin/mysqld --defaults-file=./my.cnf --daemonize
       - name: load lineairdb as the custom storage engine
         run: |
+          cd mysql-server/build
           bin/mysql -uroot < "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'"
       - name: execute testing
         run: bats tests/test.bats
