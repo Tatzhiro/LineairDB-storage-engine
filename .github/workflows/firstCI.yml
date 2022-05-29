@@ -1,4 +1,4 @@
-name: Makefile CI
+name: Build & Test
 
 on:
   push:
@@ -8,45 +8,31 @@ on:
 
 jobs:
   build:
-
-    runs-on: macos-11
+    runs-on: macos-latest
 
     steps:
-#     - uses: actions/checkout@v3
-    
-#     - name: configure
-#       run: ./configure
-      
-#     - name: Install dependencies
-#       run: make
-      
-#     - name: Run check
-#       run: make check
-      
-#     - name: Run distcheck
-#       run: make distcheck
-
-    - name: Install BATS
-      run: npm install -g bats
-      
-    - name: Clone MySQL-server
-      run: 
-        git clone https://github.com/mysql/mysql-server.git
-        
-    - name: Set symbolic link in MySQL-server
-      run:
-        ln -s LineairDB-storage-engine mysql-server/storage/lineairdb
-    - name: Make build directory
-      run:
-        mkdir mysql-server/build
-    - name: CMake, MySQL initialization and start server
-      run:
-        cd mysql-server/build;
-        mkdir data;
-        cmake .. -DWITH_DEBUG=ON -DDOWNLOAD_BOOST=ON -DWITH_BOOST=../boost;
-        make -j 3;
-        bin/mysqld --initialize-insecure --basedir=$(pwd) --datadir=$(pwd)/data;
-        touch my.cnf;
-        echo "[mysqld]\nbasedir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build\ndatadir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build/data" > my.cnf;
-        bin/mysqld --defaults-file=./my.cnf --daemonize;
-        echo show engines | bin/mysql -u root;
+      - name: Install BATS
+        run: npm install -g bats
+      - name: Clone MySQL-server
+        run: git clone https://github.com/mysql/mysql-server.git
+      - name: Set symbolic link in MySQL-server
+        run: ln -s LineairDB-storage-engine mysql-server/storage/lineairdb
+      - name: Make build directory
+        run: mkdir mysql-server/build
+      - name: build MySQL server with the custom storage engine
+        run: |
+          cd mysql-server/build
+          mkdir data
+          cmake .. -DWITH_DEBUG=ON -DDOWNLOAD_BOOST=ON -DWITH_BOOST=../boost
+          make -j 3
+      - name: initialize and start MySQL server daemon
+        run: |
+          bin/mysqld --initialize-insecure --basedir=$(pwd) --datadir=$(pwd)/data
+          touch my.cnf
+          echo "[mysqld]\nbasedir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build\ndatadir=/home/runner/work/LineairDB-storage-engine/LineairDB-storage-engine/mysql-server/build/data" > my.cnf
+          bin/mysqld --defaults-file=./my.cnf --daemonize
+      - name: load lineairdb as the custom storage engine
+        run: |
+          bin/mysql -uroot < "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'"
+      - name: execute testing
+        run: bats tests/test.bats
