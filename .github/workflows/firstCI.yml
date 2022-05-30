@@ -33,7 +33,7 @@ jobs:
     - name: Clone LineairDB
       run: |
         cd LineairDB-storage-engine/third_party
-        git https://github.com/nikezono/LineairDB.git   
+        git clone https://github.com/nikezono/LineairDB.git   
     - name: Clone MySQL-server
       run: 
         git clone https://github.com/mysql/mysql-server.git
