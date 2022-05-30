@@ -28,10 +28,12 @@ jobs:
 
     - name: Install BATS
       run: npm install -g bats
+    - name: Clone LibeairDB storage engine
+      run: git clone https://github.com/Tatzhiro/LineairDB-storage-engine.git
     - name: Clone LineairDB
       run: |
         cd LineairDB-storage-engine/third_party
-        git clone https://github.com/mysql/mysql-server.git      
+        git https://github.com/nikezono/LineairDB.git   
     - name: Clone MySQL-server
       run: 
         git clone https://github.com/mysql/mysql-server.git
