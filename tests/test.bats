@@ -34,3 +34,7 @@ teardown() {
 @test "SELECT with WHERE clause" {
     exec_sql where.sql
 }
+
+@test "UPDATE rows" {
+    exec_sql update.sql
+}

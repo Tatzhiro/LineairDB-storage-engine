@@ -301,18 +301,18 @@ int ha_lineairdb::write_row(uchar*) {
 
 int ha_lineairdb::update_row(const uchar*, uchar* new_buf) {
   DBUG_TRACE;
-  // 1st step
-  // LineairDB::TxStatus status;
-  auto temp_id =
-      (new_buf[4] << 24) | (new_buf[3] << 16) | (new_buf[2] << 8) | new_buf[1];
-  // auto c1 = (new_buf[8] << 24) | (new_buf[7] << 16) | (new_buf[6] << 8) |
-  // new_buf[5];
-  std::string row_id = std::to_string(temp_id);
+  LineairDB::TxStatus status;
+  auto& tx = get_db()->BeginTransaction();
 
+  auto primary_key = get_primary_key_from_row();
+  encode_query();
+  tx.Write(primary_key, reinterpret_cast<std::byte*>(buffer.ptr()),
+           buffer.length());
+  buffer.length(0);
+  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   // auto& tx = MyDB->BeginTransaction();
   // tx.Write(row_id, (std::byte*)new_buf, table->s->reclength);
   // MyDB->EndTransaction(tx, [&](auto s) { status = s; });
-
   // next step
   // auto* tx = getTransaction();
   // if (tx == nullptr){ // まだはじまっていない？
