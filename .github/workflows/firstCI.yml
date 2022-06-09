@@ -8,30 +8,26 @@ on:
 
 jobs:
   build:
-
-    runs-on: macos-11
-
+    runs-on: macos-latest
     steps:
-    - name: Install BATS-core and Ninja
-      run: |
-        npm install -g bats
-        npm install -g ninja
-    - name: submodule
-      uses: actions/checkout@v2
-      with:
-        submodules: recursive
-        token: ${{ secrets.PERSONAL_TOKEN }}
-    - name: Build LineairDB and MySQL-server
-      run: |
-        git clone --recursive https://github.com/Tatzhiro/LineairDB-storage-engine.git
-        cd LineairDB-storage-engine
-        ./build.sh
-    - name: MySQL initialization and start server
-      run: |
-        cd LineairDB-storage-engine/build
-        bin/mysqld --initialize-insecure --basedir=$(pwd) --datadir=$(pwd)/data;
-        bin/mysqld --defaults-file=./my.cnf --daemonize;
-    - name: BATS-core test
-      run: |
-        cd LineairDB-storage-engine/tests
-        bats test.bats
+      - name: checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          npm install -g bats
+          brew install boost ninja
+      - name: Build
+        run: |
+          ./build.sh
+      - name: Setup MySQL Server
+        run: |
+          rm -rf base
+          mkdir -p base/data
+          build/bin/mysqld --defaults-file=./.github/my.cnf --initialize-insecure
+          build/bin/mysqld --defaults-file=./.github/my.cnf --daemonize
+          echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | build/bin/mysql -u root
+          echo show engines | build/bin/mysql -u root
+      - name: execute testing
+        run: bats tests/test.bats

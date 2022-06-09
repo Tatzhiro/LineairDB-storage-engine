@@ -6,7 +6,7 @@ TBW.
 
 ```
 git clone --recursive git@github.com:Tatzhiro/LineairDB-storage-engine.git
-
+cd LineairDB-storage-engine
 ./build.sh
 ```
 
