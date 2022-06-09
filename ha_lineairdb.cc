@@ -310,20 +310,17 @@ int ha_lineairdb::update_row(const uchar*, uchar* new_buf) {
            buffer.length());
   buffer.length(0);
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-  // auto& tx = MyDB->BeginTransaction();
-  // tx.Write(row_id, (std::byte*)new_buf, table->s->reclength);
-  // MyDB->EndTransaction(tx, [&](auto s) { status = s; });
-  // next step
-  // auto* tx = getTransaction();
-  // if (tx == nullptr){ // まだはじまっていない？
-  //   tx = MyDB->BeginTransaction();
-  //   setTransactionContext(tx, this_transaction_context);
-  // }
-  // tx.Write(key, buffer);
   return 0;
 }
 
-int ha_lineairdb::delete_row(const uchar*) { return 0; }
+int ha_lineairdb::delete_row(const uchar*) { 
+  DBUG_TRACE;
+  LineairDB::TxStatus status;
+  auto& tx = get_db()->BeginTransaction();
+  tx.Write(delete_key, nullptr, 0);
+  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  return 0; 
+}
 
 // MEMO: Return values of this function may be cached by MySQL internal
 int ha_lineairdb::index_read_map(uchar* buf, const uchar*, key_part_map,
@@ -547,6 +544,7 @@ read_from_lineairdb:
 
   auto& tx         = get_db()->BeginTransaction();
   auto& key        = keys[current_position];
+  delete_key = keys[current_position];
   auto read_buffer = tx.Read(key);
 
   if (read_buffer.first == nullptr) {
@@ -838,7 +836,7 @@ int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
   return 0;
 }
 
-std::string ha_lineairdb::get_primary_key_from_row() {
+std::string ha_lineairdb::get_primary_key_from_row() { // can only call once
   const bool is_primary_key_exists = (0 < table->s->keys);
 
   std::string pk{""};
