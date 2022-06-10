@@ -323,7 +323,7 @@ int ha_lineairdb::delete_row(const uchar*) {
 }
 
 // MEMO: Return values of this function may be cached by MySQL internal
-int ha_lineairdb::index_read_map(uchar* buf, const uchar*, key_part_map,
+int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
                                  enum ha_rkey_function) {
   DBUG_TRACE;
 
@@ -333,8 +333,26 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*, key_part_map,
   // engine with unsupported key type (e.g., int),
   // we return HA_ERR_WRONG_COMMAND to indicate
   // "this key type is unsupported".
-  const bool key_type_is_supported_by_lineairdb = true;
+  
+  /**
+   * WANTFIX: Extracting delete_key for later delete_row function.
+   * delete_key has to be passed to tx.Read in line 360 so that 
+   * index_read_map can correctly identify the presence of the
+   * row specified by the delete_key.
+   * However, the correctness of this delete_key extraction is unknown.
+   * 
+   */
+  auto delete_key_bytes = (key[1] << 8) | key[0];
+  delete_key.clear();
+  delete_key.append("table-");
+  const auto& table_name = table->s->table_name;
+  delete_key.append(table_name.str, table_name.length);
+  delete_key.append("-key-");
+  for (int i = 2; i < delete_key_bytes + 2; i++) {
+    delete_key.push_back(key[i]);
+  }
 
+  const bool key_type_is_supported_by_lineairdb = true;
   auto primary_key = get_primary_key_from_row();
   LineairDB::TxStatus status;
   stats.records    = 0;
