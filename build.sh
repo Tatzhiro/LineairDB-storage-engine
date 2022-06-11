@@ -2,7 +2,7 @@
 
 cd $(dirname $0)
 
-ln -s $(pwd) third_party/mysql-server/storage/lineairdb
+ln -s . third_party/mysql-server/storage/lineairdb
 
 mkdir -p build/data
 cd build

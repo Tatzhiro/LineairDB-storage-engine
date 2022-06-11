@@ -1,5 +1,6 @@
 [mysqld]
-basedir=build
-datadir=data
+basedir=../build
+datadir=../build/data
+
 
 plugin_dir=plugin_output_directory
