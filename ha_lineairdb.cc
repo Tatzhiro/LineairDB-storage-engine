@@ -299,7 +299,7 @@ int ha_lineairdb::write_row(uchar*) {
   return 0;
 }
 
-int ha_lineairdb::update_row(const uchar*, uchar* new_buf) {
+int ha_lineairdb::update_row(const uchar*, uchar*) {
   DBUG_TRACE;
   LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
@@ -317,7 +317,7 @@ int ha_lineairdb::delete_row(const uchar*) {
   DBUG_TRACE;
   LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
-  tx.Write(delete_key, nullptr, 0);
+  tx.Write(read_key, nullptr, 0);
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   return 0; 
 }
@@ -335,32 +335,31 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
   // "this key type is unsupported".
   
   /**
-   * WANTFIX: Extracting delete_key for later delete_row function.
-   * delete_key has to be passed to tx.Read in line 360 so that 
+   * WANTFIX: Extracting read_key for later delete_row function.
+   * read_key has to be passed to tx.Read in line 360 so that 
    * index_read_map can correctly identify the presence of the
-   * row specified by the delete_key.
-   * However, the correctness of this delete_key extraction is unknown.
+   * row specified by the read_key.
+   * However, the correctness of this read_key extraction is unknown.
    * 
    */
-  auto delete_key_bytes = (key[1] << 8) | key[0];
-  delete_key.clear();
-  delete_key.append("table-");
+  auto pk_bytes = (key[1] << 8) | key[0];
+  read_key.clear();
+  read_key.append("table-");
   const auto& table_name = table->s->table_name;
-  delete_key.append(table_name.str, table_name.length);
-  delete_key.append("-key-");
-  for (int i = 2; i < delete_key_bytes + 2; i++) {
-    delete_key.push_back(key[i]);
+  read_key.append(table_name.str, table_name.length);
+  read_key.append("-key-");
+  for (int i = 2; i < pk_bytes + 2; i++) {
+    read_key.push_back(key[i]);
   }
 
   const bool key_type_is_supported_by_lineairdb = true;
-  auto primary_key = get_primary_key_from_row();
   LineairDB::TxStatus status;
   stats.records    = 0;
   buffer.length(0);
 
   if (key_type_is_supported_by_lineairdb) {
     auto& tx         = get_db()->BeginTransaction();
-    auto read_buffer = tx.Read(primary_key);
+    auto read_buffer = tx.Read(read_key);
     if (read_buffer.first == nullptr) {
       get_db()->EndTransaction(tx, [&](auto s) { status = s; });
       return HA_ERR_END_OF_FILE;
@@ -562,7 +561,7 @@ read_from_lineairdb:
 
   auto& tx         = get_db()->BeginTransaction();
   auto& key        = keys[current_position];
-  delete_key = keys[current_position];
+  read_key = keys[current_position];
   auto read_buffer = tx.Read(key);
 
   if (read_buffer.first == nullptr) {
