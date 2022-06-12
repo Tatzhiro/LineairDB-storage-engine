@@ -21,8 +21,13 @@ jobs:
       - name: Build
         run: |
           ./build.sh
-      - name: execute testing
+      - name: Setup MySQL Server
         run: |
           rm -rf base
           mkdir -p base/data
-          bats tests/CI.bats
+          build/bin/mysqld --defaults-file=./.github/my.cnf --initialize-insecure
+          build/bin/mysqld --defaults-file=./.github/my.cnf --daemonize
+          echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | build/bin/mysql -u root
+          echo show engines | build/bin/mysql -u root
+      - name: execute testing
+        run: bats tests/test.bats
