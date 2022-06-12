@@ -30,4 +30,4 @@ jobs:
           echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | build/bin/mysql -u root
           echo show engines | build/bin/mysql -u root
       - name: execute testing
-        run: bats tests/test.bats
+        run: bats tests/CI.bats
