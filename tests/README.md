@@ -1,4 +1,4 @@
-# How To Tests
+# How To Test
 
 At first, you must build mysql-server in the `build` directory.
 
@@ -46,3 +46,9 @@ To print the debug logs, set the environment variable `DEBUG` as the following.
 ```
 env DEBUG=true bats tests/test.bats
 ```
+
+For python tests, install mysql-connector-python. 
+```
+pip install mysql-connector-python
+```
+
