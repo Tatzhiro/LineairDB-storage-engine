@@ -77,6 +77,7 @@ class ha_lineairdb : public handler {
   char data_file_name[FN_REFLEN];  // stores "file_name.CSV" in
                                    // ha_lineairdb::create by fn_format
   std::vector<std::string> keys;
+  std::string delete_key;
   my_off_t
       current_position; /* Current position in the file during a file scan */
   String buffer;

@@ -301,32 +301,29 @@ int ha_lineairdb::write_row(uchar*) {
 
 int ha_lineairdb::update_row(const uchar*, uchar* new_buf) {
   DBUG_TRACE;
-  // 1st step
-  // LineairDB::TxStatus status;
-  auto temp_id =
-      (new_buf[4] << 24) | (new_buf[3] << 16) | (new_buf[2] << 8) | new_buf[1];
-  // auto c1 = (new_buf[8] << 24) | (new_buf[7] << 16) | (new_buf[6] << 8) |
-  // new_buf[5];
-  std::string row_id = std::to_string(temp_id);
+  LineairDB::TxStatus status;
+  auto& tx = get_db()->BeginTransaction();
 
-  // auto& tx = MyDB->BeginTransaction();
-  // tx.Write(row_id, (std::byte*)new_buf, table->s->reclength);
-  // MyDB->EndTransaction(tx, [&](auto s) { status = s; });
-
-  // next step
-  // auto* tx = getTransaction();
-  // if (tx == nullptr){ // まだはじまっていない？
-  //   tx = MyDB->BeginTransaction();
-  //   setTransactionContext(tx, this_transaction_context);
-  // }
-  // tx.Write(key, buffer);
+  auto primary_key = get_primary_key_from_row();
+  encode_query();
+  tx.Write(primary_key, reinterpret_cast<std::byte*>(buffer.ptr()),
+           buffer.length());
+  buffer.length(0);
+  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   return 0;
 }
 
-int ha_lineairdb::delete_row(const uchar*) { return 0; }
+int ha_lineairdb::delete_row(const uchar*) { 
+  DBUG_TRACE;
+  LineairDB::TxStatus status;
+  auto& tx = get_db()->BeginTransaction();
+  tx.Write(delete_key, nullptr, 0);
+  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  return 0; 
+}
 
 // MEMO: Return values of this function may be cached by MySQL internal
-int ha_lineairdb::index_read_map(uchar* buf, const uchar*, key_part_map,
+int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
                                  enum ha_rkey_function) {
   DBUG_TRACE;
 
@@ -336,8 +333,26 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*, key_part_map,
   // engine with unsupported key type (e.g., int),
   // we return HA_ERR_WRONG_COMMAND to indicate
   // "this key type is unsupported".
-  const bool key_type_is_supported_by_lineairdb = true;
+  
+  /**
+   * WANTFIX: Extracting delete_key for later delete_row function.
+   * delete_key has to be passed to tx.Read in line 360 so that 
+   * index_read_map can correctly identify the presence of the
+   * row specified by the delete_key.
+   * However, the correctness of this delete_key extraction is unknown.
+   * 
+   */
+  auto delete_key_bytes = (key[1] << 8) | key[0];
+  delete_key.clear();
+  delete_key.append("table-");
+  const auto& table_name = table->s->table_name;
+  delete_key.append(table_name.str, table_name.length);
+  delete_key.append("-key-");
+  for (int i = 2; i < delete_key_bytes + 2; i++) {
+    delete_key.push_back(key[i]);
+  }
 
+  const bool key_type_is_supported_by_lineairdb = true;
   auto primary_key = get_primary_key_from_row();
   LineairDB::TxStatus status;
   stats.records    = 0;
@@ -547,6 +562,7 @@ read_from_lineairdb:
 
   auto& tx         = get_db()->BeginTransaction();
   auto& key        = keys[current_position];
+  delete_key = keys[current_position];
   auto read_buffer = tx.Read(key);
 
   if (read_buffer.first == nullptr) {
@@ -838,7 +854,7 @@ int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
   return 0;
 }
 
-std::string ha_lineairdb::get_primary_key_from_row() {
+std::string ha_lineairdb::get_primary_key_from_row() { // can only call once
   const bool is_primary_key_exists = (0 < table->s->keys);
 
   std::string pk{""};
