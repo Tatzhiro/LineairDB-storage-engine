@@ -104,19 +104,9 @@
 #include "sql/sql_plugin.h"
 #include "sql/table.h"
 #include "typelib.h"
- 
+
 #define BYTE_BIT_NUMBER (8)
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-
-static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
-                                         bool partitioned, MEM_ROOT* mem_root);
-
-handlerton* lineairdb_hton;
-
-/* Interface to mysqld, to check system tables supported by SE */
-static bool lineairdb_is_supported_system_table(const char* db,
-                                                const char* table_name,
-                                                bool is_sql_layer_system_table);
 
 LineairDB_share::LineairDB_share() {
   thr_lock_init(&lock);
@@ -127,20 +117,6 @@ LineairDB_share::LineairDB_share() {
     conf.max_thread           = 1;
     lineairdb_.reset(new LineairDB::Database(conf));
   }
-}
-
-static int lineairdb_init_func(void* p) {
-  DBUG_TRACE;
-
-  lineairdb_hton         = (handlerton*)p;
-  lineairdb_hton->state  = SHOW_OPTION_YES;
-  lineairdb_hton->create = lineairdb_create_handler;
-  lineairdb_hton->flags  = HTON_CAN_RECREATE;
-  lineairdb_hton->is_supported_system_table =
-      lineairdb_is_supported_system_table;
-  lineairdb_hton->db_type = DB_TYPE_UNKNOWN;
-
-  return 0;
 }
 
 /**
@@ -172,58 +148,10 @@ LineairDB::Database* ha_lineairdb::get_db() {
   return get_share()->lineairdb_.get();
 }
 
-static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
-                                         bool, MEM_ROOT* mem_root) {
-  return new (mem_root) ha_lineairdb(hton, table);
-}
-
-static PSI_memory_key csv_key_memory_blobroot;
-
 ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
-    : handler(hton, table_arg), 
-    current_position(0),
-    blobroot(csv_key_memory_blobroot, BLOB_MEMROOT_ALLOC_SIZE) {}
-
-/*
-  List of all system tables specific to the SE.
-  Array element would look like below,
-     { "<database_name>", "<system table name>" },
-  The last element MUST be,
-     { (const char*)NULL, (const char*)NULL }
-
-  This array is optional, so every SE need not implement it.
-*/
-static st_handler_tablename ha_lineairdb_system_tables[] = {
-    {(const char*)nullptr, (const char*)nullptr}};
-
-/**
-  @brief Check if the given db.tablename is a system table for this SE.
-
-  @param db                         Database name to check.
-  @param table_name                 table name to check.
-  @param is_sql_layer_system_table  if the supplied db.table_name is a SQL
-                                    layer system table.
-
-  @retval true   Given db.table_name is supported system table.
-  @retval false  Given db.table_name is not a supported system table.
-*/
-static bool lineairdb_is_supported_system_table(
-    const char* db, const char* table_name, bool is_sql_layer_system_table) {
-  st_handler_tablename* systab;
-
-  // Does this SE support "ALL" SQL layer system tables ?
-  if (is_sql_layer_system_table) return false;
-
-  // Check if this is SE layer system tables
-  systab = ha_lineairdb_system_tables;
-  while (systab && systab->db) {
-    if (systab->db == db && strcmp(systab->tablename, table_name) == 0)
-      return true;
-    systab++;
-  }
-
-  return false;
-}
+    : handler(hton, table_arg),
+      current_position(0),
+      blobroot(csv_key_memory_blobroot, BLOB_MEMROOT_ALLOC_SIZE) {}
 
 /**
   @brief
@@ -246,12 +174,6 @@ int ha_lineairdb::open(const char*, int, uint, const dd::Table*) {
   if (!(share = get_share())) return 1;
   thr_lock_data_init(&share->lock, &lock, nullptr);
 
-  // fn_format(data_file_name, name, "", ha_lineairdb_exts[0],
-  //             MY_REPLACE_EXT | MY_UNPACK_FILENAME);
-  // if( (data_file = my_open(data_file_name, O_RDONLY, MYF(MY_WME))) == -1) {
-  //   close();
-  //   return -1;
-  // }
   return 0;
 }
 
@@ -284,97 +206,81 @@ int ha_lineairdb::close(void) {
 int ha_lineairdb::write_row(uchar*) {
   DBUG_TRACE;
 
+  set_current_key();
+  set_write_buffer();
+
   LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
-
-  auto primary_key = get_primary_key_from_row();
-  encode_query();
-  tx.Write(primary_key, reinterpret_cast<std::byte*>(buffer.ptr()),
-           buffer.length());
-  buffer.length(0);
+  tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
+           write_buffer_.length());
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   get_db()->Fence();
-/*
-  // NOTE: NOT SURE IF WE NEED THESE
-  get_db()->Fence();
-  get_db()->Fence();
-  get_db()->Fence();
-*/
+
   return 0;
 }
 
 int ha_lineairdb::update_row(const uchar*, uchar*) {
   DBUG_TRACE;
+
+  set_current_key();
+  set_write_buffer();
+
   LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
 
-  auto primary_key = get_primary_key_from_row();
-  encode_query();
-  tx.Write(primary_key, reinterpret_cast<std::byte*>(buffer.ptr()),
-           buffer.length());
-  buffer.length(0);
+  tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
+           write_buffer_.length());
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->Fence();
+
   return 0;
 }
 
-int ha_lineairdb::delete_row(const uchar*) { 
+int ha_lineairdb::delete_row(const uchar*) {
   DBUG_TRACE;
+
+  set_current_key();
+
   LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
-  tx.Write(read_key, nullptr, 0);
+  tx.Write(get_current_key(), nullptr, 0);
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-  return 0; 
+
+  return 0;
 }
 
 // MEMO: Return values of this function may be cached by MySQL internal
-int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
+int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
                                  enum ha_rkey_function) {
   DBUG_TRACE;
 
+  // NOTE:
   // Current implementation of lineairdb (049717)
-  // supports only String index.
+  // supports only std::string for key of index.
   // Therefore, when MySQL requests to scan the storage
   // engine with unsupported key type (e.g., int),
   // we return HA_ERR_WRONG_COMMAND to indicate
   // "this key type is unsupported".
-  
-  /**
-   * WANTFIX: Extracting read_key for later delete_row function.
-   * read_key has to be passed to tx.Read in line 360 so that 
-   * index_read_map can correctly identify the presence of the
-   * row specified by the read_key.
-   * However, the correctness of this read_key extraction is unknown.
-   * 
-   */
-  auto pk_bytes = (key[1] << 8) | key[0];
-  read_key.clear();
-  read_key.append("table-");
-  const auto& table_name = table->s->table_name;
-  read_key.append(table_name.str, table_name.length);
-  read_key.append("-key-");
-  for (int i = 2; i < pk_bytes + 2; i++) {
-    read_key.push_back(key[i]);
-  }
-
   const bool key_type_is_supported_by_lineairdb = true;
-  LineairDB::TxStatus status;
-  stats.records    = 0;
-  buffer.length(0);
 
-  if (key_type_is_supported_by_lineairdb) {
-    auto& tx         = get_db()->BeginTransaction();
-    auto read_buffer = tx.Read(read_key);
-    if (read_buffer.first == nullptr) {
-      get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-      return HA_ERR_END_OF_FILE;
-    }
-    if (store_read_result_in_field(buf, read_buffer.first, read_buffer.second))
-      return HA_ERR_OUT_OF_MEM;
+  if (!key_type_is_supported_by_lineairdb) return HA_ERR_WRONG_COMMAND;
+
+  set_current_key(key);
+
+  LineairDB::TxStatus status;
+  stats.records = 0;
+
+  auto& tx         = get_db()->BeginTransaction();
+  auto read_buffer = tx.Read(get_current_key());
+
+  if (read_buffer.first == nullptr) {
     get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-    return 0;
-  } else {
-    return HA_ERR_WRONG_COMMAND;
+    return HA_ERR_END_OF_FILE;
   }
+  if (store_read_result_in_field(buf, read_buffer.first, read_buffer.second))
+    return HA_ERR_OUT_OF_MEM;
+  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  return 0;
 }
 
 /**
@@ -383,9 +289,7 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
 */
 
 int ha_lineairdb::index_next(uchar*) {
-  int rc;
   DBUG_TRACE;
-  rc = HA_ERR_WRONG_COMMAND;
   return HA_ERR_END_OF_FILE;
 }
 
@@ -452,13 +356,13 @@ int ha_lineairdb::index_last(uchar*) {
 int ha_lineairdb::rnd_init(bool) {
   DBUG_ENTER("ha_lineairdb::rnd_init");
   LineairDB::TxStatus status;
-  keys.clear();
-  current_position = 0;
-  stats.records    = 0;
-  buffer.length(0);
+  scanned_keys_.clear();
+  current_position_ = 0;
+  stats.records     = 0;
+
   auto& tx = get_db()->BeginTransaction();
   tx.Scan("", std::nullopt, [&](auto key, auto) {
-    keys.push_back(std::string(key));
+    scanned_keys_.push_back(std::string(key));
     return false;
   });
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
@@ -487,98 +391,30 @@ int ha_lineairdb::rnd_end() {
   sql_update.cc
 */
 
-int ha_lineairdb::store_read_result_in_field(uchar* buf, const std::byte * const read_buf, const size_t read_buf_size) {
-  /* Avoid asserts in ::store() for columns that are not going to be updated
-   */
-  my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
-
-  // Clear BLOB data from the previous row.
-  blobroot.ClearForReuse();
-
-  /* nullBit is used to manipulate the nullbit in buf parameter
-  for each 8 potentially null columns, buf holds 1 byte flag at the front
-  the number of null flag bytes in buf is shown in table->s->nullbytes
-  the flag is originally set to 0xff, or b11111111
-  if you want to make the first potentially null column to show a non-null
-  value, store 0xfe, or b11111110, in buf
-  */
-  std::bitset<BYTE_BIT_NUMBER> nullBit(0xff);
-  /* index to store the null flag */
-  int null_byte_cnt = 0;
-  /* index to store the bit wihtin a flag */
-  int clm_cnt                   = 0;
-  std::byte* p                  = (std::byte*)malloc(read_buf_size);
-  const std::byte* const init_p = p;
-
-  memcpy(p, read_buf, read_buf_size);
-  std::byte* buf_end = p + read_buf_size;
-  for (Field **field = table->field; *field; field++) {
-    buffer.length(0);
-    for (; p < buf_end; p++) {
-      uchar c = *reinterpret_cast<uchar*>(p);
-      bool is_end_of_field = p == buf_end - 1 ? true : false;
-      switch (c) {
-        case '\"':
-          break;
-        case ',':
-          is_end_of_field = 1;
-          break;
-        default:
-          if(!is_end_of_field) buffer.append(c);
-          break;
-      }
-      if (is_end_of_field || p == buf_end) {
-        (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
-                        CHECK_FIELD_WARN);
-        if ((*field)->is_nullable()) {
-          if (buffer.length()) { nullBit.flip(clm_cnt); }
-          clm_cnt++;
-          if (clm_cnt == BYTE_BIT_NUMBER) {
-            uchar mask = nullBit.to_ulong();
-            memcpy(&buf[null_byte_cnt], &mask, 1);
-            null_byte_cnt++;
-            clm_cnt = 0;
-            nullBit.set();
-          }
-        }
-        if ((*field)->is_flag_set(BLOB_FLAG)) {
-          Field_blob *blob_field = down_cast<Field_blob *>(*field);
-          size_t length = blob_field->get_length();
-          if (length > 0) {
-            unsigned char *new_blob = new (&blobroot) unsigned char[length];
-            if (new_blob == nullptr) return HA_ERR_OUT_OF_MEM;
-            memcpy(new_blob, blob_field->get_blob_data(), length);
-            blob_field->set_ptr(length, new_blob);
-          }
-        }
-        p++;
-        break;
-      }
-    }
-  }
-
-  buffer.length(0);
-  uchar mask = nullBit.to_ulong();
-  memcpy(&buf[null_byte_cnt], &mask, 1);
-
-  free((void*)init_p);
-  dbug_tmp_restore_column_map(table->write_set, org_bitmap);
-  return 0;
-}
-
 // assumption: takes 1 row
 int ha_lineairdb::rnd_next(uchar* buf) {
   DBUG_ENTER("ha_lineairdb::rnd_next");
   LineairDB::TxStatus status;
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
-  if (keys.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);
-read_from_lineairdb:
-  if (current_position == keys.size()) DBUG_RETURN(HA_ERR_END_OF_FILE);
+  if (scanned_keys_.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);
 
+read_from_lineairdb:
+  if (current_position_ == scanned_keys_.size())
+    DBUG_RETURN(HA_ERR_END_OF_FILE);
+
+  auto& key = scanned_keys_[current_position_];
+  current_key_.set(key.c_str(), key.length(), current_key_.charset());
+
+  auto& tx          = get_db()->BeginTransaction();
+  bool read_success = set_fields_from_lineairdb(buf, tx);
+  if (!read_success) {
+    tx.Abort();
+    current_position_++;
+    goto read_from_lineairdb;
+  }
   auto& tx         = get_db()->BeginTransaction();
   auto& key        = keys[current_position];
-  read_key = keys[current_position];
   auto read_buffer = tx.Read(key);
 
   if (read_buffer.first == nullptr) {
@@ -591,7 +427,6 @@ read_from_lineairdb:
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   current_position++;
   DBUG_RETURN(0);
-  // return 0;
 }
 
 /**
@@ -851,12 +686,6 @@ ha_rows ha_lineairdb::records_in_range(uint, key_range*, key_range*) {
   return 10;  // low number to force index usage
 }
 
-static MYSQL_THDVAR_STR(last_create_thdvar, PLUGIN_VAR_MEMALLOC, nullptr,
-                        nullptr, nullptr, nullptr);
-
-static MYSQL_THDVAR_UINT(create_count_thdvar, 0, nullptr, nullptr, nullptr, 0,
-                         0, 1000, 0);
-
 /**
   @brief
   create() is called to create a database. The variable name will have the
@@ -871,46 +700,77 @@ int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
   return 0;
 }
 
-std::string ha_lineairdb::get_primary_key_from_row() { // can only call once
-  const bool is_primary_key_exists = (0 < table->s->keys);
-
-  std::string pk{""};
-  pk.append("table-");
-  const auto& table_name = table->s->table_name;
-  pk.append(table_name.str, table_name.length);
-
-  pk.append("-key-");
-  if (is_primary_key_exists) {
-    assert(max_supported_key_parts() ==
-           1);  // now we assume that there is no composite index
-    my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
-    String b;
-    for (Field** field = table->field; *field; field++) {
-      auto* f = *field;
-      if (f->m_indexed) {  // it is the key column
-
-        (*field)->val_str(&b, &b);
-        pk.append(std::string(b.ptr(), b.length()));
-        break;
-      }
-    }
-    tmp_restore_column_map(table->read_set, org_bitmap);
-  } else {
-    const auto cstr       = table->s->table_name;
-    const auto table_name = std::string(cstr.str, cstr.length);
-    auto inserted_count   = auto_generated_keys_[table_name]++;
-    pk.append(std::to_string(inserted_count));
+/**
+ * @brief Set the current key of the row
+ *  which is requested by the query.
+ *  The key is formatted as the following:
+ *    "table-[TABLENAME]-key-[KEY_STRING]"
+ *
+ * @param key
+ *  By default, the part KEY_STRING is constructed from the fields of the
+ * specified row, except for DELETE queries. For DELETE queries, pass the
+ * key-object as `key` to extract KEY_STRING desired to delete.
+ *
+ * @WANTFIX:
+ * The delimiter "-" here we use, is incomplete.
+ * This char maybe exist in argument `table_name` and `key_name`.
+ */
+void ha_lineairdb::set_current_key(const uchar* key) {
+  current_key_.length(0);
+  {  // TABLE_NAME
+    current_key_.append("table-");
+    const auto& table_name = table->s->table_name;
+    current_key_.append(table_name.str, table_name.length);
   }
-  return pk;
+  {
+    // KEY_NAME
+    current_key_.append("-key-");
+
+    if (key != nullptr) {  // DELETE
+      auto pk_bytes = (key[1] << 8) | key[0];
+      for (int i = 2; i < pk_bytes + 2; i++) { current_key_.append(key[i]); }
+    } else if (is_primary_key_exists()) {  // KEY EXISTS
+      assert(max_supported_key_parts() ==
+             1);  // now we assume that there is no composite index
+      my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+      for (Field** field = table->field; *field; field++) {
+        auto* f = *field;
+        if (f->m_indexed) {  // it is the key column
+
+          String b;
+          (*field)->val_str(&b, &b);
+          current_key_.append(b);
+          break;
+        }
+      }
+      tmp_restore_column_map(table->read_set, org_bitmap);
+    } else {  // THERE IS NO KEY COLUMN
+      const auto cstr       = table->s->table_name;
+      const auto table_name = std::string(cstr.str, cstr.length);
+      auto inserted_count   = auto_generated_keys_[table_name]++;
+      current_key_.append(std::to_string(inserted_count));
+    }
+  }
 }
 
-int ha_lineairdb::encode_query() {
+std::string ha_lineairdb::get_current_key() {
+  return std::string(current_key_.ptr(), current_key_.length());
+}
+
+/**
+ * @brief Format and set the requested row into `write_buffer_`.
+ * A MySQL Row is serialized to comma-separated double-quoted values,
+ * as the followings:
+ * {"alice","bob","carol","3"}
+ *   col1    col2  col3   col4
+ */
+void ha_lineairdb::set_write_buffer() {
+  write_buffer_.length(0);
+
   char attribute_buffer[1024];
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
   my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
-  buffer.length(0);
-
   for (Field** field = table->field; *field; field++) {
     const char* p;
     const char* end;
@@ -919,154 +779,95 @@ int ha_lineairdb::encode_query() {
     p   = attribute.ptr();
     end = p + attribute.length();
 
-    buffer.append('"');
-    for (; p < end; p++) buffer.append(*p);
-    buffer.append('"');
-    buffer.append(',');
+    write_buffer_.append('"');
+    for (; p < end; p++) write_buffer_.append(*p);
+    write_buffer_.append('"');
+    write_buffer_.append(',');
+  }
+  tmp_restore_column_map(table->read_set, org_bitmap);
+
+  write_buffer_.length(write_buffer_.length() - 1);
+}
+
+bool ha_lineairdb::is_primary_key_exists() { return (0 < table->s->keys); }
+
+int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
+                                            const std::byte* const read_buf,
+                                            const size_t read_buf_size) {
+  /* Avoid asserts in ::store() for columns that are not going to be updated
+   */
+  my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+
+  // Clear BLOB data from the previous row.
+  blobroot.ClearForReuse();
+
+  /* nullBit is used to manipulate the nullbit in buf parameter
+  for each 8 potentially null columns, buf holds 1 byte flag at the front
+  the number of null flag bytes in buf is shown in table->s->nullbytes
+  the flag is originally set to 0xff, or b11111111
+  if you want to make the first potentially null column to show a non-null
+  value, store 0xfe, or b11111110, in buf
+  */
+  std::bitset<BYTE_BIT_NUMBER> nullBit(0xff);
+  /* index to store the null flag */
+  int null_byte_cnt = 0;
+  /* index to store the bit wihtin a flag */
+  int clm_cnt                   = 0;
+  std::byte* p                  = (std::byte*)malloc(read_buf_size);
+  const std::byte* const init_p = p;
+
+  memcpy(p, read_buf, read_buf_size);
+  std::byte* buf_end = p + read_buf_size;
+  for (Field** field = table->field; *field; field++) {
+    buffer.length(0);
+    for (; p < buf_end; p++) {
+      uchar c              = *reinterpret_cast<uchar*>(p);
+      bool is_end_of_field = p == buf_end - 1 ? true : false;
+      switch (c) {
+        case '\"':
+          break;
+        case ',':
+          is_end_of_field = 1;
+          break;
+        default:
+          if (!is_end_of_field) buffer.append(c);
+          break;
+      }
+      if (is_end_of_field || p == buf_end) {
+        (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
+                        CHECK_FIELD_WARN);
+        if ((*field)->is_nullable()) {
+          if (buffer.length()) { nullBit.flip(clm_cnt); }
+          clm_cnt++;
+          if (clm_cnt == BYTE_BIT_NUMBER) {
+            uchar mask = nullBit.to_ulong();
+            memcpy(&buf[null_byte_cnt], &mask, 1);
+            null_byte_cnt++;
+            clm_cnt = 0;
+            nullBit.set();
+          }
+        }
+        if ((*field)->is_flag_set(BLOB_FLAG)) {
+          Field_blob* blob_field = down_cast<Field_blob*>(*field);
+          size_t length          = blob_field->get_length();
+          if (length > 0) {
+            unsigned char* new_blob = new (&blobroot) unsigned char[length];
+            if (new_blob == nullptr) return HA_ERR_OUT_OF_MEM;
+            memcpy(new_blob, blob_field->get_blob_data(), length);
+            blob_field->set_ptr(length, new_blob);
+          }
+        }
+        p++;
+        break;
+      }
+    }
   }
 
-  buffer.length(buffer.length() - 1);
-  tmp_restore_column_map(table->read_set, org_bitmap);
-  return (buffer.length());
-}
+  buffer.length(0);
+  uchar mask = nullBit.to_ulong();
+  memcpy(&buf[null_byte_cnt], &mask, 1);
 
-struct lineairdb_vars_t {
-  ulong var1;
-  double var2;
-  char var3[64];
-  bool var4;
-  bool var5;
-  ulong var6;
-};
-
-struct st_mysql_storage_engine lineairdb_storage_engine = {
-    MYSQL_HANDLERTON_INTERFACE_VERSION};
-
-static ulong srv_enum_var               = 0;
-static ulong srv_ulong_var              = 0;
-static double srv_double_var            = 0;
-static int srv_signed_int_var           = 0;
-static long srv_signed_long_var         = 0;
-static longlong srv_signed_longlong_var = 0;
-
-const char* enum_var_names[] = {"e1", "e2", NullS};
-
-TYPELIB enum_var_typelib = {array_elements(enum_var_names) - 1,
-                            "enum_var_typelib", enum_var_names, nullptr};
-
-static MYSQL_SYSVAR_ENUM(enum_var,                        // name
-                         srv_enum_var,                    // varname
-                         PLUGIN_VAR_RQCMDARG,             // opt
-                         "Sample ENUM system variable.",  // comment
-                         nullptr,                         // check
-                         nullptr,                         // update
-                         0,                               // def
-                         &enum_var_typelib);              // typelib
-
-static MYSQL_SYSVAR_ULONG(ulong_var, srv_ulong_var, PLUGIN_VAR_RQCMDARG,
-                          "0..1000", nullptr, nullptr, 8, 0, 1000, 0);
-
-static MYSQL_SYSVAR_DOUBLE(double_var, srv_double_var, PLUGIN_VAR_RQCMDARG,
-                           "0.500000..1000.500000", nullptr, nullptr, 8.5, 0.5,
-                           1000.5,
-                           0);  // reserved always 0
-
-static MYSQL_THDVAR_DOUBLE(double_thdvar, PLUGIN_VAR_RQCMDARG,
-                           "0.500000..1000.500000", nullptr, nullptr, 8.5, 0.5,
-                           1000.5, 0);
-
-static MYSQL_SYSVAR_INT(signed_int_var, srv_signed_int_var, PLUGIN_VAR_RQCMDARG,
-                        "INT_MIN..INT_MAX", nullptr, nullptr, -10, INT_MIN,
-                        INT_MAX, 0);
-
-static MYSQL_THDVAR_INT(signed_int_thdvar, PLUGIN_VAR_RQCMDARG,
-                        "INT_MIN..INT_MAX", nullptr, nullptr, -10, INT_MIN,
-                        INT_MAX, 0);
-
-static MYSQL_SYSVAR_LONG(signed_long_var, srv_signed_long_var,
-                         PLUGIN_VAR_RQCMDARG, "LONG_MIN..LONG_MAX", nullptr,
-                         nullptr, -10, LONG_MIN, LONG_MAX, 0);
-
-static MYSQL_THDVAR_LONG(signed_long_thdvar, PLUGIN_VAR_RQCMDARG,
-                         "LONG_MIN..LONG_MAX", nullptr, nullptr, -10, LONG_MIN,
-                         LONG_MAX, 0);
-
-static MYSQL_SYSVAR_LONGLONG(signed_longlong_var, srv_signed_longlong_var,
-                             PLUGIN_VAR_RQCMDARG, "LLONG_MIN..LLONG_MAX",
-                             nullptr, nullptr, -10, LLONG_MIN, LLONG_MAX, 0);
-
-static MYSQL_THDVAR_LONGLONG(signed_longlong_thdvar, PLUGIN_VAR_RQCMDARG,
-                             "LLONG_MIN..LLONG_MAX", nullptr, nullptr, -10,
-                             LLONG_MIN, LLONG_MAX, 0);
-
-static SYS_VAR* lineairdb_system_variables[] = {
-    MYSQL_SYSVAR(enum_var),
-    MYSQL_SYSVAR(ulong_var),
-    MYSQL_SYSVAR(double_var),
-    MYSQL_SYSVAR(double_thdvar),
-    MYSQL_SYSVAR(last_create_thdvar),
-    MYSQL_SYSVAR(create_count_thdvar),
-    MYSQL_SYSVAR(signed_int_var),
-    MYSQL_SYSVAR(signed_int_thdvar),
-    MYSQL_SYSVAR(signed_long_var),
-    MYSQL_SYSVAR(signed_long_thdvar),
-    MYSQL_SYSVAR(signed_longlong_var),
-    MYSQL_SYSVAR(signed_longlong_thdvar),
-    nullptr};
-
-// this is an lineairdb of SHOW_FUNC
-static int show_func_lineairdb(MYSQL_THD, SHOW_VAR* var, char* buf) {
-  var->type  = SHOW_CHAR;
-  var->value = buf;  // it's of SHOW_VAR_FUNC_BUFF_SIZE bytes
-  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
-           "enum_var is %lu, ulong_var is %lu, "
-           "double_var is %f, signed_int_var is %d, "
-           "signed_long_var is %ld, signed_longlong_var is %lld",
-           srv_enum_var, srv_ulong_var, srv_double_var, srv_signed_int_var,
-           srv_signed_long_var, srv_signed_longlong_var);
+  free((void*)init_p);
+  dbug_tmp_restore_column_map(table->write_set, org_bitmap);
   return 0;
 }
-
-lineairdb_vars_t lineairdb_vars = {100,  20.01, "three hundred",
-                                   true, false, 8250};
-
-static SHOW_VAR show_status_lineairdb[] = {
-    {"var1", (char*)&lineairdb_vars.var1, SHOW_LONG, SHOW_SCOPE_GLOBAL},
-    {"var2", (char*)&lineairdb_vars.var2, SHOW_DOUBLE, SHOW_SCOPE_GLOBAL},
-    {nullptr, nullptr, SHOW_UNDEF,
-     SHOW_SCOPE_UNDEF}  // null terminator required
-};
-
-static SHOW_VAR show_array_lineairdb[] = {
-    {"array", (char*)show_status_lineairdb, SHOW_ARRAY, SHOW_SCOPE_GLOBAL},
-    {"var3", (char*)&lineairdb_vars.var3, SHOW_CHAR, SHOW_SCOPE_GLOBAL},
-    {"var4", (char*)&lineairdb_vars.var4, SHOW_BOOL, SHOW_SCOPE_GLOBAL},
-    {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
-
-static SHOW_VAR func_status[] = {
-    {"lineairdb_func_lineairdb", (char*)show_func_lineairdb, SHOW_FUNC,
-     SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status_var5", (char*)&lineairdb_vars.var5, SHOW_BOOL,
-     SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status_var6", (char*)&lineairdb_vars.var6, SHOW_LONG,
-     SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status", (char*)show_array_lineairdb, SHOW_ARRAY,
-     SHOW_SCOPE_GLOBAL},
-    {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
-
-mysql_declare_plugin(lineairdb){
-    MYSQL_STORAGE_ENGINE_PLUGIN,
-    &lineairdb_storage_engine,
-    "LINEAIRDB",
-    PLUGIN_AUTHOR_ORACLE,
-    "LineairDB storage engine",
-    PLUGIN_LICENSE_GPL,
-    lineairdb_init_func, /* Plugin Init */
-    nullptr,             /* Plugin check uninstall */
-    nullptr,             /* Plugin Deinit */
-    0x0001 /* 0.1 */,
-    func_status,                /* status variables */
-    lineairdb_system_variables, /* system variables */
-    nullptr,                    /* config options */
-    0,                          /* flags */
-} mysql_declare_plugin_end;

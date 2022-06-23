@@ -38,6 +38,9 @@
   /sql/handler.h and /storage/lineairdb/ha_lineairdb.cc
 */
 
+#ifndef HA_LINEAIRDB_H
+#define HA_LINEAIRDB_H
+
 #include <lineairdb/lineairdb.h>
 #include <string.h>
 #include <sys/types.h>
@@ -72,15 +75,13 @@ class ha_lineairdb : public handler {
   LineairDB_share* share;        ///< Shared lock info
   LineairDB_share* get_share();  ///< Get the share
   LineairDB::Database* get_db();
-  File data_file;
-  File write_file;
-  char data_file_name[FN_REFLEN];  // stores "file_name.CSV" in
-                                   // ha_lineairdb::create by fn_format
-  std::vector<std::string> keys;
-  std::string read_key;
+
+ private:
+  std::vector<std::string> scanned_keys_;
   my_off_t
-      current_position; /* Current position in the file during a file scan */
-  String buffer;
+      current_position_; /* Current position in the file during a file scan */
+  String current_key_;
+  String write_buffer_;
   std::unordered_map<std::string, size_t> auto_generated_keys_;
   MEM_ROOT blobroot;
 
@@ -250,7 +251,6 @@ class ha_lineairdb : public handler {
   */
   int rnd_init(bool scan) override;  // required
   int rnd_end() override;
-  int store_read_result_in_field(uchar* buf, const std::byte * const read_buf, const size_t read_buf_size);
   int rnd_next(uchar* buf) override;             ///< required
   int rnd_pos(uchar* buf, uchar* pos) override;  ///< required
   void position(const uchar* record) override;   ///< required
@@ -272,6 +272,11 @@ class ha_lineairdb : public handler {
       enum thr_lock_type lock_type) override;  ///< required
 
  private:
-  std::string get_primary_key_from_row();
-  int encode_query();
+  std::string get_current_key();
+  void set_current_key(const uchar* key = nullptr);
+  void set_write_buffer();
+  bool is_primary_key_exists();
+  bool set_fields_from_lineairdb(uchar* buf, LineairDB::Transaction& tx);
 };
+
+#endif /* HA_LINEAIRDB_H */
