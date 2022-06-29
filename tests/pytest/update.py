@@ -17,7 +17,7 @@ def update () :
     cursor.execute(\
         'INSERT INTO ha_lineairdb_test.items (\
             title, content\
-        ) VALUES ("carol", "carol meets dave")'\
+        ) VALUES ("carol", "ddd")'\
     )
     cursor.execute('UPDATE ha_lineairdb_test.items SET content="XXX"')
 
