@@ -289,9 +289,9 @@ int ha_lineairdb::write_row(uchar*) {
            buffer.length());
   buffer.length(0);
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->Fence();
 /*
   // NOTE: NOT SURE IF WE NEED THESE
-  get_db()->Fence();
   get_db()->Fence();
   get_db()->Fence();
   get_db()->Fence();
