@@ -514,9 +514,9 @@ int ha_lineairdb::store_read_result_in_field(uchar* buf, const std::byte * const
   std::byte* buf_end = p + read_buf_size;
   for (Field **field = table->field; *field; field++) {
     buffer.length(0);
-    for (; p <= buf_end; p++) {
+    for (; p < buf_end; p++) {
       uchar c = *reinterpret_cast<uchar*>(p);
-      bool is_end_of_field = p == buf_end ? true : false;
+      bool is_end_of_field = p == buf_end - 1 ? true : false;
       switch (c) {
         case '\"':
           break;
