@@ -4,3 +4,6 @@ url = git@github.com:nikezono/LineairDB.git
 [submodule "third_party/mysql-server"]
 	path = third_party/mysql-server
 	url = git@github.com:mysql/mysql-server.git
+[submodule "third_party/benchbase"]
+	path = third_party/benchbase
+	url = git@github.com:cmu-db/benchbase.git
