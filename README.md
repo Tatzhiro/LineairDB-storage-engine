@@ -10,10 +10,8 @@ cd LineairDB-storage-engine
 ./build.sh
 ```
 
-# Benchmarking
+# Benchmark
 
-```
-bench/bin/tpcc
-```
+see [bench/README.md]
 
 # How to Contribute
