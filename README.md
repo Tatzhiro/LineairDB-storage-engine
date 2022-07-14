@@ -10,4 +10,8 @@ cd LineairDB-storage-engine
 ./build.sh
 ```
 
+# Benchmark
+
+see [bench/README.md]
+
 # How to Contribute

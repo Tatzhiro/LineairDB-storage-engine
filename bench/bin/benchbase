@@ -1,0 +1,69 @@
+#! /bin/bash
+
+set -e
+
+if [ $# -eq 0 ]; then
+    echo "No arguments supplied."
+    echo "This script needs the type of benchmark [ycsb|tpcc]."
+    echo "For example: ./bench/bin/exec_benchbase ycsb"
+  exit 1
+fi
+
+ESC=$(printf '\033[')
+message () {
+ printf "${ESC}1m%s${ESC}m\n" "$1"
+}
+
+cd "$(dirname "$0")"
+base_path=$(pwd)/../..
+cd $base_path/third_party/benchbase
+
+benchmark=$1
+
+### Install and Build
+zip_file=target/benchbase-mysql.zip
+if [ ! -f "$zip_file" ]; then
+  message " It seems to be the first-time execution of this script. Clean & Build the mvn package..."
+
+  ### Install JDK-17
+  JAVA_HOME=$(/usr/libexec/java_home -v 17)
+  if  [[ ${JAVA_HOME} != *"17"* ]]; then
+    message '    JDK-17 is not found. Start installing...'
+    if [ "$(uname)" == "Darwin" ]; then
+      brew install openjdk@17
+      export PATH=$(brew --prefix openjdk@17)/bin:$PATH
+      sudo ln -sfn $(brew --prefix openjdk@17)/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk-17.jdk
+    else
+      sudo apt install openjdk-17-jdk
+    fi
+    export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+  fi
+
+  ### Build JAR
+  ./mvnw clean package -P mysql -e
+  unzip $zip_file
+  cd -
+fi
+
+### Benchmark
+message "Execute the benchmarking $benchmark"
+ex_file=benchbase-mysql/benchbase.jar
+
+MYSQL_UP=$(pgrep mysql | wc -l);
+
+for storage_engine in lineairdb innodb; do
+  if [ "$MYSQL_UP" -ne 1 ]; then
+    $base_path/build/bin/mysqld --default-storage-engine=$storage_engine --datadir=data --basedir=$base_path/build --plugin-dir=plugin_output_directory --daemonize
+    $base_path/build/bin/mysql -uroot < $base_path/bench/reset.sql
+  fi
+
+  java -jar $ex_file -b $benchmark -c $base_path/bench/config/$benchmark.xml --create=true --load=true --execute=true
+
+  if [ "$MYSQL_UP" -ne 1 ]; then
+    $base_path/build/bin/mysqladmin -uroot shutdown
+  fi
+  mkdir -p $base_path/bench/results/$storage_engine
+  mv results/*.csv $base_path/bench/results/$storage_engine
+done
+
+message 'Finish the benchmarking'
