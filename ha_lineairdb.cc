@@ -104,9 +104,9 @@
 #include "sql/sql_plugin.h"
 #include "sql/table.h"
 #include "typelib.h"
-
-#define INPLACE_UPDATE
+ 
 #define BYTE_BIT_NUMBER (8)
+#define BLOB_MEMROOT_ALLOC_SIZE (8192)
 
 static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
                                          bool partitioned, MEM_ROOT* mem_root);
@@ -177,8 +177,12 @@ static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
   return new (mem_root) ha_lineairdb(hton, table);
 }
 
+static PSI_memory_key csv_key_memory_blobroot;
+
 ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
-    : handler(hton, table_arg), current_position(0) {}
+    : handler(hton, table_arg), 
+    current_position(0),
+    blobroot(csv_key_memory_blobroot, BLOB_MEMROOT_ALLOC_SIZE) {}
 
 /*
   List of all system tables specific to the SE.
@@ -364,7 +368,8 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
       get_db()->EndTransaction(tx, [&](auto s) { status = s; });
       return HA_ERR_END_OF_FILE;
     }
-    store_read_result_in_field(buf, read_buffer.first, read_buffer.second);
+    if (store_read_result_in_field(buf, read_buffer.first, read_buffer.second))
+      return HA_ERR_OUT_OF_MEM;
     get_db()->EndTransaction(tx, [&](auto s) { status = s; });
     return 0;
   } else {
@@ -462,6 +467,7 @@ int ha_lineairdb::rnd_init(bool) {
 
 int ha_lineairdb::rnd_end() {
   DBUG_TRACE;
+  blobroot.Clear();
   return 0;
 }
 
@@ -481,11 +487,14 @@ int ha_lineairdb::rnd_end() {
   sql_update.cc
 */
 
-void ha_lineairdb::store_read_result_in_field(uchar* buf, const std::byte * const read_buf, const size_t read_buf_size) {
-  Field** field = table->field;
+int ha_lineairdb::store_read_result_in_field(uchar* buf, const std::byte * const read_buf, const size_t read_buf_size) {
   /* Avoid asserts in ::store() for columns that are not going to be updated
    */
   my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+
+  // Clear BLOB data from the previous row.
+  blobroot.ClearForReuse();
+
   /* nullBit is used to manipulate the nullbit in buf parameter
   for each 8 potentially null columns, buf holds 1 byte flag at the front
   the number of null flag bytes in buf is shown in table->s->nullbytes
@@ -503,50 +512,58 @@ void ha_lineairdb::store_read_result_in_field(uchar* buf, const std::byte * cons
 
   memcpy(p, read_buf, read_buf_size);
   std::byte* buf_end = p + read_buf_size;
-  for (; p < buf_end;) {
-    uchar c              = *reinterpret_cast<uchar*>(p);
-    bool is_end_of_field = 0;
-    switch (c) {
-      case '\"':
-        break;
-      case ',':
-        is_end_of_field = 1;
-        break;
-      default:
-        buffer.append(c);
-        break;
-    }
-    if (is_end_of_field && *field) {
-      (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
-                      CHECK_FIELD_WARN);
-      if ((*field)->is_nullable()) {
-        if (buffer.length()) { nullBit.flip(clm_cnt); }
-        clm_cnt++;
-        if (clm_cnt == BYTE_BIT_NUMBER) {
-          uchar mask = nullBit.to_ulong();
-          memcpy(&buf[null_byte_cnt], &mask, 1);
-          null_byte_cnt++;
-          clm_cnt = 0;
-          nullBit.set();
-        }
+  for (Field **field = table->field; *field; field++) {
+    buffer.length(0);
+    for (; p < buf_end; p++) {
+      uchar c = *reinterpret_cast<uchar*>(p);
+      bool is_end_of_field = p == buf_end - 1 ? true : false;
+      switch (c) {
+        case '\"':
+          break;
+        case ',':
+          is_end_of_field = 1;
+          break;
+        default:
+          if(!is_end_of_field) buffer.append(c);
+          break;
       }
-      field++;
-      buffer.length(0);
+      if (is_end_of_field || p == buf_end) {
+        (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
+                        CHECK_FIELD_WARN);
+        if ((*field)->is_nullable()) {
+          if (buffer.length()) { nullBit.flip(clm_cnt); }
+          clm_cnt++;
+          if (clm_cnt == BYTE_BIT_NUMBER) {
+            uchar mask = nullBit.to_ulong();
+            memcpy(&buf[null_byte_cnt], &mask, 1);
+            null_byte_cnt++;
+            clm_cnt = 0;
+            nullBit.set();
+          }
+        }
+        if ((*field)->is_flag_set(BLOB_FLAG)) {
+          Field_blob *blob_field = down_cast<Field_blob *>(*field);
+          size_t length = blob_field->get_length();
+          if (length > 0) {
+            unsigned char *new_blob = new (&blobroot) unsigned char[length];
+            if (new_blob == nullptr) return HA_ERR_OUT_OF_MEM;
+            memcpy(new_blob, blob_field->get_blob_data(), length);
+            blob_field->set_ptr(length, new_blob);
+          }
+        }
+        p++;
+        break;
+      }
     }
-    p++;
   }
-  (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
-                  CHECK_FIELD_WARN);
-  if ((*field)->is_nullable()) {
-    if (buffer.length()) { nullBit.flip(clm_cnt); }
-    clm_cnt++;
-  }
+
   buffer.length(0);
   uchar mask = nullBit.to_ulong();
   memcpy(&buf[null_byte_cnt], &mask, 1);
 
   free((void*)init_p);
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
+  return 0;
 }
 
 // assumption: takes 1 row
@@ -569,7 +586,8 @@ read_from_lineairdb:
     current_position++;
     goto read_from_lineairdb;
   }
-  store_read_result_in_field(buf, read_buffer.first, read_buffer.second);
+  if (store_read_result_in_field(buf, read_buffer.first, read_buffer.second))
+    return HA_ERR_OUT_OF_MEM;
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   current_position++;
   DBUG_RETURN(0);
