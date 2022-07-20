@@ -277,8 +277,10 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
     get_db()->EndTransaction(tx, [&](auto s) { status = s; });
     return HA_ERR_END_OF_FILE;
   }
-  if (store_read_result_in_field(buf, read_buffer.first, read_buffer.second))
+  if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
+    tx.Abort();
     return HA_ERR_OUT_OF_MEM;
+  }
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   return 0;
 }
@@ -422,8 +424,10 @@ read_from_lineairdb:
     current_position++;
     goto read_from_lineairdb;
   }
-  if (store_read_result_in_field(buf, read_buffer.first, read_buffer.second))
+  if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
+    tx.Abort();
     return HA_ERR_OUT_OF_MEM;
+  }
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
   current_position++;
   DBUG_RETURN(0);
