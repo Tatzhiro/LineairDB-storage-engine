@@ -148,9 +148,11 @@ LineairDB::Database* ha_lineairdb::get_db() {
   return get_share()->lineairdb_.get();
 }
 
+static PSI_memory_key csv_key_memory_blobroot;
+
 ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
     : handler(hton, table_arg),
-      current_position(0),
+      current_position_(0),
       blobroot(csv_key_memory_blobroot, BLOB_MEMROOT_ALLOC_SIZE) {}
 
 /**
@@ -408,20 +410,12 @@ read_from_lineairdb:
   auto& key = scanned_keys_[current_position_];
   current_key_.set(key.c_str(), key.length(), current_key_.charset());
 
-  auto& tx          = get_db()->BeginTransaction();
-  bool read_success = set_fields_from_lineairdb(buf, tx);
-  if (!read_success) {
-    tx.Abort();
-    current_position_++;
-    goto read_from_lineairdb;
-  }
   auto& tx         = get_db()->BeginTransaction();
-  auto& key        = keys[current_position];
   auto read_buffer = tx.Read(key);
 
   if (read_buffer.first == nullptr) {
     get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-    current_position++;
+    current_position_++;
     goto read_from_lineairdb;
   }
   if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
@@ -429,7 +423,7 @@ read_from_lineairdb:
     return HA_ERR_OUT_OF_MEM;
   }
   get_db()->EndTransaction(tx, [&](auto s) { status = s; });
-  current_position++;
+  current_position_++;
   DBUG_RETURN(0);
 }
 
@@ -823,7 +817,7 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
   memcpy(p, read_buf, read_buf_size);
   std::byte* buf_end = p + read_buf_size;
   for (Field** field = table->field; *field; field++) {
-    buffer.length(0);
+    write_buffer_.length(0);
     for (; p < buf_end; p++) {
       uchar c              = *reinterpret_cast<uchar*>(p);
       bool is_end_of_field = p == buf_end - 1 ? true : false;
@@ -834,14 +828,14 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
           is_end_of_field = 1;
           break;
         default:
-          if (!is_end_of_field) buffer.append(c);
+          if (!is_end_of_field) write_buffer_.append(c);
           break;
       }
       if (is_end_of_field || p == buf_end) {
-        (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(),
-                        CHECK_FIELD_WARN);
+        (*field)->store(write_buffer_.ptr(), write_buffer_.length(),
+                        write_buffer_.charset(), CHECK_FIELD_WARN);
         if ((*field)->is_nullable()) {
-          if (buffer.length()) { nullBit.flip(clm_cnt); }
+          if (write_buffer_.length()) { nullBit.flip(clm_cnt); }
           clm_cnt++;
           if (clm_cnt == BYTE_BIT_NUMBER) {
             uchar mask = nullBit.to_ulong();
@@ -867,7 +861,7 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
     }
   }
 
-  buffer.length(0);
+  write_buffer_.length(0);
   uchar mask = nullBit.to_ulong();
   memcpy(&buf[null_byte_cnt], &mask, 1);
 
