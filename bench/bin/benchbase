@@ -3,15 +3,15 @@
 set -e
 
 if [ $# -eq 0 ]; then
-    echo "No arguments supplied."
-    echo "This script needs the type of benchmark [ycsb|tpcc]."
-    echo "For example: ./bench/bin/exec_benchbase ycsb"
+  echo "No arguments supplied."
+  echo "This script needs the type of benchmark [ycsb|tpcc]."
+  echo "For example: ./bench/bin/exec_benchbase ycsb"
   exit 1
 fi
 
 ESC=$(printf '\033[')
-message () {
- printf "${ESC}1m%s${ESC}m\n" "$1"
+message() {
+  printf "${ESC}1m%s${ESC}m\n" "$1"
 }
 
 cd "$(dirname "$0")"
@@ -27,7 +27,7 @@ if [ ! -f "$zip_file" ]; then
 
   ### Install JDK-17
   JAVA_HOME=$(/usr/libexec/java_home -v 17)
-  if  [[ ${JAVA_HOME} != *"17"* ]]; then
+  if [[ ${JAVA_HOME} != *"17"* ]]; then
     message '    JDK-17 is not found. Start installing...'
     if [ "$(uname)" == "Darwin" ]; then
       brew install openjdk@17
@@ -40,7 +40,7 @@ if [ ! -f "$zip_file" ]; then
   fi
 
   ### Build JAR
-  ./mvnw clean package -P mysql -e
+  ./mvnw clean package -P mysql -e -DskipTests
   unzip $zip_file
   cd -
 fi
@@ -49,12 +49,12 @@ fi
 message "Execute the benchmarking $benchmark"
 ex_file=benchbase-mysql/benchbase.jar
 
-MYSQL_UP=$(pgrep mysql | wc -l);
+MYSQL_UP=$(pgrep mysql | wc -l)
 
 for storage_engine in lineairdb innodb; do
   if [ "$MYSQL_UP" -ne 1 ]; then
     $base_path/build/bin/mysqld --default-storage-engine=$storage_engine --datadir=data --basedir=$base_path/build --plugin-dir=plugin_output_directory --daemonize
-    $base_path/build/bin/mysql -uroot < $base_path/bench/reset.sql
+    $base_path/build/bin/mysql -uroot <$base_path/bench/reset.sql
   fi
 
   java -jar $ex_file -b $benchmark -c $base_path/bench/config/$benchmark.xml --create=true --load=true --execute=true
