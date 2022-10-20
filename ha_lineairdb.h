@@ -273,5 +273,6 @@ class ha_lineairdb : public handler {
 
  private:
   std::string get_primary_key_from_row();
+  bool is_primary_key_type_int();
   int encode_query();
 };

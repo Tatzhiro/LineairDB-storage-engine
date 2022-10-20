@@ -326,6 +326,49 @@ int ha_lineairdb::delete_row(const uchar*) {
   return 0; 
 }
 
+/**
+ * @brief This function only extracts the type of key for 
+ *        tables that have single key
+ * 
+ * @return true Key type is int
+ * @return false Key type is not int
+ */
+bool ha_lineairdb::is_primary_key_type_int() {
+  bool is_int = false;
+  const bool is_primary_key_exists = (0 < table->s->keys);
+  if (is_primary_key_exists) {
+    assert(table->s->keys == 1); 
+    assert(max_supported_key_parts() ==
+           1);  // now we assume that there is no composite index
+    my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+    for (Field** field = table->field; *field; field++) {
+      auto* f = *field;
+      if (f->m_indexed) {  // it is the key column
+        ha_base_keytype key_type = f->key_type();
+        switch (key_type) {
+          case HA_KEYTYPE_SHORT_INT:
+          case HA_KEYTYPE_LONG_INT:
+          case HA_KEYTYPE_USHORT_INT:
+          case HA_KEYTYPE_ULONG_INT:
+          case HA_KEYTYPE_LONGLONG:
+          case HA_KEYTYPE_ULONGLONG:
+          case HA_KEYTYPE_INT24:
+          case HA_KEYTYPE_UINT24:
+          case HA_KEYTYPE_INT8:
+            is_int = true;
+            break;
+          default:
+            is_int = false;
+            break;
+        }
+        break;
+      }
+    }
+    tmp_restore_column_map(table->read_set, org_bitmap);
+  }
+  return is_int;
+}
+
 // MEMO: Return values of this function may be cached by MySQL internal
 int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
                                  enum ha_rkey_function) {
@@ -354,6 +397,9 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
    * Primary key extraction currently supports string type only.
    * We need to make it compatible for integer type keys.
    */
+  if (is_primary_key_type_int()) {
+    // make it compatible for integer type keys
+  }
   auto pk_bytes = (key[1] << 8) | key[0];
   read_key.clear();
   read_key.append("table-");
