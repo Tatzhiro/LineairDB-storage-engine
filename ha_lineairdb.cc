@@ -215,7 +215,7 @@ int ha_lineairdb::write_row(uchar*) {
   auto& tx = get_db()->BeginTransaction();
   tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
            write_buffer_.length());
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   get_db()->Fence();
 
   return 0;
@@ -232,9 +232,8 @@ int ha_lineairdb::update_row(const uchar*, uchar*) {
 
   tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
            write_buffer_.length());
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   get_db()->Fence();
-
   return 0;
 }
 
@@ -246,7 +245,7 @@ int ha_lineairdb::delete_row(const uchar*) {
   LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
   tx.Write(get_current_key(), nullptr, 0);
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
 
   return 0;
 }
@@ -263,6 +262,31 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
   // engine with unsupported key type (e.g., int),
   // we return HA_ERR_WRONG_COMMAND to indicate
   // "this key type is unsupported".
+
+  /**
+   * WANTFIX: Extracting read_key for later delete_row function.
+   * read_key has to be passed to tx.Read in line 360 so that
+   * index_read_map can correctly identify the presence of the
+   * row specified by the read_key.
+   * However, the correctness of this read_key extraction is unknown.
+   *
+   */
+
+  /**
+   * 2022/10/19
+   * BUG:
+   * WANTFIX:
+   * Primary key extraction currently supports string type only.
+   * We need to make it compatible for integer type keys.
+   */
+  auto pk_bytes = (key[1] << 8) | key[0];
+  read_key.clear();
+  read_key.append("table-");
+  const auto& table_name = table->s->table_name;
+  read_key.append(table_name.str, table_name.length);
+  read_key.append("-key-");
+  for (int i = 2; i < pk_bytes + 2; i++) { read_key.push_back(key[i]); }
+
   const bool key_type_is_supported_by_lineairdb = true;
 
   if (!key_type_is_supported_by_lineairdb) return HA_ERR_WRONG_COMMAND;
@@ -276,14 +300,14 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
   auto read_buffer = tx.Read(get_current_key());
 
   if (read_buffer.first == nullptr) {
-    get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+    get_db()->EndTransaction(tx, [&](auto) {});
     return HA_ERR_END_OF_FILE;
   }
   if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
     tx.Abort();
     return HA_ERR_OUT_OF_MEM;
   }
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   return 0;
 }
 
@@ -369,7 +393,7 @@ int ha_lineairdb::rnd_init(bool) {
     scanned_keys_.push_back(std::string(key));
     return false;
   });
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   DBUG_RETURN(0);
 }
 
@@ -414,7 +438,7 @@ read_from_lineairdb:
   auto read_buffer = tx.Read(key);
 
   if (read_buffer.first == nullptr) {
-    get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+    get_db()->EndTransaction(tx, [&](auto) {});
     current_position_++;
     goto read_from_lineairdb;
   }
@@ -422,7 +446,7 @@ read_from_lineairdb:
     tx.Abort();
     return HA_ERR_OUT_OF_MEM;
   }
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   current_position_++;
   DBUG_RETURN(0);
 }
