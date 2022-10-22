@@ -333,8 +333,8 @@ int ha_lineairdb::delete_row(const uchar*) {
  * @return true Key type is int
  * @return false Key type is not int
  */
-bool ha_lineairdb::is_primary_key_type_int() {
-  bool is_int = false;
+int ha_lineairdb::is_primary_key_type_int() {
+  int bytes = 0;
   const bool is_primary_key_exists = (0 < table->s->keys);
   if (is_primary_key_exists) {
     assert(table->s->keys == 1); 
@@ -347,18 +347,26 @@ bool ha_lineairdb::is_primary_key_type_int() {
         ha_base_keytype key_type = f->key_type();
         switch (key_type) {
           case HA_KEYTYPE_SHORT_INT:
-          case HA_KEYTYPE_LONG_INT:
           case HA_KEYTYPE_USHORT_INT:
+            bytes = sizeof(short);
+            break;
+          case HA_KEYTYPE_LONG_INT:
           case HA_KEYTYPE_ULONG_INT:
+            bytes = sizeof(long);
+            break;
           case HA_KEYTYPE_LONGLONG:
           case HA_KEYTYPE_ULONGLONG:
+            bytes = sizeof(long long);
+            break;
           case HA_KEYTYPE_INT24:
           case HA_KEYTYPE_UINT24:
+            bytes = 3;
+            break;
           case HA_KEYTYPE_INT8:
-            is_int = true;
+            bytes = sizeof(int8_t);
             break;
           default:
-            is_int = false;
+            bytes = 0;
             break;
         }
         break;
@@ -366,7 +374,15 @@ bool ha_lineairdb::is_primary_key_type_int() {
     }
     tmp_restore_column_map(table->read_set, org_bitmap);
   }
-  return is_int;
+  return bytes;
+}
+
+void ha_lineairdb::init_key_buf(std::string &buf) {
+  buf.clear();
+  buf.append("table-");
+  const auto& table_name = table->s->table_name;
+  buf.append(table_name.str, table_name.length);
+  buf.append("-key-");
 }
 
 // MEMO: Return values of this function may be cached by MySQL internal
@@ -397,17 +413,21 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar*key, key_part_map,
    * Primary key extraction currently supports string type only.
    * We need to make it compatible for integer type keys.
    */
-  if (is_primary_key_type_int()) {
+  int int_bytes = is_primary_key_type_int();
+  int primary_key = 0;
+  init_key_buf(read_key);
+  if (int_bytes) {
     // make it compatible for integer type keys
+    for (int i = 0; i < int_bytes; i++) {
+      primary_key = primary_key | key[i] << sizeof(char) * i;
+    }
+    read_key.append(std::to_string(primary_key));
   }
-  auto pk_bytes = (key[1] << 8) | key[0];
-  read_key.clear();
-  read_key.append("table-");
-  const auto& table_name = table->s->table_name;
-  read_key.append(table_name.str, table_name.length);
-  read_key.append("-key-");
-  for (int i = 2; i < pk_bytes + 2; i++) {
-    read_key.push_back(key[i]);
+  else {
+    auto pk_bytes = (key[1] << 8) | key[0];
+    for (int i = 2; i < pk_bytes + 2; i++) {
+      read_key.push_back(key[i]);
+    }
   }
 
   const bool key_type_is_supported_by_lineairdb = true;
@@ -929,11 +949,7 @@ std::string ha_lineairdb::get_primary_key_from_row() { // can only call once
   const bool is_primary_key_exists = (0 < table->s->keys);
 
   std::string pk{""};
-  pk.append("table-");
-  const auto& table_name = table->s->table_name;
-  pk.append(table_name.str, table_name.length);
-
-  pk.append("-key-");
+  init_key_buf(pk);
   if (is_primary_key_exists) {
     assert(max_supported_key_parts() ==
            1);  // now we assume that there is no composite index
