@@ -6,8 +6,7 @@ exec_sql() {
 }
 
 setup() {
-    # TODO: initialize MySQL data files and restart mysqld daemon
-    # TODO: mysql may use caching and thus all testcases need to execute twice or more
+    # FIXME remove this file and use `test.bats` instead.
 
     # drop and create database
     cd $BATS_TEST_DIRNAME
@@ -42,5 +41,12 @@ teardown() {
 }
 
 @test "UPDATE rows" {
+    exec_sql update.sql
+}
+
+@test "Type INT" {
+    exec_sql intpk.sql
+    exec_sql select.sql
+    exec_sql where.sql
     exec_sql update.sql
 }

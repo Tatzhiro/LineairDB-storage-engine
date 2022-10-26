@@ -337,6 +337,7 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
    */
   int int_bytes   = is_primary_key_type_int();
   int primary_key = 0;
+  auto read_key   = get_current_key();
   init_key_buf(read_key);
   if (int_bytes) {
     // make it compatible for integer type keys
@@ -352,8 +353,6 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
   const bool key_type_is_supported_by_lineairdb = true;
 
   if (!key_type_is_supported_by_lineairdb) return HA_ERR_WRONG_COMMAND;
-
-  set_current_key(key);
 
   stats.records = 0;
 
@@ -444,7 +443,6 @@ int ha_lineairdb::index_last(uchar*) {
 */
 int ha_lineairdb::rnd_init(bool) {
   DBUG_ENTER("ha_lineairdb::rnd_init");
-  LineairDB::TxStatus status;
   scanned_keys_.clear();
   current_position_ = 0;
   stats.records     = 0;
@@ -483,7 +481,6 @@ int ha_lineairdb::rnd_end() {
 // assumption: takes 1 row
 int ha_lineairdb::rnd_next(uchar* buf) {
   DBUG_ENTER("ha_lineairdb::rnd_next");
-  LineairDB::TxStatus status;
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
   if (scanned_keys_.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);

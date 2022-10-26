@@ -12,9 +12,8 @@ setup() {
     # drop and create database
     cd $BATS_TEST_DIRNAME
     rm -rf ../build/data
-    ../build/bin/mysqld --defaults-file=bats.cnf --initialize-insecure
-    ../build/bin/mysqld --defaults-file=bats.cnf --daemonize
-    echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | ../build/bin/mysql -u root
+    ../build/bin/mysqld --defaults-file=my.cnf --initialize-insecure
+    ../build/bin/mysqld --defaults-file=my.cnf --daemonize
     exec_sql reset.sql
     # insert initial data with PK "alice" and "bob"
     exec_sql insert.sql
@@ -42,5 +41,12 @@ teardown() {
 }
 
 @test "UPDATE rows" {
+    exec_sql update.sql
+}
+
+@test "Type INT" {
+    exec_sql intpk.sql
+    exec_sql select.sql
+    exec_sql where.sql
     exec_sql update.sql
 }
