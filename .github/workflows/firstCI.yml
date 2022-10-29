@@ -16,14 +16,17 @@ jobs:
           submodules: recursive
       - name: Install dependencies
         run: |
-          sudo apt install ninja-build libudev-dev libboost-dev
+          sudo apt install ninja-build libudev-dev libboost-dev libnuma-dev
           npm install -g bats
       - name: Build
         run: |
           ./build.sh ha_lineairdb_storage_engine.so
+      - name: Start MySQL Server
+        run: |
+          sudo systemctl start mysql.service
       - name: Copy into MySQL plugin directory
         run: |
-          cp build/plugin_output_directory/ha_lineairdb_storage_engine.so $(echo "SHOW VARIABLES LIKE 'plugin_dir';" | mysql -uroot -proot -N | awk '{print $2}')
+          sudo cp build/plugin_output_directory/ha_lineairdb_storage_engine.so $(echo "SHOW VARIABLES LIKE 'plugin_dir';" | mysql -uroot -proot -N | awk '{print $2}')
       - name: Setup MySQL Server
         run: |
           echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | mysql -uroot -proot
