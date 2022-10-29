@@ -1,4 +1,4 @@
-name: Makefile CI
+name: Build and Test storage engine
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  osx:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: checkout
@@ -16,6 +16,7 @@ jobs:
           submodules: recursive
       - name: Install dependencies
         run: |
+          sudo apt install ninja-build libudev-dev libboost-dev
           npm install -g bats
       - name: Build
         run: |
