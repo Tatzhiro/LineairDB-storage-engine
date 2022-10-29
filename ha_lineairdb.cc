@@ -211,7 +211,6 @@ int ha_lineairdb::write_row(uchar*) {
   set_current_key();
   set_write_buffer();
 
-  LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
   tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
            write_buffer_.length());
@@ -227,7 +226,6 @@ int ha_lineairdb::update_row(const uchar*, uchar*) {
   set_current_key();
   set_write_buffer();
 
-  LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
 
   tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
@@ -243,7 +241,6 @@ int ha_lineairdb::delete_row(const uchar*) {
 
   set_current_key();
 
-  LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
   tx.Write(get_current_key(), nullptr, 0);
   get_db()->EndTransaction(tx, [&](auto) {});
@@ -269,21 +266,20 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
 
   set_current_key(key);
 
-  LineairDB::TxStatus status;
   stats.records = 0;
 
   auto& tx         = get_db()->BeginTransaction();
   auto read_buffer = tx.Read(get_current_key());
 
   if (read_buffer.first == nullptr) {
-    get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+    get_db()->EndTransaction(tx, [&](auto) {});
     return HA_ERR_END_OF_FILE;
   }
   if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
     tx.Abort();
     return HA_ERR_OUT_OF_MEM;
   }
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   return 0;
 }
 
@@ -359,7 +355,6 @@ int ha_lineairdb::index_last(uchar*) {
 */
 int ha_lineairdb::rnd_init(bool) {
   DBUG_ENTER("ha_lineairdb::rnd_init");
-  LineairDB::TxStatus status;
   scanned_keys_.clear();
   current_position_ = 0;
   stats.records     = 0;
@@ -398,7 +393,6 @@ int ha_lineairdb::rnd_end() {
 // assumption: takes 1 row
 int ha_lineairdb::rnd_next(uchar* buf) {
   DBUG_ENTER("ha_lineairdb::rnd_next");
-  LineairDB::TxStatus status;
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
   if (scanned_keys_.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);
