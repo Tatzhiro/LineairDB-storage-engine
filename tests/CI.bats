@@ -2,7 +2,7 @@
 
 exec_sql() {
     cd $BATS_TEST_DIRNAME
-    ../build/bin/mysql -uroot <$1
+    mysql -uroot -proot <$1
 }
 
 setup() {
@@ -11,10 +11,6 @@ setup() {
 
     # drop and create database
     cd $BATS_TEST_DIRNAME
-    rm -rf ../base/data
-    ../build/bin/mysqld --defaults-file=../.github/my.cnf --initialize-insecure
-    ../build/bin/mysqld --defaults-file=../.github/my.cnf --daemonize
-    echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | ../build/bin/mysql -u root
     exec_sql reset.sql
     # insert initial data with PK "alice" and "bob"
     exec_sql insert.sql

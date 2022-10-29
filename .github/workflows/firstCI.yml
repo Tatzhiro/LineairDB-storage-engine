@@ -7,8 +7,8 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
-    runs-on: macos-latest
+  osx:
+    runs-on: ubuntu-latest
     steps:
       - name: checkout
         uses: actions/checkout@v3
@@ -17,12 +17,15 @@ jobs:
       - name: Install dependencies
         run: |
           npm install -g bats
-          brew install boost ninja
       - name: Build
         run: |
-          ./build.sh
+          ./build.sh ha_lineairdb_storage_engine.so
+      - name: Copy into MySQL plugin directory
+        run: |
+          cp build/plugin_output_directory/ha_lineairdb_storage_engine.so $(echo "SHOW VARIABLES LIKE 'plugin_dir';" | mysql -uroot -proot -N | awk '{print $2}')
       - name: Setup MySQL Server
         run: |
-          rm -rf base
-          mkdir -p base/data
+          echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | mysql -uroot -proot
+      - name: Exec test scripts
+        run: |
           bats tests/CI.bats
