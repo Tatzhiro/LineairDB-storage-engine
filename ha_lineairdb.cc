@@ -211,11 +211,10 @@ int ha_lineairdb::write_row(uchar*) {
   set_current_key();
   set_write_buffer();
 
-  LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
   tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
            write_buffer_.length());
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   get_db()->Fence();
 
   return 0;
@@ -227,12 +226,11 @@ int ha_lineairdb::update_row(const uchar*, uchar*) {
   set_current_key();
   set_write_buffer();
 
-  LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
 
   tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
            write_buffer_.length());
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   get_db()->Fence();
 
   return 0;
@@ -243,10 +241,9 @@ int ha_lineairdb::delete_row(const uchar*) {
 
   set_current_key();
 
-  LineairDB::TxStatus status;
   auto& tx = get_db()->BeginTransaction();
   tx.Write(get_current_key(), nullptr, 0);
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
 
   return 0;
 }
@@ -269,21 +266,20 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
 
   set_current_key(key);
 
-  LineairDB::TxStatus status;
   stats.records = 0;
 
   auto& tx         = get_db()->BeginTransaction();
   auto read_buffer = tx.Read(get_current_key());
 
   if (read_buffer.first == nullptr) {
-    get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+    get_db()->EndTransaction(tx, [&](auto) {});
     return HA_ERR_END_OF_FILE;
   }
   if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
     tx.Abort();
     return HA_ERR_OUT_OF_MEM;
   }
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   return 0;
 }
 
@@ -359,7 +355,6 @@ int ha_lineairdb::index_last(uchar*) {
 */
 int ha_lineairdb::rnd_init(bool) {
   DBUG_ENTER("ha_lineairdb::rnd_init");
-  LineairDB::TxStatus status;
   scanned_keys_.clear();
   current_position_ = 0;
   stats.records     = 0;
@@ -369,7 +364,7 @@ int ha_lineairdb::rnd_init(bool) {
     scanned_keys_.push_back(std::string(key));
     return false;
   });
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   DBUG_RETURN(0);
 }
 
@@ -398,7 +393,6 @@ int ha_lineairdb::rnd_end() {
 // assumption: takes 1 row
 int ha_lineairdb::rnd_next(uchar* buf) {
   DBUG_ENTER("ha_lineairdb::rnd_next");
-  LineairDB::TxStatus status;
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
   if (scanned_keys_.size() == 0) DBUG_RETURN(HA_ERR_END_OF_FILE);
@@ -414,7 +408,7 @@ read_from_lineairdb:
   auto read_buffer = tx.Read(key);
 
   if (read_buffer.first == nullptr) {
-    get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+    get_db()->EndTransaction(tx, [&](auto) {});
     current_position_++;
     goto read_from_lineairdb;
   }
@@ -422,7 +416,7 @@ read_from_lineairdb:
     tx.Abort();
     return HA_ERR_OUT_OF_MEM;
   }
-  get_db()->EndTransaction(tx, [&](auto s) { status = s; });
+  get_db()->EndTransaction(tx, [&](auto) {});
   current_position_++;
   DBUG_RETURN(0);
 }
@@ -699,6 +693,56 @@ int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
 }
 
 /**
+ * @brief This function only extracts the type of key for 
+ *        tables that have single key
+ * 
+ * @return true Key type is int
+ * @return false Key type is not int
+ */
+int ha_lineairdb::is_primary_key_type_int() {
+  int bytes = 0;
+  if (is_primary_key_exists()) {
+    assert(table->s->keys == 1); 
+    assert(max_supported_key_parts() ==
+           1);  // now we assume that there is no composite index
+    my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+    for (Field** field = table->field; *field; field++) {
+      auto* f = *field;
+      if (f->m_indexed) {  // it is the key column
+        ha_base_keytype key_type = f->key_type();
+        switch (key_type) {
+          case HA_KEYTYPE_SHORT_INT:
+          case HA_KEYTYPE_USHORT_INT:
+            bytes = sizeof(short);
+            break;
+          case HA_KEYTYPE_LONG_INT:
+          case HA_KEYTYPE_ULONG_INT:
+            bytes = sizeof(long);
+            break;
+          case HA_KEYTYPE_LONGLONG:
+          case HA_KEYTYPE_ULONGLONG:
+            bytes = sizeof(long long);
+            break;
+          case HA_KEYTYPE_INT24:
+          case HA_KEYTYPE_UINT24:
+            bytes = 3;
+            break;
+          case HA_KEYTYPE_INT8:
+            bytes = sizeof(int8_t);
+            break;
+          default:
+            bytes = 0;
+            break;
+        }
+        break;
+      }
+    }
+    tmp_restore_column_map(table->read_set, org_bitmap);
+  }
+  return bytes;
+}
+
+/**
  * @brief Set the current key of the row
  *  which is requested by the query.
  *  The key is formatted as the following:
@@ -725,8 +769,18 @@ void ha_lineairdb::set_current_key(const uchar* key) {
     current_key_.append("-key-");
 
     if (key != nullptr) {  // DELETE
-      auto pk_bytes = (key[1] << 8) | key[0];
-      for (int i = 2; i < pk_bytes + 2; i++) { current_key_.append(key[i]); }
+      if (int int_bytes = is_primary_key_type_int()) {
+        // for integer type keys
+        int primary_key = 0;
+        for (int i = 0; i < int_bytes; i++) {
+          primary_key = primary_key | key[i] << sizeof(char) * i;
+        }
+        current_key_.append(std::to_string(primary_key));
+      }
+      else {
+        auto pk_bytes = (key[1] << 8) | key[0];
+        for (int i = 2; i < pk_bytes + 2; i++) { current_key_.append(key[i]); }
+      }
     } else if (is_primary_key_exists()) {  // KEY EXISTS
       assert(max_supported_key_parts() ==
              1);  // now we assume that there is no composite index

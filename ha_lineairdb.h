@@ -276,6 +276,7 @@ class ha_lineairdb : public handler {
   void set_current_key(const uchar* key = nullptr);
   void set_write_buffer();
   bool is_primary_key_exists();
+  int is_primary_key_type_int();
   int set_fields_from_lineairdb(uchar* buf, const std::byte* const read_buf,
                                 const size_t read_buf_size);
 };
