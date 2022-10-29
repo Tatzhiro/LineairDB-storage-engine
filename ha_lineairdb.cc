@@ -263,23 +263,9 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
   // engine with unsupported key type (e.g., int),
   // we return HA_ERR_WRONG_COMMAND to indicate
   // "this key type is unsupported".
-  
-  /**
-   * WANTFIX: Extracting read_key for later delete_row function.
-   * read_key has to be passed to tx.Read in line 360 so that 
-   * index_read_map can correctly identify the presence of the
-   * row specified by the read_key.
-   * However, the correctness of this read_key extraction is unknown.
-   * 
-   */
-  
-  /**
-   * 2022/10/19
-   * BUG:
-   * WANTFIX:
-   * Primary key extraction currently supports string type only.
-   * We need to make it compatible for integer type keys.
-   */
+  const bool key_type_is_supported_by_lineairdb = true;
+
+  if (!key_type_is_supported_by_lineairdb) return HA_ERR_WRONG_COMMAND;
 
   set_current_key(key);
 
