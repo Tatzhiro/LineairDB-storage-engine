@@ -22,7 +22,7 @@ teardown() {
         echo -e "$output" >&3
         echo "    END DEBUG OUTPUT" >&3
     fi
-    pkill mysqld
+    sudo service mysql restart
 }
 
 @test "SELECT rows" {
