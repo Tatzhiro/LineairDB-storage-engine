@@ -1,4 +1,4 @@
-name: Makefile CI
+name: Build and Test storage engine
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - name: checkout
         uses: actions/checkout@v3
@@ -16,13 +16,22 @@ jobs:
           submodules: recursive
       - name: Install dependencies
         run: |
+          sudo apt install ninja-build libudev-dev libboost-dev libnuma-dev
           npm install -g bats
-          brew install boost ninja
       - name: Build
         run: |
-          ./build.sh
+          ln -s $(pwd) third_party/mysql-server/storage/lineairdb
+          cmake third_party/mysql-server -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../boost -G Ninja
+          ninja ha_lineairdb_storage_engine.so
+      - name: Start MySQL Server
+        run: |
+          sudo systemctl start mysql.service
+      - name: Copy into MySQL plugin directory
+        run: |
+          sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so $(echo "SHOW VARIABLES LIKE 'plugin_dir';" | mysql -uroot -proot -N | awk '{print $2}')
       - name: Setup MySQL Server
         run: |
-          rm -rf base
-          mkdir -p base/data
+          echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | mysql -uroot -proot
+      - name: Exec test scripts
+        run: |
           bats tests/CI.bats

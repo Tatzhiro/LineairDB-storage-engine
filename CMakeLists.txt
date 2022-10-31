@@ -22,7 +22,7 @@
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_subdirectory(third_party/lineairdb)
+add_subdirectory(third_party/LineairDB)
 set(LINEAIRDB_PLUGIN_DYNAMIC "ha_lineairdb")
 set(LINEAIRDB_SOURCES ha_lineairdb.cc ha_lineairdb_handler_miscs.cc)
 add_definitions(-DMYSQL_SERVER)
