@@ -4,7 +4,7 @@ We evaluate this project via [Benchbase](https://github.com/cmu-db/benchbase).
 
 ## Requirements
 
-TBW.
+OS: Ubuntu (we are assuming that the path to mysqld.cnf is /etc/mysql/mysql.conf.d/mysqld.cnf)
 
 ## Executables
 
@@ -14,4 +14,6 @@ bench/bin/benchbase tpcc # [tpcc|ycsb]
 
 ## Plotting
 
-TBW.
+```
+python3 bench/bin/plot.py
+```
