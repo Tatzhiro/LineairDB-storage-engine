@@ -55,8 +55,7 @@ for storage_engine in lineairdb innodb; do
 
   sudo sed -i s/default_storage_engine.*/default_storage_engine=$storage_engine/ /etc/mysql/mysql.conf.d/mysqld.cnf
 
-  for num_thread in {1..`nproc`}; do
-
+  for (( num_thread=1; num_thread<=$(nproc); num_thread++ )); do
     sudo sed -i "s/innodb_thread_concurrency.*/innodb_thread_concurrency=$num_thread/" /etc/mysql/mysql.conf.d/mysqld.cnf
     sed -i "s/<terminals>.*<\/terminals>/<terminals>$num_thread<\/terminals>/" $base_path/bench/config/ycsb.xml
     sudo systemctl restart mysql
