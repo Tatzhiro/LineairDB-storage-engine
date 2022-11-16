@@ -15,5 +15,6 @@ bench/bin/benchbase tpcc # [tpcc|ycsb]
 ## Plotting
 
 ```
+pip3 install -r bench/requirements.txt
 python3 bench/bin/plot.py
 ```
