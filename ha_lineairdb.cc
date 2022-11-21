@@ -107,6 +107,7 @@
 
 #define BYTE_BIT_NUMBER (8)
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
+#define FENCE true
 
 LineairDB_share::LineairDB_share() {
   thr_lock_init(&lock);
@@ -215,7 +216,9 @@ int ha_lineairdb::write_row(uchar*) {
   tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
            write_buffer_.length());
   get_db()->EndTransaction(tx, [&](auto) {});
+#if FENCE
   get_db()->Fence();
+#endif
 
   return 0;
 }
@@ -231,7 +234,9 @@ int ha_lineairdb::update_row(const uchar*, uchar*) {
   tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
            write_buffer_.length());
   get_db()->EndTransaction(tx, [&](auto) {});
+#if FENCE
   get_db()->Fence();
+#endif
 
   return 0;
 }

@@ -49,23 +49,45 @@ fi
 message "Execute the benchmarking $benchmark"
 ex_file=benchbase-mysql/benchbase.jar
 
-# ./build.sh lineairdb_storage_engine
-# sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so $(echo "SHOW VARIABLES LIKE 'plugin_dir';" | sudo mysql -uroot -N | awk '{print $2}')
-for storage_engine in lineairdb innodb; do
+cd $base_path
+sed -i "s/#define FENCE.*/#define FENCE false/" ha_lineairdb.cc
+cd $base_path/engine
+ninja lineairdb_storage_engine -j 4
+sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so /usr/lib/mysql/plugin
 
-  sudo sed -i s/default_storage_engine.*/default_storage_engine=$storage_engine/ /etc/mysql/mysql.conf.d/mysqld.cnf
+for bm_type in A B C write; do
+  cd $base_path/third_party/benchbase
 
-  for (( num_thread=1; num_thread<=$(nproc); num_thread++ )); do
-    sudo sed -i "s/innodb_thread_concurrency.*/innodb_thread_concurrency=$num_thread/" /etc/mysql/mysql.conf.d/mysqld.cnf
-    sed -i "s/<terminals>.*<\/terminals>/<terminals>$num_thread<\/terminals>/" $base_path/bench/config/ycsb.xml
-    sudo systemctl restart mysql
-    mysql -u bench < $base_path/bench/reset.sql
+  if [ $bm_type = A ]; then
+    weight=50,0,0,50,0,0
+  elif [ $bm_type = B ]; then
+    weight=95,0,0,5,0,0
+  elif [ $bm_type = C ]; then
+    weight=100,0,0,0,0,0
+  else
+    weight=0,0,0,100,0,0
+  fi
 
-    java -jar $ex_file -b $benchmark -c $base_path/bench/config/$benchmark.xml --create=true --load=true --execute=true
+  sed -i "s/<weights>.*<\/weights>/<weights>$weight<\/weights>/" $base_path/bench/config/ycsb.xml
+  for storage_engine in myisam lineairdb innodb; do
+    rm -rf $base_path/bench/results/$storage_engine/*
+    sudo sed -i s/default_storage_engine.*/default_storage_engine=$storage_engine/ /etc/mysql/mysql.conf.d/mysqld.cnf
 
-    mkdir -p $base_path/bench/results/$storage_engine/thread_$num_thread
-    mv results/*.csv $base_path/bench/results/$storage_engine/thread_$num_thread
+    for num_thread in 1 $(seq 4 4 64); do
+      sudo sed -i "s/innodb_thread_concurrency.*/innodb_thread_concurrency=$num_thread/" /etc/mysql/mysql.conf.d/mysqld.cnf
+      sed -i "s/<terminals>.*<\/terminals>/<terminals>$num_thread<\/terminals>/" $base_path/bench/config/ycsb.xml
+      sudo systemctl restart mysql
+      # /home/tatsu/LineairDB-storage-engine/build/bin/mysql -u bench < $base_path/bench/reset.sql
+      mysql -u bench < $base_path/bench/reset.sql
+
+      java -jar $ex_file -b $benchmark -c $base_path/bench/config/$benchmark.xml --create=true --load=true --execute=true
+
+      mkdir -p $base_path/bench/results/$storage_engine/thread_$num_thread
+      mv results/*.csv $base_path/bench/results/$storage_engine/thread_$num_thread
+    done
   done
+  mkdir -p $base_path/bench/plots/ycsb/$bm_type
+  cd $base_path/bench/plots/ycsb/$bm_type
+  python3 $base_path/bench/bin/plot.py
 done
-
 message 'Finish the benchmarking'
