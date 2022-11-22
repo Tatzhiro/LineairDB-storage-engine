@@ -12,7 +12,7 @@ def makeDFfromCSV(clm, xaxis):
     sample = pd.DataFrame(columns=clm)
     for db in args.engine:
         csvlist = glob.glob(
-            f'/home/tatsu/LineairDB-storage-engine/bench/results/{db}/*/*results.csv')
+            f'{os.path.dirname(__file__)}/../results/{db}/*/*results.csv')
         csvlist = sorted(csvlist, key=lambda x: os.path.basename(x))
         clm = []
         for f in csvlist:
@@ -41,8 +41,9 @@ def genplot(sample, engine):
     ax.set_xlabel("Number of Threads")
     ax.set_ylabel("Throughput (req/sec)")
     ax.legend()
+    ax.set_xlim(1, sample.numThread.max())
     ax.set_ylim(bottom=0)
-    fig.savefig("plot.png")
+    fig.savefig("plot.pdf")
 
 
 def main(args):
