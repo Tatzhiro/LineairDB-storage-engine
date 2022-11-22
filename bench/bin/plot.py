@@ -5,45 +5,57 @@ import glob
 from IPython import embed
 import multiprocessing
 import os
+import argparse
 
 
-# TODO: adjust code for "step" once this script would be run on many-core machines
-numcores = multiprocessing.cpu_count()
-step = 1
 
-sample = pd.DataFrame(columns=["numThread", "innodb", "lineairdb", "fence", "myisam"])
-for db in ["innodb", "lineairdb", "fence", "myisam"]:
-    csvlist = glob.glob(f'/home/tatsu/LineairDB-storage-engine/bench/results/{db}/*/*results.csv')
-    csvlist = sorted(csvlist,key=lambda x: os.path.basename(x))
-    clm = []
-    for f in csvlist:
-        df = pd.read_csv(f)
+def makeDFfromCSV(clm, xaxis) :
+    sample = pd.DataFrame(columns=clm)
+    for db in args.engine:
+        csvlist = glob.glob(f'/home/tatsu/LineairDB-storage-engine/bench/results/{db}/*/*results.csv')
+        csvlist = sorted(csvlist,key=lambda x: os.path.basename(x))
+        clm = []
+        for f in csvlist:
+            df = pd.read_csv(f)
 
-        # drop rows that are measuring warmup phase
-        df = df.drop(df.index[[0,1]])
-        # drop rows that may include data from incomplete run
-        df = df.drop(df.index[[-1]])
+            # drop rows that are measuring warmup phase
+            df = df.drop(df.index[[0,1]])
+            # drop rows that may include data from incomplete run
+            df = df.drop(df.index[[-1]])
 
-        mean = df["Throughput (requests/second)"].mean()
-        clm.append(mean)
-    sample[db] = pd.DataFrame(data=clm)
+            mean = df["Throughput (requests/second)"].mean()
+            clm.append(mean)
+        sample[db] = pd.DataFrame(data=clm)
 
-sample["numThread"] = pd.DataFrame(data=list(range(1,numcores + step, step)))
-first_column_data = sample[sample.keys()[0]]
-second_column_data = sample[sample.keys()[1]]
-third_column_data = sample[sample.keys()[2]]
-forth_column_data = sample[sample.keys()[3]]
-fifth_column_data = sample[sample.keys()[4]]
+    sample["numThread"] = pd.DataFrame(data=xaxis)
+    return sample
 
-fig, ax = plt.subplots()
+def genplot(sample, engine) :
+    fig, ax = plt.subplots()
+    plot = []
+    for c in engine :
+        plot.append(ax.plot(sample["numThread"], sample[c], marker='o', label=c))
 
-innoplot = ax.plot(first_column_data, second_column_data, marker='o')
-lineairplot = ax.plot(first_column_data, third_column_data, marker='o', linestyle="dashed")
-# fenceplot = ax.plot(first_column_data, forth_column_data, marker='o', linestyle="dashed")
-isamplot = ax.plot(first_column_data, fifth_column_data, marker='o', linestyle="dashed")
-ax.set_xlabel("Number of Threads")
-ax.set_ylabel("Throughput (req/sec)")
-# ax.legend((innoplot[0], lineairplot[0], fenceplot[0], isamplot[0]), ("InnoDB", "LineairDB", "LineairDB+fence", "MyIsam"), loc=4)
-ax.legend((innoplot[0], lineairplot[0], isamplot[0]), ("InnoDB", "LineairDB", "MyIsam"), loc=3)
-ax.set_ylim(bottom=0)
-fig.savefig("plot.png")
+    ax.set_xlabel("Number of Threads")
+    ax.set_ylabel("Throughput (req/sec)")
+    ax.legend()
+    ax.set_ylim(bottom=0)
+    fig.savefig("plot.png")
+
+def main(args) :
+    clm = ["numThread"] + args.engine
+    sample = makeDFfromCSV(clm, args.xaxis)
+    genplot(sample, args.engine)
+    
+    
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Plot thread vs throughput')
+    parser.add_argument('--engine', metavar='DB', type=str, nargs='*',
+                        help='storage engine to plot', default=["innodb", "lineairdb"])
+    parser.add_argument('--xaxis', metavar='N', type=int, nargs='*',
+                        help='step of the xaxis', 
+                        default=list(range(1, multiprocessing.cpu_count() + 1, 1)))
+    args = parser.parse_args()
+    main(args)

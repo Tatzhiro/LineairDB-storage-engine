@@ -1,6 +1,6 @@
 #! /bin/bash
 
-set -e
+set -xu
 
 if [ $# -eq 0 ]; then
     echo "No arguments supplied."
@@ -45,17 +45,31 @@ if [ ! -f "$zip_file" ]; then
   cd -
 fi
 
+function EDIT_FENCE()
+{
+local IS_FENCING=$1
+cd $base_path
+sed -i "s/#define FENCE.*/#define FENCE $IS_FENCING/" ha_lineairdb.cc
+cd $base_path/engine
+ninja lineairdb_storage_engine -j 4
+sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so /usr/lib/mysql/plugin
+cd $base_path/third_party/benchbase
+}
+
 ### Benchmark
 message "Execute the benchmarking $benchmark"
 ex_file=benchbase-mysql/benchbase.jar
 
-cd $base_path
-sed -i "s/#define FENCE.*/#define FENCE false/" ha_lineairdb.cc
-cd $base_path/engine
-ninja lineairdb_storage_engine -j 4
-sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so /usr/lib/mysql/plugin
+step=16
+num_threads=(1 $(seq $step $step `nproc`))
+engines=(
+  myisam 
+  lineairdb 
+  innodb 
+  #fence
+)
 
-for bm_type in A B C write; do
+for bm_type in A; do
   cd $base_path/third_party/benchbase
 
   if [ $bm_type = A ]; then
@@ -68,12 +82,19 @@ for bm_type in A B C write; do
     weight=0,0,0,100,0,0
   fi
 
+  rm -rf $base_path/bench/results/*
   sed -i "s/<weights>.*<\/weights>/<weights>$weight<\/weights>/" $base_path/bench/config/ycsb.xml
-  for storage_engine in myisam lineairdb innodb; do
-    rm -rf $base_path/bench/results/$storage_engine/*
-    sudo sed -i s/default_storage_engine.*/default_storage_engine=$storage_engine/ /etc/mysql/mysql.conf.d/mysqld.cnf
+  EDIT_FENCE false
+  
+  for engine in ${engines[@]}; do
+    if [ $engine = "fence" ]; then
+      EDIT_FENCE true
+      sudo sed -i s/default_storage_engine.*/default_storage_engine=lineairdb/ /etc/mysql/mysql.conf.d/mysqld.cnf
+    else
+      sudo sed -i s/default_storage_engine.*/default_storage_engine=$engine/ /etc/mysql/mysql.conf.d/mysqld.cnf
+    fi
 
-    for num_thread in 1 $(seq 4 4 64); do
+    for num_thread in ${num_threads[@]}; do
       sudo sed -i "s/innodb_thread_concurrency.*/innodb_thread_concurrency=$num_thread/" /etc/mysql/mysql.conf.d/mysqld.cnf
       sed -i "s/<terminals>.*<\/terminals>/<terminals>$num_thread<\/terminals>/" $base_path/bench/config/ycsb.xml
       sudo systemctl restart mysql
@@ -82,12 +103,14 @@ for bm_type in A B C write; do
 
       java -jar $ex_file -b $benchmark -c $base_path/bench/config/$benchmark.xml --create=true --load=true --execute=true
 
-      mkdir -p $base_path/bench/results/$storage_engine/thread_$num_thread
-      mv results/*.csv $base_path/bench/results/$storage_engine/thread_$num_thread
+      mkdir -p $base_path/bench/results/$engine/thread_$num_thread
+      mv results/*.csv $base_path/bench/results/$engine/thread_$num_thread
     done
+
   done
+
   mkdir -p $base_path/bench/plots/ycsb/$bm_type
   cd $base_path/bench/plots/ycsb/$bm_type
-  python3 $base_path/bench/bin/plot.py
+  python3 $base_path/bench/bin/plot.py --engine ${engines[@]} --xaxis ${num_threads[@]}
 done
 message 'Finish the benchmarking'
