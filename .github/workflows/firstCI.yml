@@ -16,6 +16,7 @@ jobs:
           submodules: recursive
       - name: Install dependencies
         run: |
+          sudo apt update
           sudo apt install ninja-build libudev-dev libboost-dev libnuma-dev
           npm install -g bats
       - name: Build
