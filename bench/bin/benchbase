@@ -60,6 +60,10 @@ cd $base_path/third_party/benchbase
 message "Execute the benchmarking $benchmark"
 ex_file=benchbase-mysql/benchbase.jar
 
+if [[ `sudo cat /etc/mysql/mysql.conf.d/mysqld.cnf | grep default_storage_engine` != default_storage_engine* ]] ;
+then echo default_storage_engine=innodb | sudo tee -a /etc/mysql/mysql.conf.d/mysqld.cnf
+fi
+
 step=16
 num_threads=(1 $(seq $step $step `nproc`))
 engines=(
