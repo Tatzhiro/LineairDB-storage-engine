@@ -1,3 +1,7 @@
 pandas
 matplotlib
 ipython
+argparse
+glob
+multiprocessing
+os
