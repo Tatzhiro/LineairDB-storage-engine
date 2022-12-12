@@ -36,6 +36,3 @@ jobs:
       - name: Exec test scripts
         run: |
           bats tests/CI.bats
-      - name: Plot
-        run: |
-          bench/bin/benchbase ycsb
