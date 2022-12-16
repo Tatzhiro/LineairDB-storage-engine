@@ -277,6 +277,15 @@ class ha_lineairdb : public handler {
   void set_write_buffer();
   bool is_primary_key_exists();
   int is_primary_key_type_int();
+
+  bool store_blob_to_field(Field** field);
+  void flush_null_flag_to_buf(uchar* buf, std::bitset<8> &nullBit, 
+                              int &field_index, int &buf_nullbyte_index);
+  bool is_over_buf_flag_capacity(int field_index);
+  void set_flag_for_nonnull_field(std::bitset<8> &nullBit, int &clm_cnt);
+  void handle_null_field(uchar* buf, Field** field,
+                    std::bitset<8> &nullBit, 
+                    int &clm_cnt, int &null_byte_cnt);
   int set_fields_from_lineairdb(uchar* buf, const std::byte* const read_buf,
                                 const size_t read_buf_size);
 };
