@@ -55,6 +55,8 @@
 #include "sql_string.h"
 #include "thr_lock.h" /* THR_LOCK, THR_LOCK_DATA */
 
+#define BYTE_BIT_NUMBER (8)
+
 /** @brief
   LineairDB_share is a class that will be shared among all open handlers.
   This lineairdb implements the minimum of what you will probably need.
@@ -274,17 +276,19 @@ class ha_lineairdb : public handler {
  private:
   std::string get_current_key();
   void set_current_key(const uchar* key = nullptr);
-  void set_write_buffer();
+
+  std::array<char, BYTE_BIT_NUMBER> interpret_buf_flag(uchar flag);
+  void set_write_buffer(uchar* buf);
   bool is_primary_key_exists();
   int is_primary_key_type_int();
 
   bool store_blob_to_field(Field** field);
-  void flush_null_flag_to_buf(uchar* buf, std::bitset<8> &nullBit, 
+  void flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBER> &nullBit, 
                               int &field_index, int &buf_nullbyte_index);
   bool is_over_buf_flag_capacity(int field_index);
-  void set_flag_for_nonnull_field(std::bitset<8> &nullBit, int &clm_cnt);
+  void set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, int &clm_cnt);
   void handle_null_field(uchar* buf, Field** field,
-                    std::bitset<8> &nullBit, 
+                    std::bitset<BYTE_BIT_NUMBER> &nullBit, 
                     int &clm_cnt, int &null_byte_cnt);
   int set_fields_from_lineairdb(uchar* buf, const std::byte* const read_buf,
                                 const size_t read_buf_size);
