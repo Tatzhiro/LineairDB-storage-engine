@@ -1,5 +1,9 @@
 #!/usr/bin/env bats
 
+setup() {
+    cd $BATS_TEST_DIRNAME
+}
+
 teardown() {
     if [[ ! -z "$DEBUG" ]]; then
         echo "    DEBUG OUTPUT:" >&3
