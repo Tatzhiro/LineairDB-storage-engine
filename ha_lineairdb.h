@@ -286,8 +286,8 @@ class ha_lineairdb : public handler {
   void flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBER> &nullBit, 
                               int &field_index, int &buf_nullbyte_index);
   bool is_over_buf_flag_capacity(int field_index);
-  void set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, int &clm_cnt);
-  void handle_null_field(uchar* buf, Field** field,
+  bool set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, int &clm_cnt);
+  bool handle_null_field(uchar* buf, Field** field,
                     std::bitset<BYTE_BIT_NUMBER> &nullBit, 
                     int &clm_cnt, int &null_byte_cnt);
   int set_fields_from_lineairdb(uchar* buf, const std::byte* const read_buf,

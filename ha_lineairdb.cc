@@ -896,20 +896,27 @@ void ha_lineairdb::flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBE
   nullBit.set();
 }
 
-void ha_lineairdb::set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, int &nullable_field_index) {
-  if (write_buffer_.c_ptr() != "NULL") { nullBit.flip(nullable_field_index); }
+bool ha_lineairdb::set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, int &nullable_field_index) {
+  bool field_is_null = true;
+  if (write_buffer_.length() != 4 || strncmp(write_buffer_.c_ptr(), "NULL", 4)) { 
+    nullBit.flip(nullable_field_index); 
+    field_is_null = false;
+  }
+  return field_is_null;
 }
 
-void ha_lineairdb::handle_null_field(uchar* buf, Field** field,
+bool ha_lineairdb::handle_null_field(uchar* buf, Field** field,
                                     std::bitset<BYTE_BIT_NUMBER> &nullBit, 
                                     int &nullable_field_index, int &buf_nullbyte_index) {
+  bool field_is_null = false;
   if ((*field)->is_nullable()) {
-    set_flag_for_nonnull_field(nullBit, nullable_field_index);
+    field_is_null = set_flag_for_nonnull_field(nullBit, nullable_field_index);
     nullable_field_index++;
     if (is_over_buf_flag_capacity(nullable_field_index)) {
       flush_null_flag_to_buf(buf, nullBit, nullable_field_index, buf_nullbyte_index);
     }
   }
+  return field_is_null;
 }
 
 int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
@@ -955,10 +962,15 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
           break;
       }
       if (is_end_of_field || p == buf_end) {
-        (*field)->store(write_buffer_.ptr(), write_buffer_.length(),
-                        write_buffer_.charset(), CHECK_FIELD_WARN);
-        handle_null_field(buf, field, nullBit, nullable_field_index, buf_nullbyte_index);
-        if (store_blob_to_field(field)) return HA_ERR_OUT_OF_MEM;
+        bool field_is_null = false;
+        field_is_null = handle_null_field(buf, field, nullBit, 
+                                          nullable_field_index, 
+                                          buf_nullbyte_index);
+        if (field_is_null == false) {
+          (*field)->store(write_buffer_.ptr(), write_buffer_.length(),
+                          write_buffer_.charset(), CHECK_FIELD_WARN);
+          if (store_blob_to_field(field)) return HA_ERR_OUT_OF_MEM;
+        }
         p++;
         break;
       }
