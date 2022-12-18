@@ -1,9 +1,6 @@
-import sys
 import mysql.connector
 
-def reset () :
-    db=mysql.connector.connect(host="localhost", user="root")
-    cursor=db.cursor()
+def reset (db, cursor) :
     cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
     cursor.execute('CREATE TABLE ha_lineairdb_test.items (\

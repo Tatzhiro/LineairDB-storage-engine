@@ -19,7 +19,7 @@ jobs:
           sudo apt update
           sudo apt install ninja-build libudev-dev libboost-dev libnuma-dev
           npm install -g bats
-          pip3 install mysql-connector-python
+          sudo pip3 install mysql-connector-python
       - name: Build
         run: |
           ln -s $(pwd) third_party/mysql-server/storage/lineairdb

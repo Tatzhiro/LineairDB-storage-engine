@@ -14,17 +14,17 @@ teardown() {
 }
 
 @test "SELECT rows" {
-    python3 pytest/select.py
+    python3 pytest/select.py --password root
 }
 
 @test "SELECT nullable column" {
-    python3 pytest/select_null.py
+    python3 pytest/select_null.py --password root
 }
 
 @test "SELECT with WHERE clause" {
-    python3 pytest/where.py
+    python3 pytest/where.py --password root
 }
 
 @test "UPDATE rows" {
-    python3 pytest/update.py
+    python3 pytest/update.py --password root
 }
