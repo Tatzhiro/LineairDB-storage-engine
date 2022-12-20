@@ -107,6 +107,7 @@
 #include "typelib.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
+#define BYTE_BIT_NUMBER (8)
 #define FENCE true
 
 LineairDB_share::LineairDB_share() {
@@ -879,8 +880,8 @@ bool ha_lineairdb::store_blob_to_field(Field** field) {
   return false;
 }
 
-void ha_lineairdb::flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBER> &nullBit, 
-                                          int &nullable_field_index, int &buf_nullbyte_index) {
+void flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBER> &nullBit, 
+                            size_t &nullable_field_index, size_t &buf_nullbyte_index) {
   uchar mask = nullBit.to_ulong();
   memcpy(&buf[buf_nullbyte_index], &mask, 1);
   buf_nullbyte_index++;
@@ -888,26 +889,13 @@ void ha_lineairdb::flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBE
   nullBit.set();
 }
 
-bool ha_lineairdb::set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, int &nullable_field_index) {
+bool set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, 
+                                const size_t &nullable_field_index,
+                                String &write_buffer) {
   bool field_is_null = true;
-  if (write_buffer_.length() != 4 || strncmp(write_buffer_.c_ptr(), "NULL", 4)) { 
+  if (write_buffer.length() != 4 || strncmp(write_buffer.c_ptr(), "NULL", 4)) { 
     nullBit.flip(nullable_field_index); 
     field_is_null = false;
-  }
-  return field_is_null;
-}
-
-bool ha_lineairdb::handle_null_field(uchar* buf, Field** field,
-                                    std::bitset<BYTE_BIT_NUMBER> &nullBit, 
-                                    int &nullable_field_index, int &buf_nullbyte_index) {
-  bool field_is_null = false;
-  if ((*field)->is_nullable()) {
-    field_is_null = set_flag_for_nonnull_field(nullBit, nullable_field_index);
-    nullable_field_index++;
-    const bool is_over_buf_flag_capacity = nullable_field_index == BYTE_BIT_NUMBER;
-    if (is_over_buf_flag_capacity) {
-      flush_null_flag_to_buf(buf, nullBit, nullable_field_index, buf_nullbyte_index);
-    }
   }
   return field_is_null;
 }
@@ -930,15 +918,20 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
   value, store 0xfe, or b11111110, in buf
   */
   std::bitset<BYTE_BIT_NUMBER> nullBit(0xff);
-  /* index to store the null flag */
-  int buf_nullbyte_index = 0;
-  /* index to store the bit wihtin a flag */
-  int nullable_field_index                   = 0;
+  /* index of null flags in buf */
+  size_t buf_nullbyte_index        = 0;
+  /* index of bits wihtin a null flag (each bit represents a nullable field) */
+  size_t nullable_field_index      = 0;
   std::byte* p                  = (std::byte*)malloc(read_buf_size);
   const std::byte* const init_p = p;
 
   memcpy(p, read_buf, read_buf_size);
   std::byte* buf_end = p + read_buf_size;
+
+  /**
+   * extract values from LineairDB read_buf and 
+   * store each column value to corresponding field
+  */
   for (Field** field = table->field; *field; field++) {
     write_buffer_.length(0);
     for (; p < buf_end; p++) {
@@ -955,10 +948,15 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
           break;
       }
       if (is_end_of_field || p == buf_end) {
+
         bool field_is_null = false;
-        field_is_null = handle_null_field(buf, field, nullBit, 
-                                          nullable_field_index, 
-                                          buf_nullbyte_index);
+        if ((*field)->is_nullable()) {
+          field_is_null = set_flag_for_nonnull_field(nullBit, nullable_field_index++, write_buffer_);
+          const bool is_over_buf_flag_capacity = nullable_field_index == BYTE_BIT_NUMBER;
+          if (is_over_buf_flag_capacity)
+            flush_null_flag_to_buf(buf, nullBit, nullable_field_index, buf_nullbyte_index);
+        }
+
         if (field_is_null == false) {
           (*field)->store(write_buffer_.ptr(), write_buffer_.length(),
                           write_buffer_.charset(), CHECK_FIELD_WARN);
