@@ -2,6 +2,6 @@ pandas
 matplotlib
 ipython
 argparse
+glob
 multiprocessing
 os
-mysql-connector-python
