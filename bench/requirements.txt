@@ -5,3 +5,4 @@ argparse
 glob
 multiprocessing
 os
+mysql-connector-python

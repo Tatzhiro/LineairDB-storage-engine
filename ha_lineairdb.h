@@ -277,7 +277,6 @@ class ha_lineairdb : public handler {
   std::string get_current_key();
   void set_current_key(const uchar* key = nullptr);
 
-  std::array<char, BYTE_BIT_NUMBER> interpret_buf_flag(uchar flag);
   void set_write_buffer(uchar* buf);
   bool is_primary_key_exists();
   int is_primary_key_type_int();
@@ -285,7 +284,6 @@ class ha_lineairdb : public handler {
   bool store_blob_to_field(Field** field);
   void flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBER> &nullBit, 
                               int &field_index, int &buf_nullbyte_index);
-  bool is_over_buf_flag_capacity(int field_index);
   bool set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, int &clm_cnt);
   bool handle_null_field(uchar* buf, Field** field,
                     std::bitset<BYTE_BIT_NUMBER> &nullBit, 

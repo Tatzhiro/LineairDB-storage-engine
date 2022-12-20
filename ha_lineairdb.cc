@@ -206,7 +206,7 @@ int ha_lineairdb::close(void) {
   No extra() hint is given currently if a bulk load is happening.
   @param buf is a byte array of data.
 */
-int ha_lineairdb::write_row(uchar*buf) {
+int ha_lineairdb::write_row(uchar* buf) {
   DBUG_TRACE;
 
   set_current_key();
@@ -223,7 +223,7 @@ int ha_lineairdb::write_row(uchar*buf) {
   return 0;
 }
 
-int ha_lineairdb::update_row(const uchar*, uchar*buf) {
+int ha_lineairdb::update_row(const uchar*, uchar* buf) {
   DBUG_TRACE;
 
   set_current_key();
@@ -814,12 +814,8 @@ std::string ha_lineairdb::get_current_key() {
   return std::string(current_key_.ptr(), current_key_.length());
 }
 
-std::array<char, BYTE_BIT_NUMBER> ha_lineairdb::interpret_buf_flag(uchar flag) {
-  std::array<char, BYTE_BIT_NUMBER> byte_nullflag = {};
-  for(int i = 0; i < 8; i++) {
-    byte_nullflag[i] = (flag >> i) & 1;
-  }
-  return byte_nullflag;
+inline bool bit_is_up(uchar& flag, size_t idx){
+  return (flag >> idx) & 1;
 }
 
 /**
@@ -829,17 +825,16 @@ std::array<char, BYTE_BIT_NUMBER> ha_lineairdb::interpret_buf_flag(uchar flag) {
  * {"alice","bob","carol","3"}
  *   col1    col2  col3   col4
  */
-void ha_lineairdb::set_write_buffer(uchar *buf) {
+void ha_lineairdb::set_write_buffer(uchar* buf) {
   write_buffer_.length(0);
 
   char attribute_buffer[1024];
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
-  std::array<char, BYTE_BIT_NUMBER> byte_nullflag = interpret_buf_flag(buf[0]);
   /* index to store the null flag */
-  int buf_nullbyte_index = 0;
+  size_t buf_nullbyte_index = 0;
   /* index to store the bit wihtin 1 byte flag */
-  int nullable_field_index = 0;
+  size_t nullable_field_index = 0;
 
   my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
   for (Field** field = table->field; *field; field++) {
@@ -853,10 +848,11 @@ void ha_lineairdb::set_write_buffer(uchar *buf) {
     write_buffer_.append('"');
     for (; p < end; p++) write_buffer_.append(*p);
     if ((*field)->is_nullable()) {
-      if (byte_nullflag[nullable_field_index] == 1) write_buffer_.append("NULL");
+      if (bit_is_up(buf[buf_nullbyte_index], nullable_field_index) == 1) 
+        write_buffer_.append("NULL");
       if (++nullable_field_index == BYTE_BIT_NUMBER) {
         nullable_field_index = 0;
-        byte_nullflag = interpret_buf_flag(buf[++buf_nullbyte_index]);
+        buf_nullbyte_index++;
       }
     }
     write_buffer_.append('"');
@@ -881,10 +877,6 @@ bool ha_lineairdb::store_blob_to_field(Field** field) {
     }
   }
   return false;
-}
-
-bool ha_lineairdb::is_over_buf_flag_capacity(int nullable_field_index) {
-  return nullable_field_index == BYTE_BIT_NUMBER;
 }
 
 void ha_lineairdb::flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBER> &nullBit, 
@@ -912,7 +904,8 @@ bool ha_lineairdb::handle_null_field(uchar* buf, Field** field,
   if ((*field)->is_nullable()) {
     field_is_null = set_flag_for_nonnull_field(nullBit, nullable_field_index);
     nullable_field_index++;
-    if (is_over_buf_flag_capacity(nullable_field_index)) {
+    const bool is_over_buf_flag_capacity = nullable_field_index == BYTE_BIT_NUMBER;
+    if (is_over_buf_flag_capacity) {
       flush_null_flag_to_buf(buf, nullBit, nullable_field_index, buf_nullbyte_index);
     }
   }
