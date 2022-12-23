@@ -1,6 +1,0 @@
-[mysqld]
-basedir=../build
-datadir=../build/data
-
-
-plugin_dir=plugin_output_directory

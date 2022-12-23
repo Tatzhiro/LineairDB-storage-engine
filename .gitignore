@@ -1,5 +1,8 @@
 build
 boost
+debug
+engine
+perf
 *.log
 bench/results/*
 

@@ -1,6 +1,6 @@
 import sys
 import mysql.connector
-from reset import reset
+from utils.reset import reset
 import argparse
 
 def where (db, cursor) :

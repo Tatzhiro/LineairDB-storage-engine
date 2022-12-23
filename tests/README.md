@@ -36,19 +36,13 @@ Query OK, 0 rows affected (0.80 sec)
 ```
 
 At this time you can do testing.
-
+To check all tests, execute the following command.
 ```
-bats tests/test.bats
-```
-
-To print the debug logs, set the environment variable `DEBUG` as the following.
-
-```
-env DEBUG=true bats tests/test.bats
+find tests/pytest/*.py | xargs -n 1 sh -c 'python3 $0'
 ```
 
 For python tests, install mysql-connector-python. 
 ```
-pip install mysql-connector-python
+pip3 install -r tests/pytest/requirements.txt
 ```
 
