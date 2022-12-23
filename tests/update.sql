@@ -1,1 +1,0 @@
-UPDATE ha_lineairdb_test.items SET content="XXX";
