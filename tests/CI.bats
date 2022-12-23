@@ -1,19 +1,7 @@
 #!/usr/bin/env bats
 
-exec_sql() {
-    cd $BATS_TEST_DIRNAME
-    mysql -uroot -proot <$1
-}
-
 setup() {
-    # TODO: initialize MySQL data files and restart mysqld daemon
-    # TODO: mysql may use caching and thus all testcases need to execute twice or more
-
-    # drop and create database
     cd $BATS_TEST_DIRNAME
-    exec_sql reset.sql
-    # insert initial data with PK "alice" and "bob"
-    exec_sql insert.sql
 }
 
 teardown() {
@@ -26,17 +14,17 @@ teardown() {
 }
 
 @test "SELECT rows" {
-    exec_sql select.sql
+    python3 pytest/select.py --password root
 }
 
 @test "SELECT nullable column" {
-    exec_sql select_null_column.sql
+    python3 pytest/select_null.py --password root
 }
 
 @test "SELECT with WHERE clause" {
-    exec_sql where.sql
+    python3 pytest/where.py --password root
 }
 
 @test "UPDATE rows" {
-    exec_sql update.sql
+    python3 pytest/update.py --password root
 }

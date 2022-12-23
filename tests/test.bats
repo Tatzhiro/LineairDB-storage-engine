@@ -1,23 +1,8 @@
 #!/usr/bin/env bats
 
-exec_sql() {
-    cd $BATS_TEST_DIRNAME
-    ../build/bin/mysql -uroot <$1
-}
-
 setup() {
-    # TODO: initialize MySQL data files and restart mysqld daemon
-    # TODO: mysql may use caching and thus all testcases need to execute twice or more
-
-    # drop and create database
     cd $BATS_TEST_DIRNAME
-    rm -rf ../build/data
-    ../build/bin/mysqld --defaults-file=bats.cnf --initialize-insecure
     ../build/bin/mysqld --defaults-file=bats.cnf --daemonize
-    echo "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'" | ../build/bin/mysql -u root
-    exec_sql reset.sql
-    # insert initial data with PK "alice" and "bob"
-    exec_sql insert.sql
 }
 
 teardown() {
@@ -30,17 +15,17 @@ teardown() {
 }
 
 @test "SELECT rows" {
-    exec_sql select.sql
+    python3 pytest/select.py
 }
 
 @test "SELECT nullable column" {
-    exec_sql select_null_column.sql
+    python3 pytest/select_null.py
 }
 
 @test "SELECT with WHERE clause" {
-    exec_sql where.sql
+    python3 pytest/where.py
 }
 
 @test "UPDATE rows" {
-    exec_sql update.sql
+    python3 pytest/update.py
 }

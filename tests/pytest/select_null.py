@@ -1,26 +1,10 @@
 import sys
 import mysql.connector
+from reset import reset
+import argparse
 
-def reset () :
-    cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
-    cursor.execute('CREATE DATABASE ha_lineairdb_test')
-    cursor.execute('CREATE TABLE ha_lineairdb_test.items (\
-        title VARCHAR(50) NOT NULL,\
-        content TEXT,\
-        content2 TEXT,\
-        content3 TEXT,\
-        content4 TEXT,\
-        content5 TEXT,\
-        content6 TEXT,\
-        content7 TEXT,\
-        content8 TEXT,\
-        content9 TEXT,\
-        INDEX title_idx (title)\
-    )ENGINE = LineairDB')
-    db.commit()
-
-def selectNull () :
-    reset()
+def selectNull (db, cursor) :
+    reset(db, cursor)
     print("NULL SELECT TEST")
     cursor.execute(\
         'INSERT INTO ha_lineairdb_test.items (\
@@ -32,23 +16,36 @@ def selectNull () :
     cursor.execute('SELECT * FROM ha_lineairdb_test.items')
     rows = cursor.fetchall()
     if not rows :
-        print("\tFailed")
+        print("\tCheck 1 Failed")
         print("\t", rows)
         return 1
     for i in rows[0] :
-        if i != "carol" and i != None:
-            print("\tFailed")
+        if i != "carol" and i != None and i != "":
+            print("\tCheck 2 Failed")
             print("\t", rows)
             return 1
-    print("\tPassed!")
     if (rows[0][9] == None) :
-        print("\tWANTFIX: content9 should not be NULL")
+        print("\tCheck 3 Failed")
         print("\t", rows)
+    print("\tPassed!")
     return 0
 
  
-# test
-db=mysql.connector.connect(host="localhost", user="root")
-cursor=db.cursor()
- 
-sys.exit(selectNull())
+def main():
+    # test
+    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    cursor=db.cursor()
+    
+    sys.exit(selectNull(db, cursor))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Connect to MySQL')
+    parser.add_argument('--user', metavar='user', type=str,
+                        help='name of user',
+                        default="root")
+    parser.add_argument('--password', metavar='pw', type=str,
+                        help='password for the user',
+                        default="")
+    args = parser.parse_args()
+    main()

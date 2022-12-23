@@ -26,6 +26,7 @@ add_subdirectory(third_party/LineairDB)
 set(LINEAIRDB_PLUGIN_DYNAMIC "ha_lineairdb")
 set(LINEAIRDB_SOURCES ha_lineairdb.cc ha_lineairdb_handler_miscs.cc)
 add_definitions(-DMYSQL_SERVER)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error -Wextra -mcx16 -fPIC")
 
 if(WITH_LINEAIRDB_STORAGE_ENGINE AND NOT WITHOUT_LINEAIRDB_STORAGE_ENGINE)
   mysql_add_plugin(lineairdb_storage_engine ${LINEAIRDB_SOURCES} STORAGE_ENGINE
