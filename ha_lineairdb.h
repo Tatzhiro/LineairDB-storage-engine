@@ -272,6 +272,42 @@ class ha_lineairdb : public handler {
       enum thr_lock_type lock_type) override;  ///< required
 
  private:
+
+class Mysql_lineairdb_translator
+{
+private:
+  const size_t numBitsinByte = 8;
+public:
+  size_t numNullBytes;
+  size_t nullableFieldIndex;
+  void reset() {
+    numNullBytes = 1;
+    nullableFieldIndex = 0;
+  }
+  void save_null_flags(const uchar *buf) {
+    nullFlags.clear();
+    for (size_t i = 0; i < numNullBytes; i++) {
+      nullFlags.push_back(buf[i]);
+    }
+  }
+  void check_flag_length(){
+    if (++nullableFieldIndex == numBitsinByte) {
+      nullableFieldIndex = 0;
+      numNullBytes++;
+    }
+  }
+  void set_null_flags_in_buf(uchar *buf) {
+    for (size_t i = 0; i < numNullBytes; i++) {
+      buf[i] = nullFlags[i];
+    }
+  }
+  std::string nullFlags;
+  // lineairdb_translator();
+  // ~lineairdb_translator();
+};
+
+  Mysql_lineairdb_translator translator;
+  
   std::string get_current_key();
   void set_current_key(const uchar* key = nullptr);
 

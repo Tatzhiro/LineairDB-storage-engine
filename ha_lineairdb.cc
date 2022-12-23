@@ -832,10 +832,7 @@ void ha_lineairdb::set_write_buffer(uchar* buf) {
   char attribute_buffer[1024];
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
-  /* index to store the null flag */
-  size_t buf_nullbyte_index = 0;
-  /* index to store the bit wihtin 1 byte flag */
-  size_t nullable_field_index = 0;
+  translator.reset();
 
   my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
   for (Field** field = table->field; *field; field++) {
@@ -848,19 +845,12 @@ void ha_lineairdb::set_write_buffer(uchar* buf) {
 
     write_buffer_.append('"');
     for (; p < end; p++) write_buffer_.append(*p);
-    if ((*field)->is_nullable()) {
-      if (bit_is_up(buf[buf_nullbyte_index], nullable_field_index) == 1) 
-        write_buffer_.append("NULL");
-      if (++nullable_field_index == BYTE_BIT_NUMBER) {
-        nullable_field_index = 0;
-        buf_nullbyte_index++;
-      }
-    }
     write_buffer_.append('"');
     write_buffer_.append(',');
+    if ((*field)->is_nullable()) translator.check_flag_length();
   }
   tmp_restore_column_map(table->read_set, org_bitmap);
-
+  translator.save_null_flags(buf);
   write_buffer_.length(write_buffer_.length() - 1);
 }
 
@@ -910,18 +900,6 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
   // Clear BLOB data from the previous row.
   blobroot.ClearForReuse();
 
-  /* nullBit is used to manipulate the nullbit in buf parameter
-  for each 8 potentially null columns, buf holds 1 byte flag at the front
-  the number of null flag bytes in buf is shown in table->s->nullbytes
-  the flag is originally set to 0xff, or b11111111
-  if you want to make the first potentially null column to show a non-null
-  value, store 0xfe, or b11111110, in buf
-  */
-  std::bitset<BYTE_BIT_NUMBER> nullBit(0xff);
-  /* index of null flags in buf */
-  size_t buf_nullbyte_index        = 0;
-  /* index of bits wihtin a null flag (each bit represents a nullable field) */
-  size_t nullable_field_index      = 0;
   std::byte* p                  = (std::byte*)malloc(read_buf_size);
   const std::byte* const init_p = p;
 
@@ -948,20 +926,9 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
           break;
       }
       if (is_end_of_field || p == buf_end) {
-
-        bool field_is_null = false;
-        if ((*field)->is_nullable()) {
-          field_is_null = set_flag_for_nonnull_field(nullBit, nullable_field_index++, write_buffer_);
-          const bool is_over_buf_flag_capacity = nullable_field_index == BYTE_BIT_NUMBER;
-          if (is_over_buf_flag_capacity)
-            flush_null_flag_to_buf(buf, nullBit, nullable_field_index, buf_nullbyte_index);
-        }
-
-        if (field_is_null == false) {
-          (*field)->store(write_buffer_.ptr(), write_buffer_.length(),
+        (*field)->store(write_buffer_.ptr(), write_buffer_.length(),
                           write_buffer_.charset(), CHECK_FIELD_WARN);
-          if (store_blob_to_field(field)) return HA_ERR_OUT_OF_MEM;
-        }
+        if (store_blob_to_field(field)) return HA_ERR_OUT_OF_MEM;
         p++;
         break;
       }
@@ -969,8 +936,14 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
   }
 
   write_buffer_.length(0);
-  uchar mask = nullBit.to_ulong();
-  memcpy(&buf[buf_nullbyte_index], &mask, 1);
+  /**
+   * for each 8 potentially null columns, buf holds 1 byte flag at the front
+   * the number of null flag bytes in buf is shown in table->s->nullbytes
+   * the flag is originally set to 0xff, or b11111111
+   * if you want to make the first potentially null column to show a non-null
+   * value, store 0xfe, or b11111110, in buf
+  */
+  translator.set_null_flags_in_buf(buf);
 
   free((void*)init_p);
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
