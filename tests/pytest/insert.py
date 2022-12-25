@@ -22,12 +22,13 @@ def insert (db, cursor) :
     if not rows: 
         print("\tFailed: list empty")
         return 1
-    elif rows[0][0] == "alice" and rows[1][0] == "bob":
-        print("\tPassed!")
-        return 0
-    else : 
-        print("\tFailed")
-        return 1
+    for row in rows:
+        if row[0] != "alice" and row[0] != "bob":
+            print("\tFailed")
+            print("\t", rows)
+            return 1
+    print("\tPassed!")
+    return 0
 
  
 def main():

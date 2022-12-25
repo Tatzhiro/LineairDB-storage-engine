@@ -67,6 +67,29 @@ class LineairDB_share : public Handler_share {
   std::unique_ptr<LineairDB::Database> lineairdb_;
 };
 
+class Mysql_lineairdb_translator
+{
+public:
+  std::string nullFlags_;
+  std::string mysqlField_;
+private:
+  std::string lineairdbField_;
+
+  size_t read_header(const std::byte* const field, std::string& valBuf, size_t offset);
+  void encode_db_header(const size_t input);
+public:
+  std::string numeric_to_bytes (const size_t s);
+  template <typename BYTE_TYPE>
+  size_t bytes_to_numeric(const BYTE_TYPE* b, const size_t length);
+
+  template <typename BYTE_TYPE>
+  std::string&& encode_db_field(const BYTE_TYPE* srcMysql, const size_t length);
+
+  void set_null_flags_in_buf(uchar *buf);
+  size_t store_null_flags_to_mysql(const std::byte* const srcLineairdb, uchar *dstMysql);
+  size_t decode_db_field(const std::byte* const srcLineairdb, size_t offset);
+};
+
 /** @brief
   Class definition for the storage engine
 */
@@ -80,9 +103,10 @@ class ha_lineairdb : public handler {
   std::vector<std::string> scanned_keys_;
   my_off_t
       current_position_; /* Current position in the file during a file scan */
-  String current_key_;
-  String write_buffer_;
+  std::string current_key_;
+  std::string write_buffer_;
   std::unordered_map<std::string, size_t> auto_generated_keys_;
+  Mysql_lineairdb_translator translator;
   MEM_ROOT blobroot;
 
  public:
@@ -272,48 +296,12 @@ class ha_lineairdb : public handler {
       enum thr_lock_type lock_type) override;  ///< required
 
  private:
-
-class Mysql_lineairdb_translator
-{
-private:
-  const size_t numBitsinByte = 8;
-public:
-  size_t numNullBytes;
-  size_t nullableFieldIndex;
-  void reset() {
-    numNullBytes = 1;
-    nullableFieldIndex = 0;
-  }
-  void save_null_flags(const uchar *buf) {
-    nullFlags.clear();
-    for (size_t i = 0; i < numNullBytes; i++) {
-      nullFlags.push_back(buf[i]);
-    }
-  }
-  void check_flag_length(){
-    if (++nullableFieldIndex == numBitsinByte) {
-      nullableFieldIndex = 0;
-      numNullBytes++;
-    }
-  }
-  void set_null_flags_in_buf(uchar *buf) {
-    for (size_t i = 0; i < numNullBytes; i++) {
-      buf[i] = nullFlags[i];
-    }
-  }
-  std::string nullFlags;
-  // lineairdb_translator();
-  // ~lineairdb_translator();
-};
-
-  Mysql_lineairdb_translator translator;
-  
   std::string get_current_key();
   void set_current_key(const uchar* key = nullptr);
 
   void set_write_buffer(uchar* buf);
   bool is_primary_key_exists();
-  int is_primary_key_type_int();
+  size_t is_primary_key_type_int();
 
   bool store_blob_to_field(Field** field);
   int set_fields_from_lineairdb(uchar* buf, const std::byte* const read_buf,

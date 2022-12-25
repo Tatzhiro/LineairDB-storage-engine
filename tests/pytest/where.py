@@ -28,20 +28,19 @@ def where (db, cursor) :
     cursor.execute('SELECT * FROM ha_lineairdb_test.items WHERE content = "alice meets bob"')
     rows = cursor.fetchall()
 
-    if rows[0][0] != "alice" :
+    if not rows or rows[0][0] != "alice" :
         print("\tCheck 2 Failed")
         print("\t", rows)
         return 1
 
     cursor.execute('SELECT * FROM ha_lineairdb_test.items WHERE title = "alice"')
     rows = cursor.fetchall()
-    if rows[0][0] != "alice" :
+    if not rows or rows[0][0] != "alice" :
         print("\tCheck 3 Failed")
         print("\t", rows)
         return 1
         
     print("\tPassed!")
-    print("\t", rows)
     return 0
 
 def main():
