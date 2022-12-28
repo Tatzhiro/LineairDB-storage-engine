@@ -55,6 +55,8 @@
 #include "sql_string.h"
 #include "thr_lock.h" /* THR_LOCK, THR_LOCK_DATA */
 
+#include "translator.h"
+
 /** @brief
   LineairDB_share is a class that will be shared among all open handlers.
   This lineairdb implements the minimum of what you will probably need.
@@ -65,29 +67,6 @@ class LineairDB_share : public Handler_share {
   LineairDB_share();
   ~LineairDB_share() override { thr_lock_delete(&lock); }
   std::unique_ptr<LineairDB::Database> lineairdb_;
-};
-
-class Mysql_lineairdb_translator
-{
-public:
-  std::string nullFlags_;
-  std::string mysqlField_;
-private:
-  std::string lineairdbField_;
-
-  size_t read_header(const std::byte* const field, std::string& valBuf, size_t offset);
-  void encode_db_header(const size_t input);
-public:
-  std::string numeric_to_bytes (const size_t s);
-  template <typename BYTE_TYPE>
-  size_t bytes_to_numeric(const BYTE_TYPE* b, const size_t length);
-
-  template <typename BYTE_TYPE>
-  std::string&& encode_db_field(const BYTE_TYPE* srcMysql, const size_t length);
-
-  void set_null_flags_in_buf(uchar *buf);
-  size_t store_null_flags_to_mysql(const std::byte* const srcLineairdb, uchar *dstMysql);
-  size_t decode_db_field(const std::byte* const srcLineairdb, size_t offset);
 };
 
 /** @brief

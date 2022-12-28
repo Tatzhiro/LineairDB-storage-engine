@@ -70,5 +70,6 @@
     "set": "cpp",
     "stop_token": "cpp",
     "*.inc": "cpp"
-  }
+  },
+  "cmake.configureOnOpen": false
 }
