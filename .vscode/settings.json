@@ -69,7 +69,9 @@
     "cwctype": "cpp",
     "set": "cpp",
     "stop_token": "cpp",
-    "*.inc": "cpp"
+    "*.inc": "cpp",
+    "slist": "cpp",
+    "valarray": "cpp"
   },
   "cmake.configureOnOpen": false
 }
