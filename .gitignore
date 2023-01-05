@@ -3,7 +3,9 @@ boost
 debug
 engine
 perf
+.vscode
 *.log
+*/__pycache__/*
 bench/results/*
 
 # Created by https://www.toptal.com/developers/gitignore/api/c++,macos,windows
