@@ -55,7 +55,7 @@
 #include "sql_string.h"
 #include "thr_lock.h" /* THR_LOCK, THR_LOCK_DATA */
 
-#include "lineairdb_field.h"
+#include "lineairdb_field.hh"
 
 /** @brief
   LineairDB_share is a class that will be shared among all open handlers.
@@ -85,7 +85,7 @@ class ha_lineairdb : public handler {
   std::string current_key_;
   std::string write_buffer_;
   std::unordered_map<std::string, size_t> auto_generated_keys_;
-  Lineairdb_Field ldbField;
+  LineairDBField ldbField;
   MEM_ROOT blobroot;
 
  public:

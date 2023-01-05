@@ -1,5 +1,5 @@
 
-#include "storage/lineairdb/ha_lineairdb.h"
+#include "storage/lineairdb/ha_lineairdb.hh"
 
 #include "my_dbug.h"
 #include "mysql/plugin.h"

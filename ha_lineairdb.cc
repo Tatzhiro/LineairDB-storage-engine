@@ -92,7 +92,7 @@
     -Brian
 */
 
-#include "storage/lineairdb/ha_lineairdb.h"
+#include "storage/lineairdb/ha_lineairdb.hh"
 
 #include <iostream>
 
@@ -770,7 +770,7 @@ void ha_lineairdb::set_current_key(const uchar* key) {
          * Appropriate types must be selected for unsigned numbers.
         */
         long primary_key = ldbField.convert_bytes_to_numeric(key, int_bytes);
-        const std::string&& intKey = std::to_string(primary_key);
+        const std::string intKey = std::to_string(primary_key);
         ldbField.set_lineairdb_field(intKey.c_str(), intKey.size());
         current_key_ += ldbField.get_lineairdb_field();
       }
@@ -800,7 +800,7 @@ void ha_lineairdb::set_current_key(const uchar* key) {
       const auto cstr       = table->s->table_name;
       const auto table_name = std::string(cstr.str, cstr.length);
       auto inserted_count = auto_generated_keys_[table_name]++;
-      std::string&& s = std::to_string(inserted_count);
+      const std::string s = std::to_string(inserted_count);
       ldbField.set_lineairdb_field(s.c_str(), s.size());
       current_key_ += ldbField.get_lineairdb_field();
     }
@@ -813,8 +813,8 @@ std::string ha_lineairdb::get_current_key() { return current_key_; }
  * @brief Format and set the requested row into `write_buffer_`.
  */
 void ha_lineairdb::set_write_buffer(uchar* buf) {
-  ldbField.set_lineairdb_field(buf, table->s->null_bytes);
-  write_buffer_ = ldbField.get_lineairdb_field();
+  ldbField.set_null_field(buf, table->s->null_bytes);
+  write_buffer_ = ldbField.get_null_field();
 
   char attribute_buffer[1024];
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
@@ -876,75 +876,3 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
   return 0;
 }
-
-/**
- * Lineairdb_Field method definitions
-*/
-
-std::string Lineairdb_Field::convert_numeric_to_bytes(const size_t num) {
-  char bytes[sizeof(size_t)];
-  std::copy(reinterpret_cast<const char*>(&num),
-            reinterpret_cast<const char*>(&num) + sizeof(size_t),
-            bytes);
-  return std::string{bytes};
-}
-
-template <typename BYTE_TYPE>
-size_t Lineairdb_Field::convert_bytes_to_numeric(const BYTE_TYPE* bytes, const size_t length) {
-  size_t n = 0;
-  for (size_t i = 0; i < length; i++) {
-    n = n | static_cast<const uchar>(bytes[i]) << CHAR_BIT * i;
-  }
-  return n;
-}
-
-std::string Lineairdb_Field::get_lineairdb_field() {
-  return byteSize + valueLength + value;
-}
-
-void Lineairdb_Field::set_header(const size_t num) {
-  if (num == 0) {
-    byteSize = noValue;
-    valueLength.clear();
-    value.clear();
-    return;
-  }
-  valueLength = convert_numeric_to_bytes(num);
-  byteSize = convert_numeric_to_bytes(valueLength.size())[0];
-}
-
-template <typename BYTE_TYPE>
-void Lineairdb_Field::set_lineairdb_field(const BYTE_TYPE* srcMysql, const size_t length) {
-  set_header(length);
-  value.clear();
-  for (size_t i = 0; i < length; i++) value.push_back(srcMysql[i]);
-}
-
-void Lineairdb_Field::make_mysql_table_row(const std::byte* const ldbRawData, const size_t length) {
-  row.clear();
-  size_t offset = 0;
-  while (offset < length) {
-    const auto ldbField = ldbRawData + offset;
-    byteSize = convert_bytes_to_numeric(ldbField, sizeof(byteSize));
-    if (byteSize == noValue) {
-      row.emplace_back("");
-      offset += sizeof(byteSize);
-      continue;
-    }
-
-    const size_t valueLength = convert_bytes_to_numeric(ldbField + sizeof(byteSize), byteSize);
-    const std::byte* const valueData = ldbField + byteSize + sizeof(byteSize);
-
-    value.clear();
-    for (size_t i = 0; i < valueLength; i++) {
-      value.push_back(static_cast<char>(valueData[i]));
-    }
-    if (offset == 0) nullFlag = value;
-    else row.emplace_back(value);
-    offset += sizeof(byteSize) + byteSize + valueLength;
-  }
-}
-
-std::string Lineairdb_Field::get_null_flags() { return nullFlag; }
-
-std::string& Lineairdb_Field::get_column_of_row(size_t i) { return row[i]; }

@@ -71,7 +71,10 @@
     "stop_token": "cpp",
     "*.inc": "cpp",
     "slist": "cpp",
-    "valarray": "cpp"
+    "valarray": "cpp",
+    "climits": "cpp",
+    "forward_list": "cpp",
+    "any": "cpp"
   },
   "cmake.configureOnOpen": false
 }

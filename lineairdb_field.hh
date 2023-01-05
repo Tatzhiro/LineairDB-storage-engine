@@ -1,4 +1,6 @@
+#include <vector>
 #include <string>
+#include <climits>
 #include "my_inttypes.h"
 
 /**
@@ -12,13 +14,13 @@
  * - byteSize: number of bytes of `valueLength`
  *             always 1 byte, byteSize = UCHAR_MAX if valueLength = 0
  * - valueLength: length of value
- *                max 8 bytes
+ *                max 4 bytes
  * value: MySQL value shown to users
  *        max 4294967295 = sizeof(LONGBLOB) bytes
  * Each row consists of multiple fields.
  * First field stores null flags.
  */
-class Lineairdb_Field
+class LineairDBField
 {
 public:
   std::string convert_numeric_to_bytes (const size_t num);
@@ -28,9 +30,11 @@ public:
   /**
    * @brief These methods are called for INSERT and UPDATE statements
    */
+  std::string get_null_field();
+  void set_null_field(const uchar* buf, const size_t null_byte_length);
   std::string get_lineairdb_field();
-  template <typename BYTE_TYPE>
-  void set_lineairdb_field(const BYTE_TYPE* srcMysql, const size_t length);
+  template <typename CHAR_TYPE>
+  void set_lineairdb_field(const CHAR_TYPE* srcMysql, const size_t length);
 
   /**
    * @brief These methods are called for SELECT statements.
@@ -39,10 +43,11 @@ public:
   std::string get_null_flags();
   std::string& get_column_of_row(size_t i);
 
-  Lineairdb_Field() {}
+  LineairDBField() = default;
   
 private:
   static constexpr char noValue = 0xff;
+  static constexpr size_t maxValueLength = UINT_MAX;
 
   char byteSize;
   std::string valueLength;
@@ -52,4 +57,5 @@ private:
   std::vector<std::string> row;
 
   void set_header(const size_t num);
+  size_t calculate_minimum_byte_size_required(const size_t num);
 };
