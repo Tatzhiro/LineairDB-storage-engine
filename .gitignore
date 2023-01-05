@@ -3,6 +3,7 @@ boost
 debug
 engine
 perf
+.vscode
 *.log
 */__pycache__/*
 bench/results/*
