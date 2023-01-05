@@ -17,7 +17,7 @@ def delete (db, cursor) :
     cursor.execute('SELECT * FROM ha_lineairdb_test.items')
     rows = cursor.fetchall()
     if rows :
-        print("\tFailed 1")
+        print("\tCheck 1 Failed")
         print("\t", rows)
         return 1
 
@@ -32,7 +32,7 @@ def delete (db, cursor) :
     cursor.execute('SELECT * FROM ha_lineairdb_test.items')
     rows = cursor.fetchall()
     if rows :
-        print("\tFailed 2")
+        print("\Check 2 Failed")
         print("\t", rows)
         return 1
     print("\tPassed!")

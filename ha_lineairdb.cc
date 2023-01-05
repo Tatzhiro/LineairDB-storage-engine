@@ -92,10 +92,8 @@
     -Brian
 */
 
-#include "storage/lineairdb/ha_lineairdb.h"
+#include "storage/lineairdb/ha_lineairdb.hh"
 
-#include <bitset>
-#include <array>
 #include <iostream>
 
 #include "my_dbug.h"
@@ -107,7 +105,6 @@
 #include "typelib.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-#define BYTE_BIT_NUMBER (8)
 #define FENCE true
 
 LineairDB_share::LineairDB_share() {
@@ -214,7 +211,7 @@ int ha_lineairdb::write_row(uchar* buf) {
   set_write_buffer(buf);
 
   auto& tx = get_db()->BeginTransaction();
-  tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
+  tx.Write(get_current_key(), reinterpret_cast<const std::byte*>(write_buffer_.c_str()),
            write_buffer_.length());
   get_db()->EndTransaction(tx, [&](auto) {});
 #if FENCE
@@ -232,7 +229,7 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
 
   auto& tx = get_db()->BeginTransaction();
 
-  tx.Write(get_current_key(), reinterpret_cast<std::byte*>(write_buffer_.ptr()),
+  tx.Write(get_current_key(), reinterpret_cast<const std::byte*>(write_buffer_.c_str()),
            write_buffer_.length());
   get_db()->EndTransaction(tx, [&](auto) {});
 #if FENCE
@@ -408,7 +405,7 @@ read_from_lineairdb:
     DBUG_RETURN(HA_ERR_END_OF_FILE);
 
   auto& key = scanned_keys_[current_position_];
-  current_key_.set(key.c_str(), key.length(), current_key_.charset());
+  current_key_ = key;
 
   auto& tx         = get_db()->BeginTransaction();
   auto read_buffer = tx.Read(key);
@@ -702,15 +699,14 @@ int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
  * @brief This function only extracts the type of key for 
  *        tables that have single key
  * 
- * @return true Key type is int
- * @return false Key type is not int
+ * @return bytes Key type is int
+ * @return 0 Key type is not int
  */
-int ha_lineairdb::is_primary_key_type_int() {
+size_t ha_lineairdb::is_primary_key_type_int() {
   int bytes = 0;
   if (is_primary_key_exists()) {
     assert(table->s->keys == 1); 
-    assert(max_supported_key_parts() ==
-           1);  // now we assume that there is no composite index
+    assert(max_supported_key_parts() == 1);  // now we assume that there is no composite index
     my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
     for (Field** field = table->field; *field; field++) {
       auto* f = *field;
@@ -751,107 +747,85 @@ int ha_lineairdb::is_primary_key_type_int() {
 /**
  * @brief Set the current key of the row
  *  which is requested by the query.
- *  The key is formatted as the following:
- *    "table-[TABLENAME]-key-[KEY_STRING]"
- *
+ * 
  * @param key
- *  By default, the part KEY_STRING is constructed from the fields of the
+ * By default, the key is constructed from the fields of the
  * specified row, except for DELETE queries. For DELETE queries, pass the
- * key-object as `key` to extract KEY_STRING desired to delete.
- *
- * @WANTFIX:
- * The delimiter "-" here we use, is incomplete.
- * This char maybe exist in argument `table_name` and `key_name`.
+ * argument to extract key desired to delete.
  */
 void ha_lineairdb::set_current_key(const uchar* key) {
-  current_key_.length(0);
+  current_key_.clear();
   {  // TABLE_NAME
-    current_key_.append("table-");
     const auto& table_name = table->s->table_name;
-    current_key_.append(table_name.str, table_name.length);
+    ldbField.set_lineairdb_field(table_name.str, table_name.length);
+    current_key_ = ldbField.get_lineairdb_field();
   }
   {
     // KEY_NAME
-    current_key_.append("-key-");
-
     if (key != nullptr) {  // DELETE
       if (int int_bytes = is_primary_key_type_int()) {
-        // for integer type keys
-        int primary_key = 0;
-        for (int i = 0; i < int_bytes; i++) {
-          primary_key = primary_key | key[i] << sizeof(char) * i;
-        }
-        current_key_.append(std::to_string(primary_key));
+        /**
+         * @WANTFIX: need to use appropriate type for numeric primary key
+         * Currently, primary_key can only handle signed numeric keys up to 8 bytes
+         * Appropriate types must be selected for unsigned numbers.
+        */
+        long primary_key = ldbField.convert_bytes_to_numeric(key, int_bytes);
+        std::string&& intKey = std::to_string(primary_key);
+        ldbField.set_lineairdb_field(intKey.c_str(), intKey.size());
+        current_key_ += ldbField.get_lineairdb_field();
       }
       else {
-        auto pk_bytes = (key[1] << 8) | key[0];
-        for (int i = 2; i < pk_bytes + 2; i++) { current_key_.append(key[i]); }
+        auto pk_bytes = ldbField.convert_bytes_to_numeric(key, 2);
+        ldbField.set_lineairdb_field(&key[2], pk_bytes);
+        current_key_ += ldbField.get_lineairdb_field();
       }
-    } else if (is_primary_key_exists()) {  // KEY EXISTS
-      assert(max_supported_key_parts() ==
-             1);  // now we assume that there is no composite index
+    }
+    else if (is_primary_key_exists()) {  // KEY EXISTS
+      // now we assume that there is no composite index
+      assert(max_supported_key_parts() == 1);
       my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
       for (Field** field = table->field; *field; field++) {
         auto* f = *field;
         if (f->m_indexed) {  // it is the key column
-
           String b;
           (*field)->val_str(&b, &b);
-          current_key_.append(b);
+          ldbField.set_lineairdb_field(b.c_ptr(), b.length());
+          current_key_ += ldbField.get_lineairdb_field();
           break;
         }
       }
       tmp_restore_column_map(table->read_set, org_bitmap);
-    } else {  // THERE IS NO KEY COLUMN
+    } 
+    else {  // THERE IS NO KEY COLUMN
       const auto cstr       = table->s->table_name;
       const auto table_name = std::string(cstr.str, cstr.length);
-      auto inserted_count   = auto_generated_keys_[table_name]++;
-      current_key_.append(std::to_string(inserted_count));
+      auto inserted_count = auto_generated_keys_[table_name]++;
+      std::string&& s = std::to_string(inserted_count);
+      ldbField.set_lineairdb_field(s.c_str(), s.size());
+      current_key_ += ldbField.get_lineairdb_field();
     }
   }
 }
 
-std::string ha_lineairdb::get_current_key() {
-  return std::string(current_key_.ptr(), current_key_.length());
-}
-
-inline bool bit_is_up(uchar& flag, size_t idx){
-  return (flag >> idx) & 1;
-}
+std::string ha_lineairdb::get_current_key() { return current_key_; }
 
 /**
  * @brief Format and set the requested row into `write_buffer_`.
- * A MySQL Row is serialized to comma-separated double-quoted values,
- * as the followings:
- * {"alice","bob","carol","3"}
- *   col1    col2  col3   col4
  */
 void ha_lineairdb::set_write_buffer(uchar* buf) {
-  write_buffer_.length(0);
+  ldbField.set_null_field(buf, table->s->null_bytes);
+  write_buffer_ = ldbField.get_null_field();
 
   char attribute_buffer[1024];
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
-  translator.reset();
-
   my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
   for (Field** field = table->field; *field; field++) {
-    const char* p;
-    const char* end;
-
     (*field)->val_str(&attribute, &attribute);
-    p   = attribute.ptr();
-    end = p + attribute.length();
-
-    write_buffer_.append('"');
-    for (; p < end; p++) write_buffer_.append(*p);
-    write_buffer_.append('"');
-    write_buffer_.append(',');
-    if ((*field)->is_nullable()) translator.check_flag_length();
+    ldbField.set_lineairdb_field(attribute.c_ptr(), attribute.length());
+    write_buffer_ += ldbField.get_lineairdb_field();
   }
   tmp_restore_column_map(table->read_set, org_bitmap);
-  translator.save_null_flags(buf);
-  write_buffer_.length(write_buffer_.length() - 1);
 }
 
 bool ha_lineairdb::is_primary_key_exists() { return (0 < table->s->keys); }
@@ -870,82 +844,35 @@ bool ha_lineairdb::store_blob_to_field(Field** field) {
   return false;
 }
 
-void flush_null_flag_to_buf(uchar* buf, std::bitset<BYTE_BIT_NUMBER> &nullBit, 
-                            size_t &nullable_field_index, size_t &buf_nullbyte_index) {
-  uchar mask = nullBit.to_ulong();
-  memcpy(&buf[buf_nullbyte_index], &mask, 1);
-  buf_nullbyte_index++;
-  nullable_field_index = 0;
-  nullBit.set();
-}
-
-bool set_flag_for_nonnull_field(std::bitset<BYTE_BIT_NUMBER> &nullBit, 
-                                const size_t &nullable_field_index,
-                                String &write_buffer) {
-  bool field_is_null = true;
-  if (write_buffer.length() != 4 || strncmp(write_buffer.c_ptr(), "NULL", 4)) { 
-    nullBit.flip(nullable_field_index); 
-    field_is_null = false;
-  }
-  return field_is_null;
-}
-
 int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
                                             const std::byte* const read_buf,
                                             const size_t read_buf_size) {
-  /* Avoid asserts in ::store() for columns that are not going to be updated
-   */
-  my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
-
   // Clear BLOB data from the previous row.
   blobroot.ClearForReuse();
-
-  std::byte* p                  = (std::byte*)malloc(read_buf_size);
-  const std::byte* const init_p = p;
-
-  memcpy(p, read_buf, read_buf_size);
-  std::byte* buf_end = p + read_buf_size;
-
-  /**
-   * extract values from LineairDB read_buf and 
-   * store each column value to corresponding field
-  */
-  for (Field** field = table->field; *field; field++) {
-    write_buffer_.length(0);
-    for (; p < buf_end; p++) {
-      uchar c              = *reinterpret_cast<uchar*>(p);
-      bool is_end_of_field = p == buf_end - 1 ? true : false;
-      switch (c) {
-        case '\"':
-          break;
-        case ',':
-          is_end_of_field = 1;
-          break;
-        default:
-          write_buffer_.append(c);
-          break;
-      }
-      if (is_end_of_field || p == buf_end) {
-        (*field)->store(write_buffer_.ptr(), write_buffer_.length(),
-                          write_buffer_.charset(), CHECK_FIELD_WARN);
-        if (store_blob_to_field(field)) return HA_ERR_OUT_OF_MEM;
-        p++;
-        break;
-      }
-    }
-  }
-
-  write_buffer_.length(0);
+  ldbField.make_mysql_table_row(read_buf, read_buf_size);
   /**
    * for each 8 potentially null columns, buf holds 1 byte flag at the front
-   * the number of null flag bytes in buf is shown in table->s->nullbytes
+   * the number of null flag bytes in buf is shown in table->s->null_bytes
    * the flag is originally set to 0xff, or b11111111
    * if you want to make the first potentially null column to show a non-null
    * value, store 0xfe, or b11111110, in buf
   */
-  translator.set_null_flags_in_buf(buf);
+  auto nullFlags = ldbField.get_null_flags();
+  for (size_t i = 0; i < nullFlags.size(); i++) { buf[i] = nullFlags[i]; }
 
-  free((void*)init_p);
+  /* Avoid asserts in ::store() for columns that are not going to be updated
+   */
+  my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+  /**
+   * store each column value to corresponding field
+  */
+  size_t columnIndex = 0;
+  for (Field** field = table->field; *field; field++) {
+    const auto mysqlFieldValue = ldbField.get_column_of_row(columnIndex++);
+    (*field)->store(mysqlFieldValue.c_str(), mysqlFieldValue.length(),
+                    &my_charset_bin, CHECK_FIELD_WARN);
+    if (store_blob_to_field(field)) return HA_ERR_OUT_OF_MEM;
+  }
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
   return 0;
 }
