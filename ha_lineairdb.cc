@@ -770,7 +770,7 @@ void ha_lineairdb::set_current_key(const uchar* key) {
          * Appropriate types must be selected for unsigned numbers.
         */
         long primary_key = ldbField.convert_bytes_to_numeric(key, int_bytes);
-        const std::string intKey = std::to_string(primary_key);
+        std::string&& intKey = std::to_string(primary_key);
         ldbField.set_lineairdb_field(intKey.c_str(), intKey.size());
         current_key_ += ldbField.get_lineairdb_field();
       }
@@ -800,7 +800,7 @@ void ha_lineairdb::set_current_key(const uchar* key) {
       const auto cstr       = table->s->table_name;
       const auto table_name = std::string(cstr.str, cstr.length);
       auto inserted_count = auto_generated_keys_[table_name]++;
-      const std::string s = std::to_string(inserted_count);
+      std::string&& s = std::to_string(inserted_count);
       ldbField.set_lineairdb_field(s.c_str(), s.size());
       current_key_ += ldbField.get_lineairdb_field();
     }

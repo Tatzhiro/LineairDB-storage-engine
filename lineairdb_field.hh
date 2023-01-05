@@ -1,6 +1,7 @@
 #include <vector>
 #include <string>
 #include <climits>
+#include <variant>
 #include "my_inttypes.h"
 
 /**
@@ -23,25 +24,28 @@
 class LineairDBField
 {
 public:
-  std::string convert_numeric_to_bytes (const size_t num);
-  template <typename BYTE_TYPE>
-  size_t convert_bytes_to_numeric(const BYTE_TYPE* bytes, const size_t length);
+  std::string convert_numeric_to_bytes (const size_t num) const;
+  size_t convert_bytes_to_numeric(
+      std::variant<const std::byte*,const uchar*> bytes, 
+      const size_t length) const;
 
   /**
    * @brief These methods are called for INSERT and UPDATE statements
    */
-  std::string get_null_field();
-  void set_null_field(const uchar* buf, const size_t null_byte_length);
-  std::string get_lineairdb_field();
-  template <typename CHAR_TYPE>
-  void set_lineairdb_field(const CHAR_TYPE* srcMysql, const size_t length);
+  std::string get_null_field() const;
+  std::string get_lineairdb_field() const;
+  
+  void set_null_field(const uchar* const buf, const size_t null_byte_length);
+  void set_lineairdb_field(std::variant<const uchar*, const char*> srcMysql, 
+                           const size_t length);
 
   /**
    * @brief These methods are called for SELECT statements.
    */
-  void make_mysql_table_row(const std::byte* const ldbRawData, const size_t length);
-  std::string get_null_flags();
-  std::string& get_column_of_row(size_t i);
+  void make_mysql_table_row(const std::byte* const ldbRawData, 
+                            const size_t length);
+  const std::string& get_null_flags() const;
+  const std::string& get_column_of_row(const size_t i) const;
 
   LineairDBField() = default;
   
@@ -57,5 +61,6 @@ private:
   std::vector<std::string> row;
 
   void set_header(const size_t num);
-  size_t calculate_minimum_byte_size_required(const size_t num);
+  inline size_t calculate_minimum_byte_size_required(const size_t num) const;
+  char convert_numeric_to_a_byte(const size_t num) const;
 };
