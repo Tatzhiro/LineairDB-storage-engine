@@ -56,6 +56,7 @@
 #include "thr_lock.h" /* THR_LOCK, THR_LOCK_DATA */
 
 #include "lineairdb_field.hh"
+#include "lineairdb_transaction.hh"
 
 /** @brief
   LineairDB_share is a class that will be shared among all open handlers.
@@ -73,6 +74,7 @@ class LineairDB_share : public Handler_share {
   Class definition for the storage engine
 */
 class ha_lineairdb : public handler {
+  THD* thread;
   THR_LOCK_DATA lock;            ///< MySQL lock
   LineairDB_share* share;        ///< Shared lock info
   LineairDB_share* get_share();  ///< Get the share
@@ -275,6 +277,7 @@ class ha_lineairdb : public handler {
       enum thr_lock_type lock_type) override;  ///< required
 
  private:
+  LineairDB::Transaction* get_transaction();
   std::string get_current_key();
   void set_current_key(const uchar* key = nullptr);
 
