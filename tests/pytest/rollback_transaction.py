@@ -5,22 +5,7 @@ import argparse
 import concurrent.futures
 import threading
 
-hasThread2ExecutedQuery = threading.Event()
-
-def tx3_expect_row () :
-    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
-    cursor=db.cursor()
-    print("\ttx3 BEGIN")
-    cursor.execute('BEGIN')
-
-    print("\ttx3 SELECT")
-    cursor.execute('SELECT title, content FROM ha_lineairdb_test.items')
-    rows = cursor.fetchall()
-
-    print("\ttx3 COMMIT")
-    cursor.execute('COMMIT')
-
-    return rows
+isThread2Precommit = threading.Event()
 
 def tx2_expect_no_row () :
     db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
@@ -32,17 +17,15 @@ def tx2_expect_no_row () :
     cursor.execute('SELECT title, content FROM ha_lineairdb_test.items')
     rows = cursor.fetchall()
     
-    hasThread2ExecutedQuery.set()
-    
     print("\ttx2 COMMIT")
+    isThread2Precommit.set()
     cursor.execute('COMMIT')
-    
 
     return rows
 
 def transaction (db, cursor) :
     reset(db, cursor)
-    print("TRANSACTIONABLE TEST")
+    print("ROLLBACK TEST")
 
     print("\ttx1 BEGIN")
     cursor.execute('BEGIN')
@@ -56,10 +39,10 @@ def transaction (db, cursor) :
 
     executor = concurrent.futures.ThreadPoolExecutor()
     future = executor.submit(tx2_expect_no_row)
-    hasThread2ExecutedQuery.wait()
 
-    print("\ttx1 COMMIT")
-    cursor.execute('COMMIT')
+    isThread2Precommit.wait()
+    print("\ttx1 ROLLBACK")
+    cursor.execute('ROLLBACK')
     db.commit()
 
     rows = future.result()
@@ -68,13 +51,13 @@ def transaction (db, cursor) :
         print("\t", rows)
         return 1
 
-    rows = tx3_expect_row()
-    if not rows :
+    rows = tx2_expect_no_row()
+    if rows :
         print("\tCheck 2 Failed")
+        print("\t", rows)
         return 1
 
     print("\tPassed!")
-    print("\t", rows)
     return 0
 
 

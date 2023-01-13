@@ -277,6 +277,7 @@ class ha_lineairdb : public handler {
       enum thr_lock_type lock_type) override;  ///< required
 
  private:
+  void markabort();
   LineairDB::Transaction* get_transaction();
   std::string get_current_key();
   void set_current_key(const uchar* key = nullptr);

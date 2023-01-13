@@ -107,7 +107,8 @@
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
 
-static int lineairdb_commit(handlerton *hton, THD *thd, bool) {
+static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit) {
+  if (shouldCommit == false) return 0;
   LineairDBTransaction *&txHandler = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
 
   if(txHandler == nullptr) return 0;
@@ -116,22 +117,25 @@ static int lineairdb_commit(handlerton *hton, THD *thd, bool) {
   auto tx = txHandler->get_transaction();
   db->EndTransaction(*tx, [&](auto) {}); 
   txHandler->set_transaction(nullptr);
-  txHandler->set_status(LineairDB::TxStatus::Committed);
 #if FENCE
   db->Fence();
 #endif
+  /**
+   * TODO: delete txHandler
+  */
   return 0;
 }
 
 static int lineairdb_abort(handlerton *hton, THD *thd, bool) {
   LineairDBTransaction *&txHandler = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
 
-  assert(txHandler != nullptr);
+  if(txHandler == nullptr) return 0;
   assert(txHandler->get_transaction() != nullptr);
+  auto db = txHandler->get_db();
   auto tx = txHandler->get_transaction();
   tx->Abort();
+  db->EndTransaction(*tx, [&](auto) {}); 
 #if FENCE
-  auto db = txHandler->get_db();
   db->Fence();
 #endif
   return 0;
@@ -452,19 +456,24 @@ int ha_lineairdb::close(void) {
 LineairDB::Transaction* ha_lineairdb::get_transaction() {
   auto txHandler = 
     *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thread, lineairdb_hton));
-  if (txHandler == nullptr) return nullptr;
-  return txHandler->get_transaction();
+  assert(txHandler != nullptr);
+  auto tx = txHandler->get_transaction();
+  assert(tx != nullptr);
+  return tx;
 }
 
 inline bool is_aborted(LineairDB::Transaction* tx) {
   if (tx->IsAborted()) {
     return true;
   }
-  else if (tx->IsCommitted()) {
-    abort();
-  }
   assert(tx->IsRunning());
   return false;
+}
+
+void ha_lineairdb::markabort(){
+  if (thread != nullptr) {
+    thd_mark_transaction_to_rollback(thread, 1);
+  }
 }
 
 /**
@@ -480,8 +489,7 @@ int ha_lineairdb::write_row(uchar* buf) {
   set_write_buffer(buf);
 
   auto tx = get_transaction();
-  if (tx == nullptr) return HA_ERR_SE_OUT_OF_MEMORY;
-  if (is_aborted(tx)) return HA_ERR_SE_OUT_OF_MEMORY;
+  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
   
   tx->Write(get_current_key(), 
             reinterpret_cast<const std::byte*>(write_buffer_.c_str()),
@@ -497,8 +505,7 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
   set_write_buffer(buf);
 
   auto tx = get_transaction();
-  if (tx == nullptr) return HA_ERR_SE_OUT_OF_MEMORY;
-  if (is_aborted(tx)) return HA_ERR_SE_OUT_OF_MEMORY;
+  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
 
   tx->Write(get_current_key(), reinterpret_cast<const std::byte*>(write_buffer_.c_str()),
            write_buffer_.length());
@@ -512,8 +519,7 @@ int ha_lineairdb::delete_row(const uchar*) {
   set_current_key();
 
   auto tx = get_transaction();
-  if (tx == nullptr) return HA_ERR_SE_OUT_OF_MEMORY;
-  if (is_aborted(tx)) return HA_ERR_SE_OUT_OF_MEMORY;
+  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
 
   tx->Write(get_current_key(), nullptr, 0);
 
@@ -541,8 +547,7 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
   stats.records = 0;
 
   auto tx = get_transaction();
-  if (tx == nullptr) return HA_ERR_SE_OUT_OF_MEMORY;
-  if (is_aborted(tx)) return HA_ERR_SE_OUT_OF_MEMORY;
+  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
 
   auto read_buffer = tx->Read(get_current_key());
 
@@ -634,8 +639,7 @@ int ha_lineairdb::rnd_init(bool) {
   stats.records     = 0;
 
   auto tx = get_transaction();
-  if (tx == nullptr) return HA_ERR_SE_OUT_OF_MEMORY;
-  if (is_aborted(tx)) return HA_ERR_SE_OUT_OF_MEMORY;
+  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
 
   tx->Scan("", std::nullopt, [&](auto key, auto) {
     scanned_keys_.push_back(std::string(key));
@@ -682,8 +686,7 @@ read_from_lineairdb:
   current_key_ = key;
 
   auto tx = get_transaction();
-  if (tx == nullptr) return HA_ERR_SE_OUT_OF_MEMORY;
-  if (is_aborted(tx)) return HA_ERR_SE_OUT_OF_MEMORY;
+  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
 
   auto read_buffer = tx->Read(key);
 
@@ -846,50 +849,35 @@ int ha_lineairdb::delete_all_rows() {
 */
 int ha_lineairdb::external_lock(THD* thd, [[maybe_unused]]int lock_type) {
   DBUG_TRACE;
+
   LineairDBTransaction *&txHandler = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, lineairdb_hton));
 
-
-  if (txHandler == nullptr) {
+  if (txHandler == nullptr && lock_type != F_UNLCK) {
     txHandler = new LineairDBTransaction;
   }
-  bool isTransaction = true;
-  /**
-   * WANTFIX: this portion of code should only be executed when the executed queries
-   * were a single statement (in other words, when `isTransaction` is false).
-   * Currently, we do not have a way to find out whether the statement is part of 
-   * a transaction or simply a single statement.
-   * transactionable.py only passes when isTransaction is set to true.
-   * On the other hand, other tests cause MySQL to abort.
-  */
-  // if (isTransaction == false && lock_type == F_UNLCK) {
-  //   enum_sql_command sql_command = (enum_sql_command)thd_sql_command(thd);
-  //   if (sql_command == SQLCOM_SELECT) lineairdb_commit(lineairdb_hton, thd, false);
-  //   delete txHandler;
-  //   txHandler = nullptr;
-  //   return 0;
-  // }
-  if (txHandler->get_transaction() == nullptr) {
-    txHandler->set_db(get_db());
-    auto& ldbTx = get_db()->BeginTransaction();
-    assert(ldbTx.IsRunning());
-    txHandler->set_transaction(&ldbTx);
-    txHandler->set_status(LineairDB::TxStatus::Running);
+
+  if (lock_type != F_UNLCK) {
+    if (txHandler->get_transaction() == nullptr) {
+      txHandler->set_db(get_db());
+      auto& ldbTx = get_db()->BeginTransaction();
+      assert(ldbTx.IsRunning());
+      txHandler->set_transaction(&ldbTx);
+    }
+
+    
     const ulonglong threadID = static_cast<ulonglong>(thd->thread_id());
-    trans_register_ha(thd, isTransaction, lineairdb_hton, &threadID);
+    if (thd_test_options(thd, OPTION_NOT_AUTOCOMMIT)) {
+      trans_register_ha(thd, true, lineairdb_hton, &threadID);
+      txHandler->set_isTransaction(true);
+    }
+    else trans_register_ha(thd, false, lineairdb_hton, &threadID);
+  }
+  else {
+    if (txHandler->is_transaction() == false) {
+      lineairdb_commit(lineairdb_hton, thd, true);
+    }
   }
   thread = thd;
-  // trx_t *trx = check_trx_exists(thd);
-
-  // TrxInInnoDB trx_in_innodb(trx);
-
-  // if (m_prebuilt->trx != trx) {
-  //   row_update_prebuilt_trx(m_prebuilt, trx);
-  // }
-
-  // m_user_thd = thd;
-
-  // assert(m_prebuilt->trx->magic_n == TRX_MAGIC_N);
-  // assert(m_prebuilt->trx == thd_to_trx(m_user_thd));
   return 0;
 }
 
