@@ -107,39 +107,9 @@
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
 
-static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit) {
-  if (shouldCommit == false) return 0;
-  LineairDBTransaction *&txHandler = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
-
-  if(txHandler == nullptr) return 0;
-  assert(txHandler->get_transaction() != nullptr);
-  auto db = txHandler->get_db();
-  auto tx = txHandler->get_transaction();
-  db->EndTransaction(*tx, [&](auto) {}); 
-  txHandler->set_transaction(nullptr);
-#if FENCE
-  db->Fence();
-#endif
-  /**
-   * TODO: delete txHandler
-  */
-  return 0;
-}
-
-static int lineairdb_abort(handlerton *hton, THD *thd, bool) {
-  LineairDBTransaction *&txHandler = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
-
-  if(txHandler == nullptr) return 0;
-  assert(txHandler->get_transaction() != nullptr);
-  auto db = txHandler->get_db();
-  auto tx = txHandler->get_transaction();
-  tx->Abort();
-  db->EndTransaction(*tx, [&](auto) {}); 
-#if FENCE
-  db->Fence();
-#endif
-  return 0;
-}
+inline void cleanup_committed_tx(LineairDBTransaction*& tx);
+static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit);
+static int lineairdb_abort(handlerton *hton, THD *thd, bool);
 
 static MYSQL_THDVAR_STR(last_create_thdvar, PLUGIN_VAR_MEMALLOC, nullptr,
                         nullptr, nullptr, nullptr);
@@ -453,29 +423,6 @@ int ha_lineairdb::close(void) {
   return 0;
 }
 
-LineairDB::Transaction* ha_lineairdb::get_transaction() {
-  auto txHandler = 
-    *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thread, lineairdb_hton));
-  assert(txHandler != nullptr);
-  auto tx = txHandler->get_transaction();
-  assert(tx != nullptr);
-  return tx;
-}
-
-inline bool is_aborted(LineairDB::Transaction* tx) {
-  if (tx->IsAborted()) {
-    return true;
-  }
-  assert(tx->IsRunning());
-  return false;
-}
-
-void ha_lineairdb::markabort(){
-  if (thread != nullptr) {
-    thd_mark_transaction_to_rollback(thread, 1);
-  }
-}
-
 /**
   @brief
   write_row() inserts a row.
@@ -488,12 +435,14 @@ int ha_lineairdb::write_row(uchar* buf) {
   set_current_key();
   set_write_buffer(buf);
 
-  auto tx = get_transaction();
-  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
+  auto tx = get_transaction(thread);
+
+  if (tx->is_aborted()) {
+    thd_mark_transaction_to_rollback(thread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
   
-  tx->Write(get_current_key(), 
-            reinterpret_cast<const std::byte*>(write_buffer_.c_str()),
-           write_buffer_.length());
+  tx->write(get_current_key(), write_buffer_);
 
   return 0;
 }
@@ -504,11 +453,14 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
   set_current_key();
   set_write_buffer(buf);
 
-  auto tx = get_transaction();
-  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
+  auto tx = get_transaction(thread);
 
-  tx->Write(get_current_key(), reinterpret_cast<const std::byte*>(write_buffer_.c_str()),
-           write_buffer_.length());
+  if (tx->is_aborted()) {
+    thd_mark_transaction_to_rollback(thread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+  
+  tx->write(get_current_key(), write_buffer_);
 
   return 0;
 }
@@ -518,10 +470,14 @@ int ha_lineairdb::delete_row(const uchar*) {
 
   set_current_key();
 
-  auto tx = get_transaction();
-  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
+  auto tx = get_transaction(thread);
 
-  tx->Write(get_current_key(), nullptr, 0);
+  if (tx->is_aborted()) {
+    thd_mark_transaction_to_rollback(thread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+  
+  tx->write_empty(get_current_key());
 
   return 0;
 }
@@ -546,16 +502,20 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
 
   stats.records = 0;
 
-  auto tx = get_transaction();
-  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
+  auto tx = get_transaction(thread);
 
-  auto read_buffer = tx->Read(get_current_key());
+  if (tx->is_aborted()) {
+    thd_mark_transaction_to_rollback(thread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  auto read_buffer = tx->read(get_current_key());
 
   if (read_buffer.first == nullptr) {
     return HA_ERR_END_OF_FILE;
   }
   if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
-    tx->Abort();
+    tx->set_status_to_abort();
     return HA_ERR_OUT_OF_MEM;
   }
 
@@ -638,13 +598,14 @@ int ha_lineairdb::rnd_init(bool) {
   current_position_ = 0;
   stats.records     = 0;
 
-  auto tx = get_transaction();
-  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
+  auto tx = get_transaction(thread);
 
-  tx->Scan("", std::nullopt, [&](auto key, auto) {
-    scanned_keys_.push_back(std::string(key));
-    return false;
-  });
+  if (tx->is_aborted()) {
+    thd_mark_transaction_to_rollback(thread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  scanned_keys_ = tx->get_all_keys();
 
   DBUG_RETURN(0);
 }
@@ -685,17 +646,21 @@ read_from_lineairdb:
   auto& key = scanned_keys_[current_position_];
   current_key_ = key;
 
-  auto tx = get_transaction();
-  if (is_aborted(tx)) return HA_ERR_LOCK_DEADLOCK;
+  auto tx = get_transaction(thread);
 
-  auto read_buffer = tx->Read(key);
+  if (tx->is_aborted()) {
+    thd_mark_transaction_to_rollback(thread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  auto read_buffer = tx->read(get_current_key());
 
   if (read_buffer.first == nullptr) {
     current_position_++;
     goto read_from_lineairdb;
   }
   if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
-    tx->Abort();
+    tx->set_status_to_abort();
     return HA_ERR_OUT_OF_MEM;
   }
   current_position_++;
@@ -847,38 +812,74 @@ int ha_lineairdb::delete_all_rows() {
   the section "locking functions for mysql" in lock.cc;
   copy_data_between_tables() in sql_table.cc.
 */
-int ha_lineairdb::external_lock(THD* thd, [[maybe_unused]]int lock_type) {
+int ha_lineairdb::external_lock(THD* thd, int lock_type) {
   DBUG_TRACE;
 
-  LineairDBTransaction *&txHandler = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, lineairdb_hton));
-
-  if (txHandler == nullptr && lock_type != F_UNLCK) {
-    txHandler = new LineairDBTransaction;
-  }
-
-  if (lock_type != F_UNLCK) {
-    if (txHandler->get_transaction() == nullptr) {
-      txHandler->set_db(get_db());
-      auto& ldbTx = get_db()->BeginTransaction();
-      assert(ldbTx.IsRunning());
-      txHandler->set_transaction(&ldbTx);
-    }
-
-    
-    const ulonglong threadID = static_cast<ulonglong>(thd->thread_id());
-    if (thd_test_options(thd, OPTION_NOT_AUTOCOMMIT)) {
-      trans_register_ha(thd, true, lineairdb_hton, &threadID);
-      txHandler->set_isTransaction(true);
-    }
-    else trans_register_ha(thd, false, lineairdb_hton, &threadID);
-  }
-  else {
-    if (txHandler->is_transaction() == false) {
+  thread = thd;
+  LineairDBTransaction*& tx = get_transaction(thd);
+  if (lock_type == F_UNLCK) {
+    if (tx->is_a_single_statement()) {
       lineairdb_commit(lineairdb_hton, thd, true);
     }
+    return 0;
   }
-  thread = thd;
+
+  if (tx->is_not_started()) {
+    tx->begin_transaction();
+  }
+
   return 0;
+}
+
+int ha_lineairdb::start_stmt(THD *thd, thr_lock_type lock_type) {
+  assert(lock_type > 0);
+  return external_lock(thd, lock_type);
+}
+
+/**
+ * @brief Gets transaction from MySQL allocated memory
+ */
+LineairDBTransaction*& ha_lineairdb::get_transaction(THD* thd) {
+  LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, lineairdb_hton));
+  if (tx == nullptr) {
+    tx = new LineairDBTransaction(thd, get_db(), lineairdb_hton);
+  }
+  return tx;
+}
+
+/**
+ * implementation of commit for lineairdb_hton
+*/
+static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit) {
+  if (shouldCommit == false) return 0;
+  LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
+
+  assert(tx != nullptr);
+  
+  tx->end_transaction();
+#if FENCE
+  tx->fence();
+#endif
+  cleanup_committed_tx(tx);
+  return 0;
+}
+
+/**
+ * implementation of rollback for lineairdb_hton
+*/
+static int lineairdb_abort(handlerton *hton, THD *thd, bool) {
+  LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
+
+  assert(tx != nullptr);
+
+  tx->set_status_to_abort();
+  lineairdb_commit(hton, thd, true);
+  return 0;
+}
+
+inline void cleanup_committed_tx(LineairDBTransaction*& tx) {
+  delete tx;
+  tx = nullptr;
 }
 
 /**
