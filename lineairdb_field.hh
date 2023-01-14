@@ -61,6 +61,6 @@ private:
   std::vector<std::string> row;
 
   void set_header(const size_t num);
-  inline size_t calculate_minimum_byte_size_required(const size_t num) const;
+  size_t calculate_minimum_byte_size_required(const size_t num) const;
   char convert_numeric_to_a_byte(const size_t num) const;
 };

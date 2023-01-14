@@ -8,7 +8,7 @@
  * LineairDBField method definitions
 */
 
-inline size_t LineairDBField::calculate_minimum_byte_size_required(const size_t num) const {
+size_t LineairDBField::calculate_minimum_byte_size_required(const size_t num) const {
   size_t num_bytes = 0;
   for (size_t n = num; n > 0; n /= BYTE_MAX) num_bytes++;
   return num_bytes;

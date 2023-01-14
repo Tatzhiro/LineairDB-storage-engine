@@ -34,22 +34,6 @@ void LineairDBTransaction::write_empty(std::string_view key) {
 }
 
 
-
-inline bool LineairDBTransaction::is_not_started() const {
-  if (tx == nullptr) return true;
-  return false;
-}
-
-inline bool LineairDBTransaction::is_aborted() const {
-  assert(tx != nullptr);
-  return tx->IsAborted();
-}
-
-inline bool LineairDBTransaction::is_a_single_statement() const { return !isTransaction; }
-
-
-
-
 void LineairDBTransaction::begin_transaction() {
   assert(is_not_started());
   tx = &db->BeginTransaction();
