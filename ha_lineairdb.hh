@@ -74,13 +74,13 @@ class LineairDB_share : public Handler_share {
   Class definition for the storage engine
 */
 class ha_lineairdb : public handler {
-  THD* thread;
   THR_LOCK_DATA lock;            ///< MySQL lock
   LineairDB_share* share;        ///< Shared lock info
   LineairDB_share* get_share();  ///< Get the share
   LineairDB::Database* get_db();
 
  private:
+  THD* userThread;
   std::vector<std::string> scanned_keys_;
   my_off_t
       current_position_; /* Current position in the file during a file scan */

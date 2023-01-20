@@ -29,7 +29,7 @@ void LineairDBTransaction::write(std::string_view key, const std::string value) 
           value.length());
 }
 
-void LineairDBTransaction::write_empty(std::string_view key) {
+void LineairDBTransaction::delete_value(std::string_view key) {
   tx->Write(key, nullptr, 0);
 }
 

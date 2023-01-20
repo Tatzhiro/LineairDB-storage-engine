@@ -16,7 +16,7 @@ public:
   const std::pair<const std::byte *const, const size_t> read(std::string_view key);
   std::vector<std::string> get_all_keys();
   void write(std::string_view key, const std::string value);
-  void write_empty(std::string_view key);
+  void delete_value(std::string_view key);
 
 
   void begin_transaction();

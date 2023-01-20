@@ -199,139 +199,6 @@ static int lineairdb_init_func(void* p) {
   return 0;
 }
 
-struct st_mysql_storage_engine lineairdb_storage_engine = {
-    MYSQL_HANDLERTON_INTERFACE_VERSION};
-
-static ulong srv_enum_var               = 0;
-static ulong srv_ulong_var              = 0;
-static double srv_double_var            = 0;
-static int srv_signed_int_var           = 0;
-static long srv_signed_long_var         = 0;
-static longlong srv_signed_longlong_var = 0;
-
-const char* enum_var_names[] = {"e1", "e2", NullS};
-
-TYPELIB enum_var_typelib = {array_elements(enum_var_names) - 1,
-                            "enum_var_typelib", enum_var_names, nullptr};
-
-static MYSQL_SYSVAR_ENUM(enum_var,                        // name
-                         srv_enum_var,                    // varname
-                         PLUGIN_VAR_RQCMDARG,             // opt
-                         "Sample ENUM system variable.",  // comment
-                         nullptr,                         // check
-                         nullptr,                         // update
-                         0,                               // def
-                         &enum_var_typelib);              // typelib
-
-static MYSQL_SYSVAR_ULONG(ulong_var, srv_ulong_var, PLUGIN_VAR_RQCMDARG,
-                          "0..1000", nullptr, nullptr, 8, 0, 1000, 0);
-
-static MYSQL_SYSVAR_DOUBLE(double_var, srv_double_var, PLUGIN_VAR_RQCMDARG,
-                           "0.500000..1000.500000", nullptr, nullptr, 8.5, 0.5,
-                           1000.5,
-                           0);  // reserved always 0
-
-static MYSQL_THDVAR_DOUBLE(double_thdvar, PLUGIN_VAR_RQCMDARG,
-                           "0.500000..1000.500000", nullptr, nullptr, 8.5, 0.5,
-                           1000.5, 0);
-
-static MYSQL_SYSVAR_INT(signed_int_var, srv_signed_int_var, PLUGIN_VAR_RQCMDARG,
-                        "INT_MIN..INT_MAX", nullptr, nullptr, -10, INT_MIN,
-                        INT_MAX, 0);
-
-static MYSQL_THDVAR_INT(signed_int_thdvar, PLUGIN_VAR_RQCMDARG,
-                        "INT_MIN..INT_MAX", nullptr, nullptr, -10, INT_MIN,
-                        INT_MAX, 0);
-
-static MYSQL_SYSVAR_LONG(signed_long_var, srv_signed_long_var,
-                         PLUGIN_VAR_RQCMDARG, "LONG_MIN..LONG_MAX", nullptr,
-                         nullptr, -10, LONG_MIN, LONG_MAX, 0);
-
-static MYSQL_THDVAR_LONG(signed_long_thdvar, PLUGIN_VAR_RQCMDARG,
-                         "LONG_MIN..LONG_MAX", nullptr, nullptr, -10, LONG_MIN,
-                         LONG_MAX, 0);
-
-static MYSQL_SYSVAR_LONGLONG(signed_longlong_var, srv_signed_longlong_var,
-                             PLUGIN_VAR_RQCMDARG, "LLONG_MIN..LLONG_MAX",
-                             nullptr, nullptr, -10, LLONG_MIN, LLONG_MAX, 0);
-
-static MYSQL_THDVAR_LONGLONG(signed_longlong_thdvar, PLUGIN_VAR_RQCMDARG,
-                             "LLONG_MIN..LLONG_MAX", nullptr, nullptr, -10,
-                             LLONG_MIN, LLONG_MAX, 0);
-
-static SYS_VAR* lineairdb_system_variables[] = {
-    MYSQL_SYSVAR(enum_var),
-    MYSQL_SYSVAR(ulong_var),
-    MYSQL_SYSVAR(double_var),
-    MYSQL_SYSVAR(double_thdvar),
-    MYSQL_SYSVAR(last_create_thdvar),
-    MYSQL_SYSVAR(create_count_thdvar),
-    MYSQL_SYSVAR(signed_int_var),
-    MYSQL_SYSVAR(signed_int_thdvar),
-    MYSQL_SYSVAR(signed_long_var),
-    MYSQL_SYSVAR(signed_long_thdvar),
-    MYSQL_SYSVAR(signed_longlong_var),
-    MYSQL_SYSVAR(signed_longlong_thdvar),
-    nullptr};
-
-// this is an lineairdb of SHOW_FUNC
-static int show_func_lineairdb(MYSQL_THD, SHOW_VAR* var, char* buf) {
-  var->type  = SHOW_CHAR;
-  var->value = buf;  // it's of SHOW_VAR_FUNC_BUFF_SIZE bytes
-  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
-           "enum_var is %lu, ulong_var is %lu, "
-           "double_var is %f, signed_int_var is %d, "
-           "signed_long_var is %ld, signed_longlong_var is %lld",
-           srv_enum_var, srv_ulong_var, srv_double_var, srv_signed_int_var,
-           srv_signed_long_var, srv_signed_longlong_var);
-  return 0;
-}
-
-lineairdb_vars_t lineairdb_vars = {100,  20.01, "three hundred",
-                                   true, false, 8250};
-
-static SHOW_VAR show_status_lineairdb[] = {
-    {"var1", (char*)&lineairdb_vars.var1, SHOW_LONG, SHOW_SCOPE_GLOBAL},
-    {"var2", (char*)&lineairdb_vars.var2, SHOW_DOUBLE, SHOW_SCOPE_GLOBAL},
-    {nullptr, nullptr, SHOW_UNDEF,
-     SHOW_SCOPE_UNDEF}  // null terminator required
-};
-
-static SHOW_VAR show_array_lineairdb[] = {
-    {"array", (char*)show_status_lineairdb, SHOW_ARRAY, SHOW_SCOPE_GLOBAL},
-    {"var3", (char*)&lineairdb_vars.var3, SHOW_CHAR, SHOW_SCOPE_GLOBAL},
-    {"var4", (char*)&lineairdb_vars.var4, SHOW_BOOL, SHOW_SCOPE_GLOBAL},
-    {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
-
-static SHOW_VAR func_status[] = {
-    {"lineairdb_func_lineairdb", (char*)show_func_lineairdb, SHOW_FUNC,
-     SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status_var5", (char*)&lineairdb_vars.var5, SHOW_BOOL,
-     SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status_var6", (char*)&lineairdb_vars.var6, SHOW_LONG,
-     SHOW_SCOPE_GLOBAL},
-    {"lineairdb_status", (char*)show_array_lineairdb, SHOW_ARRAY,
-     SHOW_SCOPE_GLOBAL},
-    {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
-
-mysql_declare_plugin(lineairdb){
-    MYSQL_STORAGE_ENGINE_PLUGIN,
-    &lineairdb_storage_engine,
-    "LINEAIRDB",
-    PLUGIN_AUTHOR_ORACLE,
-    "LineairDB storage engine",
-    PLUGIN_LICENSE_GPL,
-    lineairdb_init_func, /* Plugin Init */
-    nullptr,             /* Plugin check uninstall */
-    nullptr,             /* Plugin Deinit */
-    0x0001 /* 0.1 */,
-    func_status,                /* status variables */
-    lineairdb_system_variables, /* system variables */
-    nullptr,                    /* config options */
-    0,                          /* flags */
-} mysql_declare_plugin_end;
-
-
 LineairDB_share::LineairDB_share() {
   thr_lock_init(&lock);
   if (lineairdb_ == nullptr) {
@@ -435,10 +302,10 @@ int ha_lineairdb::write_row(uchar* buf) {
   set_current_key();
   set_write_buffer(buf);
 
-  auto tx = get_transaction(thread);
+  auto tx = get_transaction(userThread);
 
   if (tx->is_aborted()) {
-    thd_mark_transaction_to_rollback(thread, 1);
+    thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
   
@@ -453,10 +320,10 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
   set_current_key();
   set_write_buffer(buf);
 
-  auto tx = get_transaction(thread);
+  auto tx = get_transaction(userThread);
 
   if (tx->is_aborted()) {
-    thd_mark_transaction_to_rollback(thread, 1);
+    thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
   
@@ -470,14 +337,14 @@ int ha_lineairdb::delete_row(const uchar*) {
 
   set_current_key();
 
-  auto tx = get_transaction(thread);
+  auto tx = get_transaction(userThread);
 
   if (tx->is_aborted()) {
-    thd_mark_transaction_to_rollback(thread, 1);
+    thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
   
-  tx->write_empty(get_current_key());
+  tx->delete_value(get_current_key());
 
   return 0;
 }
@@ -502,10 +369,10 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
 
   stats.records = 0;
 
-  auto tx = get_transaction(thread);
+  auto tx = get_transaction(userThread);
 
   if (tx->is_aborted()) {
-    thd_mark_transaction_to_rollback(thread, 1);
+    thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -598,10 +465,10 @@ int ha_lineairdb::rnd_init(bool) {
   current_position_ = 0;
   stats.records     = 0;
 
-  auto tx = get_transaction(thread);
+  auto tx = get_transaction(userThread);
 
   if (tx->is_aborted()) {
-    thd_mark_transaction_to_rollback(thread, 1);
+    thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -646,10 +513,10 @@ read_from_lineairdb:
   auto& key = scanned_keys_[current_position_];
   current_key_ = key;
 
-  auto tx = get_transaction(thread);
+  auto tx = get_transaction(userThread);
 
   if (tx->is_aborted()) {
-    thd_mark_transaction_to_rollback(thread, 1);
+    thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -815,9 +682,11 @@ int ha_lineairdb::delete_all_rows() {
 int ha_lineairdb::external_lock(THD* thd, int lock_type) {
   DBUG_TRACE;
 
-  thread = thd;
+  userThread = thd;
   LineairDBTransaction*& tx = get_transaction(thd);
-  if (lock_type == F_UNLCK) {
+  
+  const bool tx_is_ready_to_commit = lock_type == F_UNLCK;
+  if (tx_is_ready_to_commit) {
     if (tx->is_a_single_statement()) {
       lineairdb_commit(lineairdb_hton, thd, true);
     }
@@ -1184,3 +1053,135 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
   return 0;
 }
+
+struct st_mysql_storage_engine lineairdb_storage_engine = {
+    MYSQL_HANDLERTON_INTERFACE_VERSION};
+
+static ulong srv_enum_var               = 0;
+static ulong srv_ulong_var              = 0;
+static double srv_double_var            = 0;
+static int srv_signed_int_var           = 0;
+static long srv_signed_long_var         = 0;
+static longlong srv_signed_longlong_var = 0;
+
+const char* enum_var_names[] = {"e1", "e2", NullS};
+
+TYPELIB enum_var_typelib = {array_elements(enum_var_names) - 1,
+                            "enum_var_typelib", enum_var_names, nullptr};
+
+static MYSQL_SYSVAR_ENUM(enum_var,                        // name
+                         srv_enum_var,                    // varname
+                         PLUGIN_VAR_RQCMDARG,             // opt
+                         "Sample ENUM system variable.",  // comment
+                         nullptr,                         // check
+                         nullptr,                         // update
+                         0,                               // def
+                         &enum_var_typelib);              // typelib
+
+static MYSQL_SYSVAR_ULONG(ulong_var, srv_ulong_var, PLUGIN_VAR_RQCMDARG,
+                          "0..1000", nullptr, nullptr, 8, 0, 1000, 0);
+
+static MYSQL_SYSVAR_DOUBLE(double_var, srv_double_var, PLUGIN_VAR_RQCMDARG,
+                           "0.500000..1000.500000", nullptr, nullptr, 8.5, 0.5,
+                           1000.5,
+                           0);  // reserved always 0
+
+static MYSQL_THDVAR_DOUBLE(double_thdvar, PLUGIN_VAR_RQCMDARG,
+                           "0.500000..1000.500000", nullptr, nullptr, 8.5, 0.5,
+                           1000.5, 0);
+
+static MYSQL_SYSVAR_INT(signed_int_var, srv_signed_int_var, PLUGIN_VAR_RQCMDARG,
+                        "INT_MIN..INT_MAX", nullptr, nullptr, -10, INT_MIN,
+                        INT_MAX, 0);
+
+static MYSQL_THDVAR_INT(signed_int_thdvar, PLUGIN_VAR_RQCMDARG,
+                        "INT_MIN..INT_MAX", nullptr, nullptr, -10, INT_MIN,
+                        INT_MAX, 0);
+
+static MYSQL_SYSVAR_LONG(signed_long_var, srv_signed_long_var,
+                         PLUGIN_VAR_RQCMDARG, "LONG_MIN..LONG_MAX", nullptr,
+                         nullptr, -10, LONG_MIN, LONG_MAX, 0);
+
+static MYSQL_THDVAR_LONG(signed_long_thdvar, PLUGIN_VAR_RQCMDARG,
+                         "LONG_MIN..LONG_MAX", nullptr, nullptr, -10, LONG_MIN,
+                         LONG_MAX, 0);
+
+static MYSQL_SYSVAR_LONGLONG(signed_longlong_var, srv_signed_longlong_var,
+                             PLUGIN_VAR_RQCMDARG, "LLONG_MIN..LLONG_MAX",
+                             nullptr, nullptr, -10, LLONG_MIN, LLONG_MAX, 0);
+
+static MYSQL_THDVAR_LONGLONG(signed_longlong_thdvar, PLUGIN_VAR_RQCMDARG,
+                             "LLONG_MIN..LLONG_MAX", nullptr, nullptr, -10,
+                             LLONG_MIN, LLONG_MAX, 0);
+
+static SYS_VAR* lineairdb_system_variables[] = {
+    MYSQL_SYSVAR(enum_var),
+    MYSQL_SYSVAR(ulong_var),
+    MYSQL_SYSVAR(double_var),
+    MYSQL_SYSVAR(double_thdvar),
+    MYSQL_SYSVAR(last_create_thdvar),
+    MYSQL_SYSVAR(create_count_thdvar),
+    MYSQL_SYSVAR(signed_int_var),
+    MYSQL_SYSVAR(signed_int_thdvar),
+    MYSQL_SYSVAR(signed_long_var),
+    MYSQL_SYSVAR(signed_long_thdvar),
+    MYSQL_SYSVAR(signed_longlong_var),
+    MYSQL_SYSVAR(signed_longlong_thdvar),
+    nullptr};
+
+// this is an lineairdb of SHOW_FUNC
+static int show_func_lineairdb(MYSQL_THD, SHOW_VAR* var, char* buf) {
+  var->type  = SHOW_CHAR;
+  var->value = buf;  // it's of SHOW_VAR_FUNC_BUFF_SIZE bytes
+  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
+           "enum_var is %lu, ulong_var is %lu, "
+           "double_var is %f, signed_int_var is %d, "
+           "signed_long_var is %ld, signed_longlong_var is %lld",
+           srv_enum_var, srv_ulong_var, srv_double_var, srv_signed_int_var,
+           srv_signed_long_var, srv_signed_longlong_var);
+  return 0;
+}
+
+lineairdb_vars_t lineairdb_vars = {100,  20.01, "three hundred",
+                                   true, false, 8250};
+
+static SHOW_VAR show_status_lineairdb[] = {
+    {"var1", (char*)&lineairdb_vars.var1, SHOW_LONG, SHOW_SCOPE_GLOBAL},
+    {"var2", (char*)&lineairdb_vars.var2, SHOW_DOUBLE, SHOW_SCOPE_GLOBAL},
+    {nullptr, nullptr, SHOW_UNDEF,
+     SHOW_SCOPE_UNDEF}  // null terminator required
+};
+
+static SHOW_VAR show_array_lineairdb[] = {
+    {"array", (char*)show_status_lineairdb, SHOW_ARRAY, SHOW_SCOPE_GLOBAL},
+    {"var3", (char*)&lineairdb_vars.var3, SHOW_CHAR, SHOW_SCOPE_GLOBAL},
+    {"var4", (char*)&lineairdb_vars.var4, SHOW_BOOL, SHOW_SCOPE_GLOBAL},
+    {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
+
+static SHOW_VAR func_status[] = {
+    {"lineairdb_func_lineairdb", (char*)show_func_lineairdb, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"lineairdb_status_var5", (char*)&lineairdb_vars.var5, SHOW_BOOL,
+     SHOW_SCOPE_GLOBAL},
+    {"lineairdb_status_var6", (char*)&lineairdb_vars.var6, SHOW_LONG,
+     SHOW_SCOPE_GLOBAL},
+    {"lineairdb_status", (char*)show_array_lineairdb, SHOW_ARRAY,
+     SHOW_SCOPE_GLOBAL},
+    {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
+
+mysql_declare_plugin(lineairdb){
+    MYSQL_STORAGE_ENGINE_PLUGIN,
+    &lineairdb_storage_engine,
+    "LINEAIRDB",
+    PLUGIN_AUTHOR_ORACLE,
+    "LineairDB storage engine",
+    PLUGIN_LICENSE_GPL,
+    lineairdb_init_func, /* Plugin Init */
+    nullptr,             /* Plugin check uninstall */
+    nullptr,             /* Plugin Deinit */
+    0x0001 /* 0.1 */,
+    func_status,                /* status variables */
+    lineairdb_system_variables, /* system variables */
+    nullptr,                    /* config options */
+    0,                          /* flags */
+} mysql_declare_plugin_end;

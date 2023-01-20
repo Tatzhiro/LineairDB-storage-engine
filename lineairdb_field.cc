@@ -1,18 +1,9 @@
 #include "lineairdb_field.hh"
 #include <cassert>
 
-#define BYTE_MAX (256)
-
-
 /**
  * LineairDBField method definitions
 */
-
-size_t LineairDBField::calculate_minimum_byte_size_required(const size_t num) const {
-  size_t num_bytes = 0;
-  for (size_t n = num; n > 0; n /= BYTE_MAX) num_bytes++;
-  return num_bytes;
-}
 
 char LineairDBField::convert_numeric_to_a_byte(const size_t num) const {
   return convert_numeric_to_bytes(num)[0];
