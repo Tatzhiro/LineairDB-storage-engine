@@ -7,8 +7,11 @@
  * @brief 
  * Wrapper of LineairDB::Transaction
  * Takes care of registering a transaction to MySQL core
- * Lifetime of this class equals the lifetime of the transaction
- * The instance of this class must be deleted after `end_transaction`
+ * 
+ * Lifetime of this class equals the lifetime of the transaction.
+ * The instance of this class is deleted in end_transaction.
+ * Set the pointer to this class to nullptr after end_transaction
+ * to indicate that LineairDBTransaction is terminated.
  */
 class LineairDBTransaction
 {
@@ -36,7 +39,10 @@ public:
   inline bool is_a_single_statement() const { return !isTransaction; }
 
 
-  LineairDBTransaction(THD* thd, LineairDB::Database* ldb, handlerton* lineairdb_hton);
+  LineairDBTransaction(THD* thd, 
+                       LineairDB::Database* ldb, 
+                       handlerton* lineairdb_hton,
+                       bool isFence);
   ~LineairDBTransaction() = default;
 
 private:
@@ -45,6 +51,7 @@ private:
   THD* thread;
   bool isTransaction;
   handlerton* hton;
+  bool isFence;
 
   bool thd_is_transaction() const;
   void register_transaction_to_mysql();

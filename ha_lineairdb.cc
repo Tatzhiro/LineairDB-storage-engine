@@ -107,7 +107,7 @@
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
 
-inline void cleanup_committed_tx(LineairDBTransaction*& tx);
+void terminate_tx(LineairDBTransaction*& tx);
 static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit);
 static int lineairdb_abort(handlerton *hton, THD *thd, bool);
 
@@ -711,7 +711,7 @@ int ha_lineairdb::start_stmt(THD *thd, thr_lock_type lock_type) {
 LineairDBTransaction*& ha_lineairdb::get_transaction(THD* thd) {
   LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, lineairdb_hton));
   if (tx == nullptr) {
-    tx = new LineairDBTransaction(thd, get_db(), lineairdb_hton);
+    tx = new LineairDBTransaction(thd, get_db(), lineairdb_hton, FENCE);
   }
   return tx;
 }
@@ -719,17 +719,13 @@ LineairDBTransaction*& ha_lineairdb::get_transaction(THD* thd) {
 /**
  * implementation of commit for lineairdb_hton
 */
-static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit) {
-  if (shouldCommit == false) return 0;
+static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldTerminate) {
+  if (shouldTerminate == false) return 0;
   LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
 
   assert(tx != nullptr);
   
-  tx->end_transaction();
-#if FENCE
-  tx->fence();
-#endif
-  cleanup_committed_tx(tx);
+  terminate_tx(tx);
   return 0;
 }
 
@@ -742,12 +738,12 @@ static int lineairdb_abort(handlerton *hton, THD *thd, bool) {
   assert(tx != nullptr);
 
   tx->set_status_to_abort();
-  lineairdb_commit(hton, thd, true);
+  terminate_tx(tx);
   return 0;
 }
 
-inline void cleanup_committed_tx(LineairDBTransaction*& tx) {
-  delete tx;
+void terminate_tx(LineairDBTransaction*& tx) {
+  tx->end_transaction();
   tx = nullptr;
 }
 

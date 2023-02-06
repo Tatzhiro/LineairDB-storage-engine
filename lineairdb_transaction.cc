@@ -2,12 +2,14 @@
 
 LineairDBTransaction::LineairDBTransaction(THD* thd, 
                                             LineairDB::Database* ldb, 
-                                            handlerton* lineairdb_hton) 
+                                            handlerton* lineairdb_hton,
+                                            bool isFence) 
     : tx(nullptr), 
       db(ldb), 
       thread(thd), 
       isTransaction(false), 
-      hton(lineairdb_hton) {}
+      hton(lineairdb_hton),
+      isFence(isFence) {}
 
 const std::pair<const std::byte *const, const size_t> 
 LineairDBTransaction::read(std::string_view key) {
@@ -54,6 +56,8 @@ void LineairDBTransaction::set_status_to_abort() {
 void LineairDBTransaction::end_transaction() {
   assert(tx != nullptr);
   db->EndTransaction(*tx, [&](auto) {}); 
+  if (isFence) fence();
+  delete this;
 }
 
 void LineairDBTransaction::fence() const { db->Fence(); }
@@ -68,7 +72,6 @@ bool LineairDBTransaction::thd_is_transaction() const {
 void LineairDBTransaction::register_transaction_to_mysql() {
   const ulonglong threadID = static_cast<ulonglong>(thread->thread_id());
   ::trans_register_ha(thread, isTransaction, hton, &threadID);
-  isTransaction = isTransaction;
 }
 
 void LineairDBTransaction::register_single_statement_to_mysql() {
