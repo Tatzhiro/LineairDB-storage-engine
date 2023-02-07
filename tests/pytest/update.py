@@ -11,9 +11,9 @@ def update (db, cursor) :
             title, content\
         ) VALUES ("carol", "ddd")'\
     )
+    db.commit()
     cursor.execute('UPDATE ha_lineairdb_test.items SET content="XXX"')
 
-    db.commit()
 
     cursor.execute('SELECT * FROM ha_lineairdb_test.items')
     rows = cursor.fetchall()

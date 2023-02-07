@@ -56,6 +56,7 @@
 #include "thr_lock.h" /* THR_LOCK, THR_LOCK_DATA */
 
 #include "lineairdb_field.hh"
+#include "lineairdb_transaction.hh"
 
 /** @brief
   LineairDB_share is a class that will be shared among all open handlers.
@@ -79,6 +80,7 @@ class ha_lineairdb : public handler {
   LineairDB::Database* get_db();
 
  private:
+  THD* userThread;
   std::vector<std::string> scanned_keys_;
   my_off_t
       current_position_; /* Current position in the file during a file scan */
@@ -260,6 +262,7 @@ class ha_lineairdb : public handler {
   int info(uint) override;                       ///< required
   int extra(enum ha_extra_function operation) override;
   int external_lock(THD* thd, int lock_type) override;  ///< required
+  int start_stmt(THD *thd, thr_lock_type lock_type) override;
   int delete_all_rows(void) override;
   ha_rows records_in_range(uint inx, key_range* min_key,
                            key_range* max_key) override;
@@ -275,6 +278,8 @@ class ha_lineairdb : public handler {
       enum thr_lock_type lock_type) override;  ///< required
 
  private:
+  LineairDBTransaction*& get_transaction(THD* thd);
+
   std::string get_current_key();
   void set_current_key(const uchar* key = nullptr);
 

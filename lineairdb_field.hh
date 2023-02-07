@@ -61,6 +61,12 @@ private:
   std::vector<std::string> row;
 
   void set_header(const size_t num);
-  inline size_t calculate_minimum_byte_size_required(const size_t num) const;
   char convert_numeric_to_a_byte(const size_t num) const;
+
+  inline size_t calculate_minimum_byte_size_required(const size_t num) const {
+    const int byteMax = 256;
+    size_t num_bytes = 0;
+    for (size_t n = num; n > 0; n /= byteMax) num_bytes++;
+    return num_bytes;
+  }
 };
