@@ -31,9 +31,9 @@ def makeDFfromCSV(clm, xaxis):
                 mean = df["Throughput (requests/second)"].mean()
                 avg.append(mean)
             clm.append(Average(avg))
-        sample[db] = pd.DataFrame(data=clm)
+        sample[db] = clm
 
-    sample["numThread"] = pd.DataFrame(data=xaxis)
+    sample["numThread"] = xaxis
     return sample
 
 

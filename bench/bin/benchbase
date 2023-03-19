@@ -50,9 +50,22 @@ function EDIT_FENCE()
 local IS_FENCING=$1
 cd $base_path
 sed -i "s/#define FENCE.*/#define FENCE $IS_FENCING/" ha_lineairdb.cc
-cd $base_path/build
-ninja lineairdb_storage_engine -j 4
+cd $base_path/release
+ninja lineairdb_storage_engine -j `nproc`
 sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so /usr/lib/mysql/plugin
+cd $base_path/third_party/benchbase
+}
+
+function INSTALL_LINEAIRDB_TO_MYSQL()
+{
+mkdir -p $base_path/release/data
+cd $base_path/release
+cmake ../third_party/mysql-server -DCMAKE_EXPORT_COMPILE_COMMANDS=0 -DWITH_BUILD_ID=0 -DWITH_ASAN=0 -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=1 -DWITH_BOOST=./boost -DWITHOUT_EXAMPLE_STORAGE_ENGINE=1 -DWITHOUT_FEDERATED_STORAGE_ENGINE=1 -DWITHOUT_ARCHIVE_STORAGE_ENGINE=1 -DWITHOUT_BLACKHOLE_STORAGE_ENGINE=1 -DWITHOUT_NDB_STORAGE_ENGINE=1 -DWITHOUT_NDBCLUSTER_STORAGE_ENGINE=1 -DWITHOUT_PARTITION_STORAGE_ENGINE=1 -DWITH_BOOST=../boost -G Ninja
+ninja lineairdb_storage_engine -j `nproc`
+sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so /usr/lib/mysql/plugin
+if [[ `sudo mysql -uroot -N -e "SHOW ENGINES;" | grep LINEAIRDB` != LINEAIRDB* ]] ; 
+then sudo mysql -uroot -N -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"; 
+fi
 cd $base_path/third_party/benchbase
 }
 
@@ -74,7 +87,9 @@ engines=(
   #fence
 )
 
-for bm_type in A; do
+INSTALL_LINEAIRDB_TO_MYSQL
+
+for bm_type in A B C E F write; do
   cd $base_path/third_party/benchbase
 
   if [ $bm_type = A ]; then
@@ -83,6 +98,10 @@ for bm_type in A; do
     weight=95,0,0,5,0,0
   elif [ $bm_type = C ]; then
     weight=100,0,0,0,0,0
+  elif [ $bm_type = E ]; then
+    weight=0,5,95,0,0,0
+  elif [ $bm_type = F ]; then
+    weight=50,0,0,0,0,50
   else
     weight=0,0,0,100,0,0
   fi
@@ -116,6 +135,6 @@ for bm_type in A; do
   done
   mkdir -p $base_path/bench/plots/ycsb/$bm_type
   cd $base_path/bench/plots/ycsb/$bm_type
-  python3 $base_path/bench/bin/plot.py --engine ${engines[@]} --xaxis ${num_threads[@]}
+  python3 $base_path/bench/bin/plot.py --engine ${engines[@]} --xaxis ${num_threads[@]} --fname month_day
 done
 message 'Finish the benchmarking'
