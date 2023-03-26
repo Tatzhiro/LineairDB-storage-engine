@@ -66,8 +66,9 @@ class LineairDB_share : public Handler_share {
  public:
   THR_LOCK lock;
   LineairDB_share();
+  // std::shared_ptr<LineairDB::Database> get_or_allocate_database(LineairDB::Config conf);
   ~LineairDB_share() override { thr_lock_delete(&lock); }
-  std::unique_ptr<LineairDB::Database> lineairdb_;
+  std::shared_ptr<LineairDB::Database> lineairdb_;
 };
 
 /** @brief
@@ -80,6 +81,7 @@ class ha_lineairdb : public handler {
   LineairDB::Database* get_db();
 
  private:
+  std::string db_table_key;
   THD* userThread;
   std::vector<std::string> scanned_keys_;
   my_off_t

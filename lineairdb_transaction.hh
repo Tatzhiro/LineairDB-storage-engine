@@ -17,7 +17,7 @@ class LineairDBTransaction
 {
 public:
   const std::pair<const std::byte *const, const size_t> read(std::string_view key);
-  std::vector<std::string> get_all_keys();
+  std::vector<std::string> get_all_keys(std::string db_table_key);
   void write(std::string_view key, const std::string value);
   void delete_value(std::string_view key);
 
@@ -53,6 +53,7 @@ private:
   handlerton* hton;
   bool isFence;
 
+  bool is_my_db_table(std::string db_table_key, std::string key);
   bool thd_is_transaction() const;
   void register_transaction_to_mysql();
   void register_single_statement_to_mysql();
