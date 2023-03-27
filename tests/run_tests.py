@@ -7,7 +7,7 @@ def CI(test_files):
   exit_value = 0
   for f in test_files:
     os.system("sudo systemctl restart mysql.service")
-    if os.system(f"python3 {f}"): exit_value = 1
+    if os.system(f"python3 {f} --password root"): exit_value = 1
   sys.exit(exit_value)
 
 def run_tests(test_files):
