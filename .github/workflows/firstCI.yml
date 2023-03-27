@@ -35,4 +35,4 @@ jobs:
           mysql -uroot -proot -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"
       - name: Exec test scripts
         run: |
-          find tests/pytest/*.py | xargs -n 1 sh -c 'python3 $0 --password root || exit 255'
+          python3 tests/run_tests.py -c

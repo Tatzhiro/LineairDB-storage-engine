@@ -203,9 +203,8 @@ static int lineairdb_init_func(void* p) {
 
 static std::shared_ptr<LineairDB::Database> get_or_allocate_database(LineairDB::Config conf) {
   static std::shared_ptr<LineairDB::Database> db;
-  bool db_is_allocated = static_cast<bool>(db);
-  if (!db_is_allocated)
-    db = std::make_shared<LineairDB::Database>(conf);
+  static std::once_flag flag;
+  std::call_once(flag, [&](){ db = std::make_shared<LineairDB::Database>(conf); });
   return db;
 }
 
