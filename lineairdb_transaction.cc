@@ -16,11 +16,16 @@ LineairDBTransaction::read(std::string_view key) {
   return tx->Read(key);
 }
 
+bool LineairDBTransaction::is_my_db_table(std::string db_table_key, std::string key) {
+  if (key.substr(0, db_table_key.size()) != db_table_key) return false;
+  return true;
+}
+
 std::vector<std::string> 
-LineairDBTransaction::get_all_keys() {
+LineairDBTransaction::get_all_keys(std::string db_table_key) {
   std::vector<std::string> keyList;
   tx->Scan("", std::nullopt, [&](auto key, auto) {
-    keyList.push_back(std::string(key));
+    if (is_my_db_table(db_table_key, std::string(key))) keyList.push_back(std::string(key));
     return false;
   });
   return keyList;

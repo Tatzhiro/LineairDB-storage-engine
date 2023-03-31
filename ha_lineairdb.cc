@@ -107,6 +107,8 @@
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
 
+static std::shared_ptr<LineairDB::Database> get_or_allocate_database(LineairDB::Config conf);
+
 void terminate_tx(LineairDBTransaction*& tx);
 static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit);
 static int lineairdb_abort(handlerton *hton, THD *thd, bool);
@@ -199,6 +201,13 @@ static int lineairdb_init_func(void* p) {
   return 0;
 }
 
+static std::shared_ptr<LineairDB::Database> get_or_allocate_database(LineairDB::Config conf) {
+  static std::shared_ptr<LineairDB::Database> db;
+  static std::once_flag flag;
+  std::call_once(flag, [&](){ db = std::make_shared<LineairDB::Database>(conf); });
+  return db;
+}
+
 LineairDB_share::LineairDB_share() {
   thr_lock_init(&lock);
   if (lineairdb_ == nullptr) {
@@ -206,7 +215,7 @@ LineairDB_share::LineairDB_share() {
     conf.enable_checkpointing = false;
     conf.enable_recovery      = false;
     conf.max_thread           = 1;
-    lineairdb_.reset(new LineairDB::Database(conf));
+    lineairdb_ = get_or_allocate_database(conf);
   }
 }
 
@@ -262,10 +271,13 @@ ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
   handler::ha_open() in handler.cc
 */
 
-int ha_lineairdb::open(const char*, int, uint, const dd::Table*) {
+int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table*) {
   DBUG_TRACE;
   if (!(share = get_share())) return 1;
   thr_lock_data_init(&share->lock, &lock, nullptr);
+
+  ldbField.set_lineairdb_field(table_name, strlen(table_name));
+  db_table_key = ldbField.get_lineairdb_field();
 
   return 0;
 }
@@ -472,7 +484,7 @@ int ha_lineairdb::rnd_init(bool) {
     return HA_ERR_LOCK_DEADLOCK;
   }
 
-  scanned_keys_ = tx->get_all_keys();
+  scanned_keys_ = tx->get_all_keys(db_table_key);
 
   DBUG_RETURN(0);
 }
@@ -928,10 +940,8 @@ size_t ha_lineairdb::is_primary_key_type_int() {
  */
 void ha_lineairdb::set_current_key(const uchar* key) {
   current_key_.clear();
-  {  // TABLE_NAME
-    const auto& table_name = table->s->table_name;
-    ldbField.set_lineairdb_field(table_name.str, table_name.length);
-    current_key_ = ldbField.get_lineairdb_field();
+  {  // DATABASE_NAME + TABLE_NAME
+    current_key_ = db_table_key;
   }
   {
     // KEY_NAME
