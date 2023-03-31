@@ -11,33 +11,55 @@ LineairDBTransaction::LineairDBTransaction(THD* thd,
       hton(lineairdb_hton),
       isFence(isFence) {}
 
-const std::pair<const std::byte *const, const size_t> 
-LineairDBTransaction::read(std::string_view key) {
-  return tx->Read(key);
+std::string LineairDBTransaction::get_selected_table_name() { return db_table_key; }
+
+void LineairDBTransaction::choose_table(std::string db_table_name) {
+  db_table_key = db_table_name;
 }
 
-bool LineairDBTransaction::is_my_db_table(std::string db_table_key, std::string key) {
-  if (key.substr(0, db_table_key.size()) != db_table_key) return false;
+const std::pair<const std::byte *const, const size_t> 
+LineairDBTransaction::read(std::string key) {
+  return tx->Read(db_table_key + key);
+}
+
+bool LineairDBTransaction::key_prefix_is_matching(std::string key_prefix, std::string key) {
+  if (key.substr(0, key_prefix.size()) != key_prefix) return false;
   return true;
 }
 
 std::vector<std::string> 
-LineairDBTransaction::get_all_keys(std::string db_table_key) {
+LineairDBTransaction::get_all_keys() {
   std::vector<std::string> keyList;
   tx->Scan("", std::nullopt, [&](auto key, auto) {
-    if (is_my_db_table(db_table_key, std::string(key))) keyList.push_back(std::string(key));
+    if (key_prefix_is_matching(db_table_key, std::string(key))) {
+      keyList.push_back(std::string(key.substr(db_table_key.size())));
+    }
     return false;
   });
   return keyList;
 }
 
-void LineairDBTransaction::write(std::string_view key, const std::string value) {
-  tx->Write(key, reinterpret_cast<const std::byte*>(value.c_str()),
+std::vector<std::string> 
+LineairDBTransaction::get_matching_keys(std::string first_key_part) {
+  std::vector<std::string> keyList;
+  std::string key_prefix{db_table_key + first_key_part};
+
+  tx->Scan("", std::nullopt, [&](auto key, auto) {
+    if (key_prefix_is_matching(key_prefix, std::string(key))) {
+      keyList.push_back(std::string(key.substr(db_table_key.size())));
+    }
+    return false;
+  });
+  return keyList;
+}
+
+void LineairDBTransaction::write(std::string key, const std::string value) {
+  tx->Write(db_table_key + key, reinterpret_cast<const std::byte*>(value.c_str()),
           value.length());
 }
 
-void LineairDBTransaction::delete_value(std::string_view key) {
-  tx->Write(key, nullptr, 0);
+void LineairDBTransaction::delete_value(std::string key) {
+  tx->Write(db_table_key + key, nullptr, 0);
 }
 
 

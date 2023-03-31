@@ -3,48 +3,46 @@ import mysql.connector
 from utils.reset import reset
 import argparse
 
-def delete (db, cursor) :
-    reset(db, cursor)
-    print("DELETE TEST")
+def where (db, cursor) :
+    cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
+    cursor.execute('CREATE DATABASE ha_lineairdb_test')
+    cursor.execute('CREATE TABLE ha_lineairdb_test.items (\
+        title int NOT NULL,\
+        content TEXT,\
+        INDEX title_idx (title)\
+    )ENGINE = LineairDB')
+    print("PRIMARY KEY INT TEST")
     cursor.execute(\
         'INSERT INTO ha_lineairdb_test.items (\
             title, content\
-        ) VALUES ("carol", "carol meets dave")'\
+        ) VALUES ("1", "alice")'\
     )
-    db.commit()
-    cursor.execute('DELETE FROM ha_lineairdb_test.items')
     db.commit()
 
     cursor.execute('SELECT * FROM ha_lineairdb_test.items')
     rows = cursor.fetchall()
-    if rows :
+    if not rows or rows[0][0] != 1 :
         print("\tCheck 1 Failed")
         print("\t", rows)
         return 1
-
-    cursor.execute(\
-        'INSERT INTO ha_lineairdb_test.items (\
-            title, content\
-        ) VALUES ("carol", "carol meets dave")'\
-    )
-    cursor.execute('DELETE FROM ha_lineairdb_test.items WHERE title = "carol"')
-    db.commit()
-
-    cursor.execute('SELECT * FROM ha_lineairdb_test.items')
+    print("\tCheck 1 Passed")
+    cursor.execute('SELECT * FROM ha_lineairdb_test.items WHERE title = "1"')
     rows = cursor.fetchall()
-    if rows :
-        print("\Check 2 Failed")
+    if not rows or rows[0][1] != "alice" :
+        print("\tCheck 2 Failed")
         print("\t", rows)
         return 1
+
     print("\tPassed!")
+    print("\t", rows)
     return 0
- 
+
 def main():
     # test
     db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
     cursor=db.cursor()
     
-    sys.exit(delete(db, cursor))
+    sys.exit(where(db, cursor))
 
 
 if __name__ == "__main__":

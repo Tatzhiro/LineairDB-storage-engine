@@ -1,50 +1,64 @@
 import sys
 import mysql.connector
-from utils.reset import reset
 import argparse
 
-def delete (db, cursor) :
-    reset(db, cursor)
-    print("DELETE TEST")
-    cursor.execute(\
-        'INSERT INTO ha_lineairdb_test.items (\
-            title, content\
-        ) VALUES ("carol", "carol meets dave")'\
-    )
-    db.commit()
-    cursor.execute('DELETE FROM ha_lineairdb_test.items')
+def reset (db, cursor) :
+    cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
+    cursor.execute('CREATE DATABASE ha_lineairdb_test')
+    cursor.execute('CREATE TABLE ha_lineairdb_test.items (\
+        first_name VARCHAR(50) NOT NULL,\
+        last_name VARCHAR(50) NOT NULL,\
+        content TEXT,\
+        PRIMARY KEY(last_name, first_name)  \
+    )ENGINE = LineairDB')
     db.commit()
 
+def composite_key (db, cursor) :
+    print("COMPOSITE KEY TEST")
+    try:
+      reset(db, cursor)
+    except Exception as e:
+      print(e)
+      return 1
+    cursor.execute(\
+        'INSERT INTO ha_lineairdb_test.items (\
+            first_name, last_name, content\
+        ) VALUES ("alice", "ada", "alice meets bob")'\
+    )
+    db.commit()
     cursor.execute('SELECT * FROM ha_lineairdb_test.items')
     rows = cursor.fetchall()
-    if rows :
+    if not rows :
         print("\tCheck 1 Failed")
         print("\t", rows)
         return 1
-
+    print("\tCheck 1 Passed")
+    db.commit()
     cursor.execute(\
         'INSERT INTO ha_lineairdb_test.items (\
-            title, content\
-        ) VALUES ("carol", "carol meets dave")'\
+            first_name, last_name, content\
+        ) VALUES ("alice", "adalace", "new comer")'\
     )
-    cursor.execute('DELETE FROM ha_lineairdb_test.items WHERE title = "carol"')
     db.commit()
-
-    cursor.execute('SELECT * FROM ha_lineairdb_test.items')
+    cursor.execute('SELECT * FROM ha_lineairdb_test.items WHERE last_name = "ada"')
     rows = cursor.fetchall()
-    if rows :
-        print("\Check 2 Failed")
+    if not rows :
+        print("\tCheck 2 Failed")
         print("\t", rows)
         return 1
+    db.commit()
     print("\tPassed!")
+    print("\t", rows)
     return 0
- 
+
+
+
 def main():
     # test
     db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
     cursor=db.cursor()
     
-    sys.exit(delete(db, cursor))
+    sys.exit(composite_key(db, cursor))
 
 
 if __name__ == "__main__":
