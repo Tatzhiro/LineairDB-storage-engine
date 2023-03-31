@@ -255,11 +255,12 @@ ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
       current_position_(0),
       blobroot(csv_key_memory_blobroot, BLOB_MEMROOT_ALLOC_SIZE) {}
 
-void ha_lineairdb::set_key_and_key_part_info(TABLE* table) {
+void ha_lineairdb::set_key_and_key_part_info(const TABLE* const table) {
   key_info = table->key_info;
   primary_key_type = (ha_base_keytype)table->key_info[key_info_pk_index].key_part[0].type;
 
   key_part = table->key_info->key_part;
+  indexed_key_part = key_part[0];
   num_key_parts = table->s->key_parts;
 }
 
@@ -883,29 +884,25 @@ std::string ha_lineairdb::extract_key() {
 }
 
 std::string ha_lineairdb::get_key_from_mysql() {
-  std::string first_key;
-  std::string non_first_key;
+  std::string complete_key;
 
   my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
-  size_t num_keys_read = 0;
-  for (Field** field = table->field; *field; field++) {
-    auto* f = *field;
-    if (f->m_indexed) {  // it is the key column
-      String b;
-      (*field)->val_str(&b, &b);
-      ldbField.set_lineairdb_field(b.c_ptr(), b.length());
-      if (f->key_start.is_set(0)) first_key = ldbField.get_lineairdb_field();
-      else non_first_key += ldbField.get_lineairdb_field();
-      if (++num_keys_read == table->key_info->actual_key_parts) break;
-    }
+  assert((*(table->field + indexed_key_part.fieldnr - 1))->key_start.is_set(0));
+  for (size_t i = 0; i < num_key_parts; i++) {
+    auto field_index = key_part[i].fieldnr - 1;
+    auto key_part_field = table->field[field_index];
+    String b;
+    (key_part_field)->val_str(&b, &b);
+    ldbField.set_lineairdb_field(b.c_ptr(), b.length());
+    complete_key += ldbField.get_lineairdb_field();
   }
   tmp_restore_column_map(table->read_set, org_bitmap);
-  return first_key + non_first_key;
+
+  return complete_key;
 }
 
 std::string ha_lineairdb::autogenerate_key() {
-  std::cout << "ha_lineairdb::autogenerate_key NOT IMPLEMENTED" << std::endl;
-  exit(1);
+  std::cout << "ha_lineairdb::autogenerate_key NEEDS FIX" << std::endl;
   std::string generated_key;
   auto inserted_count = auto_generated_keys_[db_table_name]++;
   std::string&& s = std::to_string(inserted_count);
@@ -922,7 +919,7 @@ std::string ha_lineairdb::convert_key_to_ldbformat(const uchar* key) {
      * Currently, primary_key can only handle signed numeric keys up to 8 bytes
      * Appropriate types must be selected for unsigned numbers.
     */
-    size_t key_length = key_part[0].length;
+    size_t key_length = indexed_key_part.length;
     long primary_key = ldbField.convert_bytes_to_numeric(key, key_length);
     std::string&& intKey = std::to_string(primary_key);
     ldbField.set_lineairdb_field(intKey.c_str(), intKey.size());

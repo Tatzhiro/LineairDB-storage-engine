@@ -90,6 +90,7 @@ class ha_lineairdb : public handler {
 
   KEY_PART_INFO *key_part;
   size_t num_key_parts;
+  KEY_PART_INFO indexed_key_part;
 
   THD* userThread;
   std::vector<std::string> scanned_keys_;
@@ -155,9 +156,6 @@ class ha_lineairdb : public handler {
   }
 
   uint max_supported_keys() const override { return 1; }
-  uint max_supported_key_parts() const override {
-    return 2;
-  }  // TODO WANTFIX support composite index
 
   /** @brief
     unireg.cc will call this to make sure that the storage engine can handle
@@ -298,7 +296,7 @@ class ha_lineairdb : public handler {
   void set_write_buffer(uchar* buf);
   bool is_primary_key_exists();
   bool is_primary_key_type_int();
-  void set_key_and_key_part_info(TABLE* table);
+  void set_key_and_key_part_info(const TABLE* const table);
 
   bool store_blob_to_field(Field** field);
   int set_fields_from_lineairdb(uchar* buf, const std::byte* const read_buf,

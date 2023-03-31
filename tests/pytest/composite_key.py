@@ -7,9 +7,11 @@ def reset (db, cursor) :
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
     cursor.execute('CREATE TABLE ha_lineairdb_test.items (\
         first_name VARCHAR(50) NOT NULL,\
+        middle_name VARCHAR(50) NOT NULL,\
         last_name VARCHAR(50) NOT NULL,\
+        age int NOT NULL,\
         content TEXT,\
-        PRIMARY KEY(last_name, first_name)  \
+        PRIMARY KEY(age, middle_name, last_name, first_name)  \
     )ENGINE = LineairDB')
     db.commit()
 
@@ -22,8 +24,8 @@ def composite_key (db, cursor) :
       return 1
     cursor.execute(\
         'INSERT INTO ha_lineairdb_test.items (\
-            first_name, last_name, content\
-        ) VALUES ("alice", "ada", "alice meets bob")'\
+            first_name, middle_name, last_name, age, content\
+        ) VALUES ("alice", "avril", "ada", 5, "alice meets bob")'\
     )
     db.commit()
     cursor.execute('SELECT * FROM ha_lineairdb_test.items')
@@ -36,14 +38,21 @@ def composite_key (db, cursor) :
     db.commit()
     cursor.execute(\
         'INSERT INTO ha_lineairdb_test.items (\
-            first_name, last_name, content\
-        ) VALUES ("alice", "adalace", "new comer")'\
+            first_name, middle_name, last_name, age, content\
+        ) VALUES ("alice", "ann", "adalace", 3, "new comer")'\
     )
     db.commit()
-    cursor.execute('SELECT * FROM ha_lineairdb_test.items WHERE last_name = "ada"')
+    cursor.execute('SELECT * FROM ha_lineairdb_test.items WHERE age = 5')
     rows = cursor.fetchall()
     if not rows :
         print("\tCheck 2 Failed")
+        print("\t", rows)
+        return 1
+    db.commit()
+    cursor.execute('SELECT * FROM ha_lineairdb_test.items WHERE first_name = "alice"')
+    rows = cursor.fetchall()
+    if len(rows) != 2 :
+        print("\tCheck 3 Failed")
         print("\t", rows)
         return 1
     db.commit()
