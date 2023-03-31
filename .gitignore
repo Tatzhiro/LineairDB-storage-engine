@@ -7,6 +7,8 @@ perf
 *.log
 */__pycache__/*
 bench/results/*
+bench/plots/*
+.cache
 
 # Created by https://www.toptal.com/developers/gitignore/api/c++,macos,windows
 # Edit at https://www.toptal.com/developers/gitignore?templates=c++,macos,windows
