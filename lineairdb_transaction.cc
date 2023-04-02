@@ -27,7 +27,7 @@ bool LineairDBTransaction::table_is_not_chosen() {
 
 const std::pair<const std::byte *const, const size_t> 
 LineairDBTransaction::read(std::string key) {
-  if (table_is_not_chosen()) return const std::pair<const std::byte *const, const size_t>{nullptr, 0};
+  if (table_is_not_chosen()) return std::pair<const std::byte *const, const size_t>{nullptr, 0};
   return tx->Read(db_table_key + key);
 }
 
@@ -70,11 +70,13 @@ bool LineairDBTransaction::write(std::string key, const std::string value) {
   if (table_is_not_chosen()) return false;
   tx->Write(db_table_key + key, reinterpret_cast<const std::byte*>(value.c_str()),
           value.length());
+  return true;
 }
 
 bool LineairDBTransaction::delete_value(std::string key) {
   if (table_is_not_chosen()) return false;
   tx->Write(db_table_key + key, nullptr, 0);
+  return true;
 }
 
 

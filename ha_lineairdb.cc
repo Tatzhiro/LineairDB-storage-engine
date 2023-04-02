@@ -334,7 +334,8 @@ int ha_lineairdb::write_row(uchar* buf) {
   }
   
   tx->choose_table(db_table_name);
-  if (tx->write(key, write_buffer_)) return HA_ERR_LOCK_DEADLOCK;
+  bool is_successful = tx->write(key, write_buffer_);
+  if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
@@ -353,7 +354,8 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
   }
   
   tx->choose_table(db_table_name);
-  if (tx->write(key, write_buffer_)) return HA_ERR_LOCK_DEADLOCK;
+  bool is_successful = tx->write(key, write_buffer_);
+  if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
@@ -371,7 +373,8 @@ int ha_lineairdb::delete_row(const uchar*) {
   }
   
   tx->choose_table(db_table_name);
-  if (tx->delete_value(key)) return HA_ERR_LOCK_DEADLOCK;
+  bool is_successful = tx->delete_value(key);
+  if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
