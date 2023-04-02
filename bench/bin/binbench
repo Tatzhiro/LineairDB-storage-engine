@@ -51,7 +51,7 @@ local IS_FENCING=$1
 cd $base_path
 sed -i "s/#define FENCE.*/#define FENCE $IS_FENCING/" ha_lineairdb.cc
 cd $base_path/$build_dir
-ninja lineairdb_storage_engine -j 4
+ninja lineairdb_storage_engine -j `nproc`
 cd $base_path/third_party/benchbase
 }
 
@@ -71,8 +71,13 @@ engines=(
 build_dir=build
 cnf=my.cnf
 
+sudo systemctl stop mysql.service
+if [[ `$base_path/$build_dir/bin/mysql -uroot -N -e "SHOW ENGINES;" | grep LINEAIRDB` != LINEAIRDB* ]] ; 
+then $base_path/$build_dir/bin/mysql -uroot -N -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"; 
+fi
 rm -rf $base_path/bench/results/*
-for bm_type in A; do
+
+for bm_type in A B C E F write; do
   cd $base_path/third_party/benchbase
 
   if [ $bm_type = A ]; then
@@ -81,6 +86,10 @@ for bm_type in A; do
     weight=95,0,0,5,0,0
   elif [ $bm_type = C ]; then
     weight=100,0,0,0,0,0
+  elif [ $bm_type = E ]; then
+    weight=0,5,95,0,0,0
+  elif [ $bm_type = F ]; then
+    weight=50,0,0,0,0,50
   else
     weight=0,0,0,100,0,0
   fi
@@ -89,21 +98,21 @@ for bm_type in A; do
   rm -rf $base_path/bench/results/*
   sed -i "s/<weights>.*<\/weights>/<weights>$weight<\/weights>/" $base_path/bench/config/ycsb.xml
   EDIT_FENCE false
-  for i in 1 2 3; do
+  for i in 1; do
     for engine in ${engines[@]}; do
       if [ $engine = "fence" ]; then
         EDIT_FENCE true
-        sed -i s/default_storage_engine.*/default_storage_engine=lineairdb/ $base_path/tests/$cnf
+        sed -i s/default_storage_engine.*/default_storage_engine=lineairdb/ $base_path/$cnf
       else
-        sed -i s/default_storage_engine.*/default_storage_engine=$engine/ $base_path/tests/$cnf
+        sed -i s/default_storage_engine.*/default_storage_engine=$engine/ $base_path/$cnf
       fi
 
       if [ "$MYSQL_UP" -ne 0 ]; then
       kill -9 `pgrep mysqld`
       fi
-      $base_path/$build_dir/bin/mysqld --defaults-file=$base_path/tests/$cnf --daemonize
+      $base_path/$build_dir/bin/mysqld --defaults-file=$base_path/$cnf --daemonize
       for num_thread in ${num_threads[@]}; do
-        sed -i "s/innodb_thread_concurrency.*/innodb_thread_concurrency=$num_thread/" $base_path/tests/$cnf
+        sed -i "s/innodb_thread_concurrency.*/innodb_thread_concurrency=$num_thread/" $base_path/$cnf
         sed -i "s/<terminals>.*<\/terminals>/<terminals>$num_thread<\/terminals>/" $base_path/bench/config/ycsb.xml
         $base_path/$build_dir/bin/mysql -uroot < $base_path/bench/reset.sql
 
@@ -117,6 +126,6 @@ for bm_type in A; do
   done
   mkdir -p $base_path/bench/plots/ycsb/$bm_type
   cd $base_path/bench/plots/ycsb/$bm_type
-  python3 $base_path/bench/bin/plot.py --engine ${engines[@]} --xaxis ${num_threads[@]} --fname afterBench
+  python3 $base_path/bench/bin/plot.py --engine ${engines[@]} --xaxis ${num_threads[@]} --fname month_day
 done
 message 'Finish the benchmarking'
