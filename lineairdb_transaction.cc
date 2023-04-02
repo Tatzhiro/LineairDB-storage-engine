@@ -17,8 +17,17 @@ void LineairDBTransaction::choose_table(std::string db_table_name) {
   db_table_key = db_table_name;
 }
 
+bool LineairDBTransaction::table_is_not_chosen() {
+  if (db_table_key.size() == 0) {
+    std::cout << "Database and Table is not chosen in LineairDBTransaction" << std::endl;
+    return true;
+  }
+  return false;
+}
+
 const std::pair<const std::byte *const, const size_t> 
 LineairDBTransaction::read(std::string key) {
+  if (table_is_not_chosen()) return const std::pair<const std::byte *const, const size_t>{nullptr, 0};
   return tx->Read(db_table_key + key);
 }
 
@@ -29,6 +38,8 @@ bool LineairDBTransaction::key_prefix_is_matching(std::string key_prefix, std::s
 
 std::vector<std::string> 
 LineairDBTransaction::get_all_keys() {
+  if (table_is_not_chosen()) return {};
+
   std::vector<std::string> keyList;
   tx->Scan("", std::nullopt, [&](auto key, auto) {
     if (key_prefix_is_matching(db_table_key, std::string(key))) {
@@ -41,6 +52,8 @@ LineairDBTransaction::get_all_keys() {
 
 std::vector<std::string> 
 LineairDBTransaction::get_matching_keys(std::string first_key_part) {
+  if (table_is_not_chosen()) return {};
+
   std::vector<std::string> keyList;
   std::string key_prefix{db_table_key + first_key_part};
 
@@ -53,12 +66,14 @@ LineairDBTransaction::get_matching_keys(std::string first_key_part) {
   return keyList;
 }
 
-void LineairDBTransaction::write(std::string key, const std::string value) {
+bool LineairDBTransaction::write(std::string key, const std::string value) {
+  if (table_is_not_chosen()) return false;
   tx->Write(db_table_key + key, reinterpret_cast<const std::byte*>(value.c_str()),
           value.length());
 }
 
-void LineairDBTransaction::delete_value(std::string key) {
+bool LineairDBTransaction::delete_value(std::string key) {
+  if (table_is_not_chosen()) return false;
   tx->Write(db_table_key + key, nullptr, 0);
 }
 

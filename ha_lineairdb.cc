@@ -257,7 +257,7 @@ ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
 
 void ha_lineairdb::set_key_and_key_part_info(const TABLE* const table) {
   key_info = table->key_info;
-  primary_key_type = (ha_base_keytype)table->key_info[key_info_pk_index].key_part[0].type;
+  primary_key_type = static_cast<ha_base_keytype>(table->key_info[key_info_pk_index].key_part[0].type);
 
   key_part = table->key_info->key_part;
   indexed_key_part = key_part[0];
@@ -334,7 +334,7 @@ int ha_lineairdb::write_row(uchar* buf) {
   }
   
   tx->choose_table(db_table_name);
-  tx->write(key, write_buffer_);
+  if (tx->write(key, write_buffer_)) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
@@ -353,7 +353,7 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
   }
   
   tx->choose_table(db_table_name);
-  tx->write(key, write_buffer_);
+  if (tx->write(key, write_buffer_)) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
@@ -371,7 +371,7 @@ int ha_lineairdb::delete_row(const uchar*) {
   }
   
   tx->choose_table(db_table_name);
-  tx->delete_value(key);
+  if (tx->delete_value(key)) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
@@ -879,8 +879,11 @@ int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
 }
 
 std::string ha_lineairdb::extract_key() {
-  if (is_primary_key_exists()) return get_key_from_mysql();
-  else return autogenerate_key();
+  if (is_primary_key_exists()) {
+    return get_key_from_mysql();
+  } else {
+    return autogenerate_key();
+  }
 }
 
 std::string ha_lineairdb::get_key_from_mysql() {
@@ -902,6 +905,11 @@ std::string ha_lineairdb::get_key_from_mysql() {
 }
 
 std::string ha_lineairdb::autogenerate_key() {
+  /**
+   * @WANTFIX: This function relies on a class member `auto_generated_keys_`.
+   * `auto_generated_keys_` is not recovered when the handler is constructed.
+   * It has to be a recoverable data.
+   */
   std::cout << "ha_lineairdb::autogenerate_key NEEDS FIX" << std::endl;
   std::string generated_key;
   auto inserted_count = auto_generated_keys_[db_table_name]++;

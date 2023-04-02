@@ -18,12 +18,13 @@ class LineairDBTransaction
 public:
   std::string get_selected_table_name();
   void choose_table(std::string db_table_name);
+  bool table_is_not_chosen();
 
   const std::pair<const std::byte *const, const size_t> read(std::string key);
   std::vector<std::string> get_all_keys();
   std::vector<std::string> get_matching_keys(std::string key);
-  void write(std::string key, const std::string value);
-  void delete_value(std::string key);
+  bool write(std::string key, const std::string value);
+  bool delete_value(std::string key);
 
 
   void begin_transaction();
