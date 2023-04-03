@@ -81,12 +81,21 @@ class ha_lineairdb : public handler {
   LineairDB::Database* get_db();
 
  private:
-  std::string db_table_key;
+  std::string db_table_name;
+
+  KEY *key_info;
+  size_t num_keys;
+  const size_t key_info_pk_index = 0;
+  ha_base_keytype primary_key_type;
+
+  KEY_PART_INFO *key_part;
+  size_t num_key_parts;
+  KEY_PART_INFO indexed_key_part;
+
   THD* userThread;
   std::vector<std::string> scanned_keys_;
   my_off_t
       current_position_; /* Current position in the file during a file scan */
-  std::string current_key_;
   std::string write_buffer_;
   std::unordered_map<std::string, size_t> auto_generated_keys_;
   LineairDBField ldbField;
@@ -147,9 +156,6 @@ class ha_lineairdb : public handler {
   }
 
   uint max_supported_keys() const override { return 1; }
-  uint max_supported_key_parts() const override {
-    return 1;
-  }  // TODO WANTFIX support composite index
 
   /** @brief
     unireg.cc will call this to make sure that the storage engine can handle
@@ -282,12 +288,15 @@ class ha_lineairdb : public handler {
  private:
   LineairDBTransaction*& get_transaction(THD* thd);
 
-  std::string get_current_key();
-  void set_current_key(const uchar* key = nullptr);
+  std::string convert_key_to_ldbformat(const uchar* key);
+  std::string extract_key();
+  std::string autogenerate_key();
+  std::string get_key_from_mysql();
 
   void set_write_buffer(uchar* buf);
   bool is_primary_key_exists();
-  size_t is_primary_key_type_int();
+  bool is_primary_key_type_int();
+  void set_key_and_key_part_info(const TABLE* const table);
 
   bool store_blob_to_field(Field** field);
   int set_fields_from_lineairdb(uchar* buf, const std::byte* const read_buf,

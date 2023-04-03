@@ -255,6 +255,15 @@ ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
       current_position_(0),
       blobroot(csv_key_memory_blobroot, BLOB_MEMROOT_ALLOC_SIZE) {}
 
+void ha_lineairdb::set_key_and_key_part_info(const TABLE* const table) {
+  key_info = table->key_info;
+  primary_key_type = static_cast<ha_base_keytype>(table->key_info[key_info_pk_index].key_part[0].type);
+
+  key_part = table->key_info->key_part;
+  indexed_key_part = key_part[0];
+  num_key_parts = table->s->key_parts;
+}
+
 /**
   @brief
   Used for opening tables. The name will be the name of the file.
@@ -277,7 +286,10 @@ int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table*) {
   thr_lock_data_init(&share->lock, &lock, nullptr);
 
   ldbField.set_lineairdb_field(table_name, strlen(table_name));
-  db_table_key = ldbField.get_lineairdb_field();
+  db_table_name = ldbField.get_lineairdb_field();
+
+  if ((num_keys = table->s->keys)) set_key_and_key_part_info(table);
+  
 
   return 0;
 }
@@ -311,7 +323,7 @@ int ha_lineairdb::close(void) {
 int ha_lineairdb::write_row(uchar* buf) {
   DBUG_TRACE;
 
-  set_current_key();
+  auto key = extract_key();
   set_write_buffer(buf);
 
   auto tx = get_transaction(userThread);
@@ -321,7 +333,9 @@ int ha_lineairdb::write_row(uchar* buf) {
     return HA_ERR_LOCK_DEADLOCK;
   }
   
-  tx->write(get_current_key(), write_buffer_);
+  tx->choose_table(db_table_name);
+  bool is_successful = tx->write(key, write_buffer_);
+  if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
@@ -329,7 +343,7 @@ int ha_lineairdb::write_row(uchar* buf) {
 int ha_lineairdb::update_row(const uchar*, uchar* buf) {
   DBUG_TRACE;
 
-  set_current_key();
+  auto key = extract_key();
   set_write_buffer(buf);
 
   auto tx = get_transaction(userThread);
@@ -339,7 +353,9 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
     return HA_ERR_LOCK_DEADLOCK;
   }
   
-  tx->write(get_current_key(), write_buffer_);
+  tx->choose_table(db_table_name);
+  bool is_successful = tx->write(key, write_buffer_);
+  if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
@@ -347,7 +363,7 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
 int ha_lineairdb::delete_row(const uchar*) {
   DBUG_TRACE;
 
-  set_current_key();
+  auto key = extract_key();
 
   auto tx = get_transaction(userThread);
 
@@ -356,28 +372,18 @@ int ha_lineairdb::delete_row(const uchar*) {
     return HA_ERR_LOCK_DEADLOCK;
   }
   
-  tx->delete_value(get_current_key());
+  tx->choose_table(db_table_name);
+  bool is_successful = tx->delete_value(key);
+  if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
 
   return 0;
 }
 
-// MEMO: Return values of this function may be cached by MySQL internal
 int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
                                  enum ha_rkey_function) {
   DBUG_TRACE;
 
-  // NOTE:
-  // Current implementation of lineairdb (049717)
-  // supports only std::string for key of index.
-  // Therefore, when MySQL requests to scan the storage
-  // engine with unsupported key type (e.g., int),
-  // we return HA_ERR_WRONG_COMMAND to indicate
-  // "this key type is unsupported".
-  const bool key_type_is_supported_by_lineairdb = true;
-
-  if (!key_type_is_supported_by_lineairdb) return HA_ERR_WRONG_COMMAND;
-
-  set_current_key(key);
+  auto key_prefix = convert_key_to_ldbformat(key);
 
   stats.records = 0;
 
@@ -388,17 +394,11 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
     return HA_ERR_LOCK_DEADLOCK;
   }
 
-  auto read_buffer = tx->read(get_current_key());
+  tx->choose_table(db_table_name);
+  scanned_keys_ = tx->get_matching_keys(key_prefix);
+  current_position_ = 0;
 
-  if (read_buffer.first == nullptr) {
-    return HA_ERR_END_OF_FILE;
-  }
-  if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second)) {
-    tx->set_status_to_abort();
-    return HA_ERR_OUT_OF_MEM;
-  }
-
-  return 0;
+  return index_next(buf);
 }
 
 /**
@@ -406,9 +406,9 @@ int ha_lineairdb::index_read_map(uchar* buf, const uchar* key, key_part_map,
   Used to read forward through the index.
 */
 
-int ha_lineairdb::index_next(uchar*) {
+int ha_lineairdb::index_next(uchar* buf) {
   DBUG_TRACE;
-  return HA_ERR_END_OF_FILE;
+  return rnd_next(buf);
 }
 
 /**
@@ -484,7 +484,8 @@ int ha_lineairdb::rnd_init(bool) {
     return HA_ERR_LOCK_DEADLOCK;
   }
 
-  scanned_keys_ = tx->get_all_keys(db_table_key);
+  tx->choose_table(db_table_name);
+  scanned_keys_ = tx->get_all_keys();
 
   DBUG_RETURN(0);
 }
@@ -523,7 +524,6 @@ read_from_lineairdb:
     DBUG_RETURN(HA_ERR_END_OF_FILE);
 
   auto& key = scanned_keys_[current_position_];
-  current_key_ = key;
 
   auto tx = get_transaction(userThread);
 
@@ -532,7 +532,8 @@ read_from_lineairdb:
     return HA_ERR_LOCK_DEADLOCK;
   }
 
-  auto read_buffer = tx->read(get_current_key());
+  assert(tx->get_selected_table_name() == db_table_name);
+  auto read_buffer = tx->read(key);
 
   if (read_buffer.first == nullptr) {
     current_position_++;
@@ -880,6 +881,69 @@ int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
   return 0;
 }
 
+std::string ha_lineairdb::extract_key() {
+  if (is_primary_key_exists()) {
+    return get_key_from_mysql();
+  } else {
+    return autogenerate_key();
+  }
+}
+
+std::string ha_lineairdb::get_key_from_mysql() {
+  std::string complete_key;
+
+  my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
+  assert((*(table->field + indexed_key_part.fieldnr - 1))->key_start.is_set(0));
+  for (size_t i = 0; i < num_key_parts; i++) {
+    auto field_index = key_part[i].fieldnr - 1;
+    auto key_part_field = table->field[field_index];
+    String b;
+    (key_part_field)->val_str(&b, &b);
+    ldbField.set_lineairdb_field(b.c_ptr(), b.length());
+    complete_key += ldbField.get_lineairdb_field();
+  }
+  tmp_restore_column_map(table->read_set, org_bitmap);
+
+  return complete_key;
+}
+
+std::string ha_lineairdb::autogenerate_key() {
+  /**
+   * @WANTFIX: This function relies on a class member `auto_generated_keys_`.
+   * `auto_generated_keys_` is not recovered when the handler is constructed.
+   * It has to be a recoverable data.
+   */
+  std::cout << "ha_lineairdb::autogenerate_key NEEDS FIX" << std::endl;
+  std::string generated_key;
+  auto inserted_count = auto_generated_keys_[db_table_name]++;
+  std::string&& s = std::to_string(inserted_count);
+  ldbField.set_lineairdb_field(s.c_str(), s.size());
+  generated_key = ldbField.get_lineairdb_field();
+  return generated_key;
+}
+
+std::string ha_lineairdb::convert_key_to_ldbformat(const uchar* key) { 
+  std::string current_key;
+  if (is_primary_key_type_int()) {
+    /**
+     * @WANTFIX: need to use appropriate type for numeric primary key
+     * Currently, primary_key can only handle signed numeric keys up to 8 bytes
+     * Appropriate types must be selected for unsigned numbers.
+    */
+    size_t key_length = indexed_key_part.length;
+    long primary_key = ldbField.convert_bytes_to_numeric(key, key_length);
+    std::string&& intKey = std::to_string(primary_key);
+    ldbField.set_lineairdb_field(intKey.c_str(), intKey.size());
+    current_key += ldbField.get_lineairdb_field();
+  }
+  else {
+    auto pk_bytes = ldbField.convert_bytes_to_numeric(key, 2);
+    ldbField.set_lineairdb_field(&key[2], pk_bytes);
+    current_key += ldbField.get_lineairdb_field();
+  }
+  return current_key;
+}
+
 /**
  * @brief This function only extracts the type of key for 
  *        tables that have single key
@@ -887,110 +951,16 @@ int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
  * @return bytes Key type is int
  * @return 0 Key type is not int
  */
-size_t ha_lineairdb::is_primary_key_type_int() {
-  int bytes = 0;
-  if (is_primary_key_exists()) {
-    assert(table->s->keys == 1); 
-    assert(max_supported_key_parts() == 1);  // now we assume that there is no composite index
-    my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
-    for (Field** field = table->field; *field; field++) {
-      auto* f = *field;
-      if (f->m_indexed) {  // it is the key column
-        ha_base_keytype key_type = f->key_type();
-        switch (key_type) {
-          case HA_KEYTYPE_SHORT_INT:
-          case HA_KEYTYPE_USHORT_INT:
-            bytes = sizeof(short);
-            break;
-          case HA_KEYTYPE_LONG_INT:
-          case HA_KEYTYPE_ULONG_INT:
-            bytes = sizeof(long);
-            break;
-          case HA_KEYTYPE_LONGLONG:
-          case HA_KEYTYPE_ULONGLONG:
-            bytes = sizeof(long long);
-            break;
-          case HA_KEYTYPE_INT24:
-          case HA_KEYTYPE_UINT24:
-            bytes = 3;
-            break;
-          case HA_KEYTYPE_INT8:
-            bytes = sizeof(int8_t);
-            break;
-          default:
-            bytes = 0;
-            break;
-        }
-        break;
-      }
-    }
-    tmp_restore_column_map(table->read_set, org_bitmap);
-  }
-  return bytes;
+bool ha_lineairdb::is_primary_key_type_int() {
+  ha_base_keytype integer_types[] = {HA_KEYTYPE_SHORT_INT, HA_KEYTYPE_USHORT_INT,
+                                     HA_KEYTYPE_LONG_INT, HA_KEYTYPE_ULONG_INT,
+                                     HA_KEYTYPE_LONGLONG, HA_KEYTYPE_ULONGLONG,
+                                     HA_KEYTYPE_INT24, HA_KEYTYPE_UINT24,
+                                     HA_KEYTYPE_INT8};
+  assert(table->s->keys == 1); 
+  ha_base_keytype key_type = primary_key_type;
+  return std::find(std::begin(integer_types), std::end(integer_types), key_type) != std::end(integer_types);
 }
-
-/**
- * @brief Set the current key of the row
- *  which is requested by the query.
- * 
- * @param key
- * By default, the key is constructed from the fields of the
- * specified row, except for DELETE queries. For DELETE queries, pass the
- * argument to extract key desired to delete.
- */
-void ha_lineairdb::set_current_key(const uchar* key) {
-  current_key_.clear();
-  {  // DATABASE_NAME + TABLE_NAME
-    current_key_ = db_table_key;
-  }
-  {
-    // KEY_NAME
-    if (key != nullptr) {  // DELETE
-      if (int int_bytes = is_primary_key_type_int()) {
-        /**
-         * @WANTFIX: need to use appropriate type for numeric primary key
-         * Currently, primary_key can only handle signed numeric keys up to 8 bytes
-         * Appropriate types must be selected for unsigned numbers.
-        */
-        long primary_key = ldbField.convert_bytes_to_numeric(key, int_bytes);
-        std::string&& intKey = std::to_string(primary_key);
-        ldbField.set_lineairdb_field(intKey.c_str(), intKey.size());
-        current_key_ += ldbField.get_lineairdb_field();
-      }
-      else {
-        auto pk_bytes = ldbField.convert_bytes_to_numeric(key, 2);
-        ldbField.set_lineairdb_field(&key[2], pk_bytes);
-        current_key_ += ldbField.get_lineairdb_field();
-      }
-    }
-    else if (is_primary_key_exists()) {  // KEY EXISTS
-      // now we assume that there is no composite index
-      assert(max_supported_key_parts() == 1);
-      my_bitmap_map* org_bitmap = tmp_use_all_columns(table, table->read_set);
-      for (Field** field = table->field; *field; field++) {
-        auto* f = *field;
-        if (f->m_indexed) {  // it is the key column
-          String b;
-          (*field)->val_str(&b, &b);
-          ldbField.set_lineairdb_field(b.c_ptr(), b.length());
-          current_key_ += ldbField.get_lineairdb_field();
-          break;
-        }
-      }
-      tmp_restore_column_map(table->read_set, org_bitmap);
-    } 
-    else {  // THERE IS NO KEY COLUMN
-      const auto cstr       = table->s->table_name;
-      const auto table_name = std::string(cstr.str, cstr.length);
-      auto inserted_count = auto_generated_keys_[table_name]++;
-      std::string&& s = std::to_string(inserted_count);
-      ldbField.set_lineairdb_field(s.c_str(), s.size());
-      current_key_ += ldbField.get_lineairdb_field();
-    }
-  }
-}
-
-std::string ha_lineairdb::get_current_key() { return current_key_; }
 
 /**
  * @brief Format and set the requested row into `write_buffer_`.
