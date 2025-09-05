@@ -107,11 +107,12 @@
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
 
-static std::shared_ptr<LineairDB::Database> get_or_allocate_database(LineairDB::Config conf);
+static std::shared_ptr<LineairDB::Database> get_or_allocate_database(
+    LineairDB::Config conf);
 
 void terminate_tx(LineairDBTransaction*& tx);
-static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit);
-static int lineairdb_abort(handlerton *hton, THD *thd, bool);
+static int lineairdb_commit(handlerton* hton, THD* thd, bool shouldCommit);
+static int lineairdb_abort(handlerton* hton, THD* thd, bool);
 
 static MYSQL_THDVAR_STR(last_create_thdvar, PLUGIN_VAR_MEMALLOC, nullptr,
                         nullptr, nullptr, nullptr);
@@ -160,7 +161,6 @@ static bool lineairdb_is_supported_system_table(
   return false;
 }
 
-
 struct lineairdb_vars_t {
   ulong var1;
   double var2;
@@ -188,10 +188,10 @@ static handler* lineairdb_create_handler(handlerton* hton, TABLE_SHARE* table,
 static int lineairdb_init_func(void* p) {
   DBUG_TRACE;
 
-  lineairdb_hton         = (handlerton*)p;
-  lineairdb_hton->state  = SHOW_OPTION_YES;
+  lineairdb_hton = (handlerton*)p;
+  lineairdb_hton->state = SHOW_OPTION_YES;
   lineairdb_hton->create = lineairdb_create_handler;
-  lineairdb_hton->flags  = HTON_CAN_RECREATE;
+  lineairdb_hton->flags = HTON_CAN_RECREATE;
   lineairdb_hton->is_supported_system_table =
       lineairdb_is_supported_system_table;
   lineairdb_hton->db_type = DB_TYPE_UNKNOWN;
@@ -201,10 +201,12 @@ static int lineairdb_init_func(void* p) {
   return 0;
 }
 
-static std::shared_ptr<LineairDB::Database> get_or_allocate_database(LineairDB::Config conf) {
+static std::shared_ptr<LineairDB::Database> get_or_allocate_database(
+    LineairDB::Config conf) {
   static std::shared_ptr<LineairDB::Database> db;
   static std::once_flag flag;
-  std::call_once(flag, [&](){ db = std::make_shared<LineairDB::Database>(conf); });
+  std::call_once(flag,
+                 [&]() { db = std::make_shared<LineairDB::Database>(conf); });
   return db;
 }
 
@@ -213,8 +215,8 @@ LineairDB_share::LineairDB_share() {
   if (lineairdb_ == nullptr) {
     LineairDB::Config conf;
     conf.enable_checkpointing = false;
-    conf.enable_recovery      = false;
-    conf.max_thread           = 1;
+    conf.enable_recovery = false;
+    conf.max_thread = 1;
     lineairdb_ = get_or_allocate_database(conf);
   }
 }
@@ -257,7 +259,8 @@ ha_lineairdb::ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg)
 
 void ha_lineairdb::set_key_and_key_part_info(const TABLE* const table) {
   key_info = table->key_info;
-  primary_key_type = static_cast<ha_base_keytype>(table->key_info[key_info_pk_index].key_part[0].type);
+  primary_key_type = static_cast<ha_base_keytype>(
+      table->key_info[key_info_pk_index].key_part[0].type);
 
   key_part = table->key_info->key_part;
   indexed_key_part = key_part[0];
@@ -280,7 +283,7 @@ void ha_lineairdb::set_key_and_key_part_info(const TABLE* const table) {
   handler::ha_open() in handler.cc
 */
 
-int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table*) {
+int ha_lineairdb::open(const char* table_name, int, uint, const dd::Table*) {
   DBUG_TRACE;
   if (!(share = get_share())) return 1;
   thr_lock_data_init(&share->lock, &lock, nullptr);
@@ -289,7 +292,6 @@ int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table*) {
   db_table_name = ldbField.get_lineairdb_field();
 
   if ((num_keys = table->s->keys)) set_key_and_key_part_info(table);
-  
 
   return 0;
 }
@@ -332,7 +334,7 @@ int ha_lineairdb::write_row(uchar* buf) {
     thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
-  
+
   tx->choose_table(db_table_name);
   bool is_successful = tx->write(key, write_buffer_);
   if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
@@ -352,7 +354,7 @@ int ha_lineairdb::update_row(const uchar*, uchar* buf) {
     thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
-  
+
   tx->choose_table(db_table_name);
   bool is_successful = tx->write(key, write_buffer_);
   if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
@@ -371,7 +373,7 @@ int ha_lineairdb::delete_row(const uchar*) {
     thd_mark_transaction_to_rollback(userThread, 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
-  
+
   tx->choose_table(db_table_name);
   bool is_successful = tx->delete_value(key);
   if (!is_successful) return HA_ERR_LOCK_DEADLOCK;
@@ -475,7 +477,7 @@ int ha_lineairdb::rnd_init(bool) {
   DBUG_ENTER("ha_lineairdb::rnd_init");
   scanned_keys_.clear();
   current_position_ = 0;
-  stats.records     = 0;
+  stats.records = 0;
 
   auto tx = get_transaction(userThread);
 
@@ -697,7 +699,7 @@ int ha_lineairdb::external_lock(THD* thd, int lock_type) {
 
   userThread = thd;
   LineairDBTransaction*& tx = get_transaction(thd);
-  
+
   const bool tx_is_ready_to_commit = lock_type == F_UNLCK;
   if (tx_is_ready_to_commit) {
     if (tx->is_a_single_statement()) {
@@ -713,7 +715,7 @@ int ha_lineairdb::external_lock(THD* thd, int lock_type) {
   return 0;
 }
 
-int ha_lineairdb::start_stmt(THD *thd, thr_lock_type lock_type) {
+int ha_lineairdb::start_stmt(THD* thd, thr_lock_type lock_type) {
   assert(lock_type > 0);
   return external_lock(thd, lock_type);
 }
@@ -722,7 +724,8 @@ int ha_lineairdb::start_stmt(THD *thd, thr_lock_type lock_type) {
  * @brief Gets transaction from MySQL allocated memory
  */
 LineairDBTransaction*& ha_lineairdb::get_transaction(THD* thd) {
-  LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, lineairdb_hton));
+  LineairDBTransaction*& tx = *reinterpret_cast<LineairDBTransaction**>(
+      thd_ha_data(thd, lineairdb_hton));
   if (tx == nullptr) {
     tx = new LineairDBTransaction(thd, get_db(), lineairdb_hton, FENCE);
   }
@@ -731,22 +734,24 @@ LineairDBTransaction*& ha_lineairdb::get_transaction(THD* thd) {
 
 /**
  * implementation of commit for lineairdb_hton
-*/
-static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldTerminate) {
+ */
+static int lineairdb_commit(handlerton* hton, THD* thd, bool shouldTerminate) {
   if (shouldTerminate == false) return 0;
-  LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
+  LineairDBTransaction*& tx =
+      *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
 
   assert(tx != nullptr);
-  
+
   terminate_tx(tx);
   return 0;
 }
 
 /**
  * implementation of rollback for lineairdb_hton
-*/
-static int lineairdb_abort(handlerton *hton, THD *thd, bool) {
-  LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
+ */
+static int lineairdb_abort(handlerton* hton, THD* thd, bool) {
+  LineairDBTransaction*& tx =
+      *reinterpret_cast<LineairDBTransaction**>(thd_ha_data(thd, hton));
 
   assert(tx != nullptr);
 
@@ -877,7 +882,6 @@ ha_rows ha_lineairdb::records_in_range(uint, key_range*, key_range*) {
 
 int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
   DBUG_TRACE;
-
   return 0;
 }
 
@@ -922,21 +926,20 @@ std::string ha_lineairdb::autogenerate_key() {
   return generated_key;
 }
 
-std::string ha_lineairdb::convert_key_to_ldbformat(const uchar* key) { 
+std::string ha_lineairdb::convert_key_to_ldbformat(const uchar* key) {
   std::string current_key;
   if (is_primary_key_type_int()) {
     /**
      * @WANTFIX: need to use appropriate type for numeric primary key
      * Currently, primary_key can only handle signed numeric keys up to 8 bytes
      * Appropriate types must be selected for unsigned numbers.
-    */
+     */
     size_t key_length = indexed_key_part.length;
     long primary_key = ldbField.convert_bytes_to_numeric(key, key_length);
     std::string&& intKey = std::to_string(primary_key);
     ldbField.set_lineairdb_field(intKey.c_str(), intKey.size());
     current_key += ldbField.get_lineairdb_field();
-  }
-  else {
+  } else {
     auto pk_bytes = ldbField.convert_bytes_to_numeric(key, 2);
     ldbField.set_lineairdb_field(&key[2], pk_bytes);
     current_key += ldbField.get_lineairdb_field();
@@ -945,21 +948,21 @@ std::string ha_lineairdb::convert_key_to_ldbformat(const uchar* key) {
 }
 
 /**
- * @brief This function only extracts the type of key for 
+ * @brief This function only extracts the type of key for
  *        tables that have single key
- * 
+ *
  * @return bytes Key type is int
  * @return 0 Key type is not int
  */
 bool ha_lineairdb::is_primary_key_type_int() {
-  ha_base_keytype integer_types[] = {HA_KEYTYPE_SHORT_INT, HA_KEYTYPE_USHORT_INT,
-                                     HA_KEYTYPE_LONG_INT, HA_KEYTYPE_ULONG_INT,
-                                     HA_KEYTYPE_LONGLONG, HA_KEYTYPE_ULONGLONG,
-                                     HA_KEYTYPE_INT24, HA_KEYTYPE_UINT24,
-                                     HA_KEYTYPE_INT8};
-  assert(table->s->keys == 1); 
+  ha_base_keytype integer_types[] = {
+      HA_KEYTYPE_SHORT_INT, HA_KEYTYPE_USHORT_INT, HA_KEYTYPE_LONG_INT,
+      HA_KEYTYPE_ULONG_INT, HA_KEYTYPE_LONGLONG,   HA_KEYTYPE_ULONGLONG,
+      HA_KEYTYPE_INT24,     HA_KEYTYPE_UINT24,     HA_KEYTYPE_INT8};
+  assert(table->s->keys == 1);
   ha_base_keytype key_type = primary_key_type;
-  return std::find(std::begin(integer_types), std::end(integer_types), key_type) != std::end(integer_types);
+  return std::find(std::begin(integer_types), std::end(integer_types),
+                   key_type) != std::end(integer_types);
 }
 
 /**
@@ -986,7 +989,7 @@ bool ha_lineairdb::is_primary_key_exists() { return (0 < table->s->keys); }
 bool ha_lineairdb::store_blob_to_field(Field** field) {
   if ((*field)->is_flag_set(BLOB_FLAG)) {
     Field_blob* blob_field = down_cast<Field_blob*>(*field);
-    size_t length          = blob_field->get_length();
+    size_t length = blob_field->get_length();
     if (length > 0) {
       unsigned char* new_blob = new (&blobroot) unsigned char[length];
       if (new_blob == nullptr) return true;
@@ -1009,16 +1012,18 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
    * the flag is originally set to 0xff, or b11111111
    * if you want to make the first potentially null column to show a non-null
    * value, store 0xfe, or b11111110, in buf
-  */
+   */
   auto nullFlags = ldbField.get_null_flags();
-  for (size_t i = 0; i < nullFlags.size(); i++) { buf[i] = nullFlags[i]; }
+  for (size_t i = 0; i < nullFlags.size(); i++) {
+    buf[i] = nullFlags[i];
+  }
 
   /* Avoid asserts in ::store() for columns that are not going to be updated
    */
   my_bitmap_map* org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
   /**
    * store each column value to corresponding field
-  */
+   */
   size_t columnIndex = 0;
   for (Field** field = table->field; *field; field++) {
     const auto mysqlFieldValue = ldbField.get_column_of_row(columnIndex++);
@@ -1033,11 +1038,11 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar* buf,
 struct st_mysql_storage_engine lineairdb_storage_engine = {
     MYSQL_HANDLERTON_INTERFACE_VERSION};
 
-static ulong srv_enum_var               = 0;
-static ulong srv_ulong_var              = 0;
-static double srv_double_var            = 0;
-static int srv_signed_int_var           = 0;
-static long srv_signed_long_var         = 0;
+static ulong srv_enum_var = 0;
+static ulong srv_ulong_var = 0;
+static double srv_double_var = 0;
+static int srv_signed_int_var = 0;
+static long srv_signed_long_var = 0;
 static longlong srv_signed_longlong_var = 0;
 
 const char* enum_var_names[] = {"e1", "e2", NullS};
@@ -1107,7 +1112,7 @@ static SYS_VAR* lineairdb_system_variables[] = {
 
 // this is an lineairdb of SHOW_FUNC
 static int show_func_lineairdb(MYSQL_THD, SHOW_VAR* var, char* buf) {
-  var->type  = SHOW_CHAR;
+  var->type = SHOW_CHAR;
   var->value = buf;  // it's of SHOW_VAR_FUNC_BUFF_SIZE bytes
   snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
            "enum_var is %lu, ulong_var is %lu, "
