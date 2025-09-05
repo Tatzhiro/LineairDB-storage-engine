@@ -1,7 +1,8 @@
-#include <vector>
-#include <string>
 #include <climits>
+#include <string>
 #include <variant>
+#include <vector>
+
 #include "my_inttypes.h"
 
 /**
@@ -21,12 +22,11 @@
  * Each row consists of multiple fields.
  * First field stores null flags.
  */
-class LineairDBField
-{
-public:
-  std::string convert_numeric_to_bytes (const size_t num) const;
+class LineairDBField {
+ public:
+  std::string convert_numeric_to_bytes(const size_t num) const;
   size_t convert_bytes_to_numeric(
-      std::variant<const std::byte*,const uchar*> bytes, 
+      std::variant<const std::byte*, const uchar*> bytes,
       const size_t length) const;
 
   /**
@@ -34,22 +34,22 @@ public:
    */
   std::string get_null_field() const;
   std::string get_lineairdb_field() const;
-  
+
   void set_null_field(const uchar* const buf, const size_t null_byte_length);
-  void set_lineairdb_field(std::variant<const uchar*, const char*> srcMysql, 
+  void set_lineairdb_field(std::variant<const uchar*, const char*> srcMysql,
                            const size_t length);
 
   /**
    * @brief These methods are called for SELECT statements.
    */
-  void make_mysql_table_row(const std::byte* const ldbRawData, 
+  void make_mysql_table_row(const std::byte* const ldbRawData,
                             const size_t length);
   const std::string& get_null_flags() const;
   const std::string& get_column_of_row(const size_t i) const;
 
   LineairDBField() = default;
-  
-private:
+
+ private:
   static constexpr char noValue = 0xff;
   static constexpr size_t maxValueLength = UINT_MAX;
 
