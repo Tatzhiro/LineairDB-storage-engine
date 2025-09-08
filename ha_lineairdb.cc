@@ -880,10 +880,14 @@ ha_rows ha_lineairdb::records_in_range(uint, key_range*, key_range*) {
   ha_create_table() in handle.cc
 */
 
-int ha_lineairdb::create(const char*, TABLE*, HA_CREATE_INFO*, dd::Table*) {
+int ha_lineairdb::create(const char *table_name, TABLE *, HA_CREATE_INFO *,
+                         dd::Table *)
+{
   DBUG_TRACE;
-
-  return 0;
+  auto current_db = get_db();
+  ldbField.set_lineairdb_field(table_name, strlen(table_name));
+  db_table_name = ldbField.get_lineairdb_field();
+  return current_db->CreateTable(db_table_name) ? 0 : 1;
 }
 
 std::string ha_lineairdb::extract_key() {
