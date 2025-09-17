@@ -30,7 +30,15 @@ jobs:
       - name: Build
         run: |
           ln -s $(pwd) third_party/mysql-server/storage/lineairdb
-          cmake third_party/mysql-server -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$(pwd)/boost/boost_1_77_0" -DWITH_NDBCLUSTER=OFF -G Ninja
+          rm -f CMakeCache.txt
+          cmake third_party/mysql-server \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DDOWNLOAD_BOOST=0 \
+          -DWITH_BOOST="$(pwd)/boost/boost_1_77_0" \
+          -DWITH_NDB=OFF \
+          -DWITH_NDBCLUSTER_STORAGE_ENGINE=OFF \
+          -G Ninja
+
           ninja ha_lineairdb_storage_engine.so -j `nproc`
           ninja mysqld -j `nproc`
       - name: Start MySQL Server
