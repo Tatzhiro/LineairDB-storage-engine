@@ -32,15 +32,22 @@ jobs:
           ln -s $(pwd) third_party/mysql-server/storage/lineairdb
           cmake third_party/mysql-server -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$(pwd)/boost/boost_1_77_0" -G Ninja
           ninja ha_lineairdb_storage_engine.so -j `nproc`
+          ninja mysqld -j `nproc`
       - name: Start MySQL Server
         run: |
-          sudo systemctl start mysql.service
+          mkdir -p mysql-data
+          ./bin/mysqld --initialize-insecure --datadir="$(pwd)/mysql-data"
+          ./bin/mysqld --datadir="$(pwd)/mysql-data" \
+            --plugin-dir="$(pwd)/plugin_output_directory" \
+            --socket=/tmp/mysql.sock --port=3307 --daemonize
+          mysql -h127.0.0.1 -P3307 -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root'; FLUSH PRIVILEGES;"
+
       - name: Copy into MySQL plugin directory
         run: |
           sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so $(mysql -uroot -proot -N -e "SHOW VARIABLES LIKE 'plugin_dir';"| awk '{print $2}')
       - name: Setup MySQL Server
         run: |
-          mysql -uroot -proot -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"
+          mysql -h127.0.0.1 -P3307 -uroot -proot -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"
       - name: Exec test scripts
         run: |
           python3 tests/run_tests.py -c
