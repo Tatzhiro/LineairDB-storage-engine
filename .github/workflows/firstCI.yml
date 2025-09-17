@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev
+          sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev libtirpc-dev
           sudo pip3 install -r tests/pytest/requirements.txt
       - name: Prepare Boost (1.77.0)
         run: |
