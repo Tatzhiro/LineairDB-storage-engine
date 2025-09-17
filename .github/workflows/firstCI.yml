@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install ninja-build libudev-dev libboost-dev libnuma-dev
+          sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev
           sudo pip3 install -r tests/pytest/requirements.txt
       - name: Prepare Boost (1.77.0)
         run: |
@@ -30,7 +30,7 @@ jobs:
       - name: Build
         run: |
           ln -s $(pwd) third_party/mysql-server/storage/lineairdb
-          cmake third_party/mysql-server -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../boost -G Ninja
+          cmake third_party/mysql-server -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$(pwd)/boost/boost_1_77_0" -G Ninja
           ninja ha_lineairdb_storage_engine.so -j `nproc`
       - name: Start MySQL Server
         run: |
