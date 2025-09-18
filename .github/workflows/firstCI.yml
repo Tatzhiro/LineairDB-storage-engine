@@ -54,11 +54,13 @@ jobs:
           set -euxo pipefail
           rm -rf mysql-data
           mkdir -p mysql-data
-          ./bin/mysqld --no-defaults \
+
+          ./runtime_output_directory/mysqld --no-defaults \
             --initialize-insecure \
             --datadir="$PWD/mysql-data" \
             --log-error="$PWD/mysql-data/error.log"
-          ./bin/mysqld --no-defaults \
+
+          ./runtime_output_directory/mysqld --no-defaults \
             --datadir="$PWD/mysql-data" \
             --plugin-dir="$PWD/plugin_output_directory" \
             --socket=/tmp/mysql.sock \
@@ -66,9 +68,11 @@ jobs:
             --bind-address=127.0.0.1 \
             --log-error="$PWD/mysql-data/error.log" \
             --daemonize
-          ./client/mysqladmin -h127.0.0.1 -P3307 -uroot --protocol=tcp ping --wait=30
-          ./client/mysql -h127.0.0.1 -P3307 -uroot -e \
+
+          ./runtime_output_directory/mysqladmin -h127.0.0.1 -P3307 -uroot --protocol=tcp ping --wait=30
+          ./runtime_output_directory/mysql -h127.0.0.1 -P3307 -uroot -e \
             "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root'; FLUSH PRIVILEGES;"
+
 
       - name: Copy into MySQL plugin directory
         working-directory: build
