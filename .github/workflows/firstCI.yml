@@ -51,13 +51,24 @@ jobs:
       - name: Start MySQL Server
         working-directory: build
         run: |
+          set -euxo pipefail
+          rm -rf mysql-data
           mkdir -p mysql-data
-          ./bin/mysqld --initialize-insecure --datadir="$(pwd)/mysql-data"
-          ./bin/mysqld --datadir="$(pwd)/mysql-data" \
-            --plugin-dir="$(pwd)/plugin_output_directory" \
-            --socket=/tmp/mysql.sock --port=3307 --daemonize
+          ./bin/mysqld --no-defaults \
+            --initialize-insecure \
+            --datadir="$PWD/mysql-data" \
+            --log-error="$PWD/mysql-data/error.log"
+          ./bin/mysqld --no-defaults \
+            --datadir="$PWD/mysql-data" \
+            --plugin-dir="$PWD/plugin_output_directory" \
+            --socket=/tmp/mysql.sock \
+            --port=3307 \
+            --bind-address=127.0.0.1 \
+            --log-error="$PWD/mysql-data/error.log" \
+            --daemonize
           ./client/mysqladmin -h127.0.0.1 -P3307 -uroot --protocol=tcp ping --wait=30
-          ./client/mysql -h127.0.0.1 -P3307 -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root'; FLUSH PRIVILEGES;"
+          ./client/mysql -h127.0.0.1 -P3307 -uroot -e \
+            "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root'; FLUSH PRIVILEGES;"
 
       - name: Copy into MySQL plugin directory
         working-directory: build
