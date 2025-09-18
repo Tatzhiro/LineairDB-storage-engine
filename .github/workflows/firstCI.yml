@@ -41,7 +41,7 @@ jobs:
             -DWITH_BOOST=../boost/boost_1_77_0 \
             -DWITH_NDB=OFF \
             -DWITH_NDBCLUSTER_STORAGE_ENGINE=OFF \
-            -DCMAKE_CXX_FLAGS="-include cstdint -Wno-error=extra-semi" \
+            -DCMAKE_CXX_FLAGS="-include cstdint -Wno-error=extra-semi -Wno-error=ignored-attributes" \
             -G Ninja
           ninja ha_lineairdb_storage_engine.so -j $(nproc)
           ninja mysqld -j `nproc`
