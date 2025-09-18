@@ -60,6 +60,8 @@ jobs:
             --datadir="$PWD/mysql-data" \
             --log-error="$PWD/mysql-data/error.log"
 
+          export LD_LIBRARY_PATH="$PWD/runtime_output_directory:${LD_LIBRARY_PATH:-}"
+             
           ./runtime_output_directory/mysqld --no-defaults \
             --datadir="$PWD/mysql-data" \
             --plugin-dir="$PWD/plugin_output_directory" \
@@ -86,7 +88,6 @@ jobs:
             -e "SELECT PLUGIN_NAME, PLUGIN_STATUS, PLUGIN_LIBRARY
                 FROM INFORMATION_SCHEMA.PLUGINS
                 WHERE PLUGIN_NAME='lineairdb';"
-
 
       - name: Exec test scripts
         env:
