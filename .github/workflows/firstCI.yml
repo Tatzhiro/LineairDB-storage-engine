@@ -79,8 +79,13 @@ jobs:
           set -euxo pipefail
           ./runtime_output_directory/mysql \
             -h127.0.0.1 -P3307 -uroot -proot --protocol=TCP \
-            -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'; \
-                SHOW PLUGINS LIKE 'lineairdb';"
+            -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"
+
+          ./runtime_output_directory/mysql \
+            -h127.0.0.1 -P3307 -uroot -proot --protocol=TCP \
+            -e "SELECT PLUGIN_NAME, PLUGIN_STATUS, PLUGIN_LIBRARY
+                FROM INFORMATION_SCHEMA.PLUGINS
+                WHERE PLUGIN_NAME='lineairdb';"
 
 
       - name: Exec test scripts
