@@ -76,7 +76,12 @@ jobs:
       - name: Setup MySQL Server
         working-directory: build
         run: |
-          ./client/mysql -h127.0.0.1 -P3307 -uroot -proot -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"
+          set -euxo pipefail
+          ./runtime_output_directory/mysql \
+            -h127.0.0.1 -P3307 -uroot -proot --protocol=TCP \
+            -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so'; \
+                SHOW PLUGINS LIKE 'lineairdb';"
+
 
       - name: Exec test scripts
         env:
