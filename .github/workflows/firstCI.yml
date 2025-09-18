@@ -73,13 +73,6 @@ jobs:
           ./runtime_output_directory/mysql -h127.0.0.1 -P3307 -uroot -e \
             "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root'; FLUSH PRIVILEGES;"
 
-
-      - name: Copy into MySQL plugin directory
-        working-directory: build
-        run: |
-          plugin_dir=$(./client/mysql -h127.0.0.1 -P3307 -uroot -proot -N -e "SHOW VARIABLES LIKE 'plugin_dir';" | awk '{print $2}')
-          sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so "$plugin_dir"
-
       - name: Setup MySQL Server
         working-directory: build
         run: |
