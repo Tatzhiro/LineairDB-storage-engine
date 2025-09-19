@@ -89,22 +89,10 @@ jobs:
                 FROM INFORMATION_SCHEMA.PLUGINS \
                 WHERE PLUGIN_NAME='lineairdb';"
 
-
       - name: Exec test scripts
         env:
           MYSQL_HOST: 127.0.0.1
           MYSQL_PORT: "3307"
           MYSQL_PWD: root
-        run: |Use INFORMATION_SCHEMA.PLUGINS for plugin status check
-
-
-
-
-
-
-
-情報源
-
-ChatGPT に質問する
-
+        run: |
           python3 tests/run_tests.py -c
