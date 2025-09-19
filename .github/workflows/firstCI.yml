@@ -90,9 +90,10 @@ jobs:
                 WHERE PLUGIN_NAME='lineairdb';"
 
       - name: Exec test scripts
-        env:
-          MYSQL_HOST: 127.0.0.1
-          MYSQL_PORT: "3307"
-          MYSQL_PWD: root
-        run: |
-          python3 tests/run_tests.py -c
+          env:
+            MYSQL_HOST: 127.0.0.1
+            MYSQL_PORT: "3307"
+            MYSQL_PWD: root
+          run: |
+            ln -sf /tmp/mysql.sock /tmp/mysql-test.sock
+            python3 tests/run_tests.py -c
