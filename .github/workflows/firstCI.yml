@@ -34,12 +34,14 @@ jobs:
         run: |
           set -eux
           ln -s $(pwd) third_party/mysql-server/storage/lineairdb
+          mkdir -p build
+          cd build
           rm -f CMakeCache.txt
           rm -rf CMakeFiles/
-          cmake third_party/mysql-server \
+          cmake ../third_party/mysql-server \
             -DCMAKE_BUILD_TYPE=Release \
             -DDOWNLOAD_BOOST=0 \
-            -DWITH_BOOST="$(pwd)/boost/boost_1_77_0" \
+            -DWITH_BOOST="$(pwd)/../boost/boost_1_77_0" \
             -DWITHOUT_EXAMPLE_STORAGE_ENGINE=1 \
             -DWITHOUT_FEDERATED_STORAGE_ENGINE=1 \
             -DWITHOUT_ARCHIVE_STORAGE_ENGINE=1 \
