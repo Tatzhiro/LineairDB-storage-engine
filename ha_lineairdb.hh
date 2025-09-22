@@ -48,15 +48,14 @@
 #include <unordered_map>
 #include <vector>
 
+#include "lineairdb_field.hh"
+#include "lineairdb_transaction.hh"
 #include "my_base.h" /* ha_rows */
 #include "my_compiler.h"
 #include "my_inttypes.h"
 #include "sql/handler.h" /* handler */
 #include "sql_string.h"
 #include "thr_lock.h" /* THR_LOCK, THR_LOCK_DATA */
-
-#include "lineairdb_field.hh"
-#include "lineairdb_transaction.hh"
 
 /** @brief
   LineairDB_share is a class that will be shared among all open handlers.
@@ -67,7 +66,8 @@ class LineairDB_share : public Handler_share
 public:
   THR_LOCK lock;
   LineairDB_share();
-  // std::shared_ptr<LineairDB::Database> get_or_allocate_database(LineairDB::Config conf);
+  // std::shared_ptr<LineairDB::Database>
+  // get_or_allocate_database(LineairDB::Config conf);
   ~LineairDB_share() override { thr_lock_delete(&lock); }
   std::shared_ptr<LineairDB::Database> lineairdb_;
 };
@@ -85,12 +85,12 @@ class ha_lineairdb : public handler
 private:
   std::string db_table_name;
 
-  KEY *key_info;
+  KEY* key_info;
   size_t num_keys;
   const size_t key_info_pk_index = 0;
   ha_base_keytype primary_key_type;
 
-  KEY_PART_INFO *key_part;
+  KEY_PART_INFO* key_part;
   size_t num_key_parts;
   KEY_PART_INFO indexed_key_part;
 
@@ -278,9 +278,10 @@ public:
   void position(const uchar *record) override;  ///< required
   int info(uint) override;                      ///< required
   int extra(enum ha_extra_function operation) override;
-  int external_lock(THD *thd, int lock_type) override; ///< required
-  int start_stmt(THD *thd, thr_lock_type lock_type) override;
+  int external_lock(THD* thd, int lock_type) override;  ///< required
+  int start_stmt(THD* thd, thr_lock_type lock_type) override;
   int delete_all_rows(void) override;
+  
   ha_rows records_in_range(uint inx, key_range *min_key,
                            key_range *max_key) override;
   int delete_table(const char *from, const dd::Table *table_def) override;
