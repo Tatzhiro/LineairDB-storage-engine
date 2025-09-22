@@ -15,11 +15,13 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: recursive
+
       - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev libtirpc-dev
           sudo pip3 install -r tests/pytest/requirements.txt
+
       - name: Prepare Boost (1.77.0)
         run: |
           set -eux
@@ -27,20 +29,14 @@ jobs:
           curl -fsSL https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2 -o boost/boost_1_77_0.tar.bz2
           echo "fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854  boost/boost_1_77_0.tar.bz2" | sha256sum -c -
           tar -xjf boost/boost_1_77_0.tar.bz2 -C boost
-      - name: Build
+
+      - name: Build mysqld and plugin
         run: |
+          set -eux
           ln -s $(pwd) third_party/mysql-server/storage/lineairdb
           cmake third_party/mysql-server -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$(pwd)/boost/boost_1_77_0" -G Ninja
-          ninja ha_lineairdb_storage_engine.so -j `nproc`
-      - name: Start MySQL Server
+          ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
+
+      - name: Run tests against built mysqld
         run: |
-          sudo systemctl start mysql.service
-      - name: Copy into MySQL plugin directory
-        run: |
-          sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so $(mysql -uroot -proot -N -e "SHOW VARIABLES LIKE 'plugin_dir';"| awk '{print $2}')
-      - name: Setup MySQL Server
-        run: |
-          mysql -uroot -proot -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"
-      - name: Exec test scripts
-        run: |
-          python3 tests/run_tests.py -c
+          python3 tests/run_tests.py
