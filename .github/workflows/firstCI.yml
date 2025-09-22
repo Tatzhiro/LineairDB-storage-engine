@@ -49,7 +49,7 @@ jobs:
             -DWITHOUT_PARTITION_STORAGE_ENGINE=1 \
             -DWITH_ROUTER=OFF \
             -DWITH_UNIT_TESTS=OFF \
-            -DCMAKE_CXX_FLAGS="-include cstdint -include string" \
+            -DCMAKE_CXX_FLAGS="-include cstdint" \
             -G Ninja
           ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
 
