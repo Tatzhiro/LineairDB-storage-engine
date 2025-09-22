@@ -34,6 +34,8 @@ jobs:
         run: |
           set -eux
           ln -s $(pwd) third_party/mysql-server/storage/lineairdb
+          rm -f CMakeCache.txt
+          rm -rf CMakeFiles/
           cmake third_party/mysql-server \
             -DCMAKE_BUILD_TYPE=Release \
             -DDOWNLOAD_BOOST=0 \
@@ -46,7 +48,8 @@ jobs:
             -DWITHOUT_NDBCLUSTER_STORAGE_ENGINE=1 \
             -DWITHOUT_PARTITION_STORAGE_ENGINE=1 \
             -DWITH_ROUTER=OFF \
-            -DCMAKE_CXX_FLAGS="-include cstdint" \
+            -DWITH_UNIT_TESTS=OFF \
+            -DCMAKE_CXX_FLAGS="-include cstdint -include string" \
             -G Ninja
           ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
 
