@@ -61,8 +61,9 @@
   LineairDB_share is a class that will be shared among all open handlers.
   This lineairdb implements the minimum of what you will probably need.
 */
-class LineairDB_share : public Handler_share {
- public:
+class LineairDB_share : public Handler_share
+{
+public:
   THR_LOCK lock;
   LineairDB_share();
   // std::shared_ptr<LineairDB::Database>
@@ -74,13 +75,14 @@ class LineairDB_share : public Handler_share {
 /** @brief
   Class definition for the storage engine
 */
-class ha_lineairdb : public handler {
-  THR_LOCK_DATA lock;            ///< MySQL lock
-  LineairDB_share* share;        ///< Shared lock info
-  LineairDB_share* get_share();  ///< Get the share
-  LineairDB::Database* get_db();
+class ha_lineairdb : public handler
+{
+  THR_LOCK_DATA lock;           ///< MySQL lock
+  LineairDB_share *share;       ///< Shared lock info
+  LineairDB_share *get_share(); ///< Get the share
+  LineairDB::Database *get_db();
 
- private:
+private:
   std::string db_table_name;
 
   KEY* key_info;
@@ -92,7 +94,7 @@ class ha_lineairdb : public handler {
   size_t num_key_parts;
   KEY_PART_INFO indexed_key_part;
 
-  THD* userThread;
+  THD *userThread;
   std::vector<std::string> scanned_keys_;
   my_off_t
       current_position_; /* Current position in the file during a file scan */
@@ -101,14 +103,14 @@ class ha_lineairdb : public handler {
   LineairDBField ldbField;
   MEM_ROOT blobroot;
 
- public:
-  ha_lineairdb(handlerton* hton, TABLE_SHARE* table_arg);
+public:
+  ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg);
   ~ha_lineairdb() override = default;
 
   /** @brief
     The name that will be used for display purposes.
    */
-  const char* table_type() const override { return "LineairDB"; }
+  const char *table_type() const override { return "LineairDB"; }
 
   /**
     Replace key algorithm with one supported by SE, return the default key
@@ -116,10 +118,12 @@ class ha_lineairdb : public handler {
 
     @sa handler::adjust_index_algorithm().
   */
-  enum ha_key_alg get_default_index_algorithm() const override {
+  enum ha_key_alg get_default_index_algorithm() const override
+  {
     return HA_KEY_ALG_BTREE;
   }
-  bool is_index_algorithm_supported(enum ha_key_alg key_alg) const override {
+  bool is_index_algorithm_supported(enum ha_key_alg key_alg) const override
+  {
     return key_alg == HA_KEY_ALG_BTREE;
   }
 
@@ -140,7 +144,8 @@ class ha_lineairdb : public handler {
     index, up to and including 'part'.
   */
   ulong index_flags(uint inx [[maybe_unused]], uint part [[maybe_unused]],
-                    bool all_parts [[maybe_unused]]) const override {
+                    bool all_parts [[maybe_unused]]) const override
+  {
     return 0;
   }
 
@@ -151,7 +156,8 @@ class ha_lineairdb : public handler {
     send. Return *real* limits of your storage engine here; MySQL will do
     min(your_limits, MySQL_limits) automatically.
    */
-  uint max_supported_record_length() const override {
+  uint max_supported_record_length() const override
+  {
     return HA_MAX_REC_LENGTH;
   }
 
@@ -166,7 +172,8 @@ class ha_lineairdb : public handler {
     There is no need to implement ..._key_... methods if your engine doesn't
     support indexes.
    */
-  uint max_supported_key_length() const override {
+  uint max_supported_key_length() const override
+  {
     [[maybe_unused]] std::string s;
     return s.max_size();
   }
@@ -174,14 +181,16 @@ class ha_lineairdb : public handler {
   /** @brief
     Called in test_quick_select to determine if indexes should be used.
   */
-  double scan_time() override {
+  double scan_time() override
+  {
     return (double)(stats.records + stats.deleted) / 20.0 + 10;
   }
 
   /** @brief
     This method will never be called if you do not implement indexes.
   */
-  double read_time(uint, uint, ha_rows rows) override {
+  double read_time(uint, uint, ha_rows rows) override
+  {
     return (double)rows / 20.0 + 1;
   }
 
@@ -194,25 +203,25 @@ class ha_lineairdb : public handler {
   /** @brief
     We implement this in ha_lineairdb.cc; it's a required method.
   */
-  int open(const char* name, int mode, uint test_if_locked,
-           const dd::Table* table_def) override;  // required
+  int open(const char *name, int mode, uint test_if_locked,
+           const dd::Table *table_def) override; // required
 
   /** @brief
     We implement this in ha_lineairdb.cc; it's a required method.
   */
-  int close(void) override;  // required
+  int close(void) override; // required
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int write_row(uchar* buf) override;
+  int write_row(uchar *buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int update_row(const uchar* old_data, uchar* new_data) override;
+  int update_row(const uchar *old_data, uchar *new_data) override;
   // #ifdef INPLACE_UPDATE
   // int update_inplace(const uchar *old_data, uchar *new_data);
   // #endif
@@ -221,38 +230,38 @@ class ha_lineairdb : public handler {
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int delete_row(const uchar* buf) override;
+  int delete_row(const uchar *buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_read_map(uchar* buf, const uchar* key, key_part_map keypart_map,
+  int index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,
                      enum ha_rkey_function find_flag) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_next(uchar* buf) override;
+  int index_next(uchar *buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_prev(uchar* buf) override;
+  int index_prev(uchar *buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_first(uchar* buf) override;
+  int index_first(uchar *buf) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_last(uchar* buf) override;
+  int index_last(uchar *buf) override;
 
   /** @brief
     Unlike index_init(), rnd_init() can be called two consecutive times
@@ -262,44 +271,45 @@ class ha_lineairdb : public handler {
     cursor to the start of the table; no need to deallocate and allocate
     it again. This is a required method.
   */
-  int rnd_init(bool scan) override;  // required
+  int rnd_init(bool scan) override; // required
   int rnd_end() override;
-  int rnd_next(uchar* buf) override;             ///< required
-  int rnd_pos(uchar* buf, uchar* pos) override;  ///< required
-  void position(const uchar* record) override;   ///< required
-  int info(uint) override;                       ///< required
+  int rnd_next(uchar *buf) override;            ///< required
+  int rnd_pos(uchar *buf, uchar *pos) override; ///< required
+  void position(const uchar *record) override;  ///< required
+  int info(uint) override;                      ///< required
   int extra(enum ha_extra_function operation) override;
   int external_lock(THD* thd, int lock_type) override;  ///< required
   int start_stmt(THD* thd, thr_lock_type lock_type) override;
   int delete_all_rows(void) override;
-  ha_rows records_in_range(uint inx, key_range* min_key,
-                           key_range* max_key) override;
-  int delete_table(const char* from, const dd::Table* table_def) override;
-  int rename_table(const char* from, const char* to,
-                   const dd::Table* from_table_def,
-                   dd::Table* to_table_def) override;
-  int create(const char* name, TABLE* form, HA_CREATE_INFO* create_info,
-             dd::Table* table_def) override;  ///< required
+  
+  ha_rows records_in_range(uint inx, key_range *min_key,
+                           key_range *max_key) override;
+  int delete_table(const char *from, const dd::Table *table_def) override;
+  int rename_table(const char *from, const char *to,
+                   const dd::Table *from_table_def,
+                   dd::Table *to_table_def) override;
+  int create(const char *name, TABLE *form, HA_CREATE_INFO *create_info,
+             dd::Table *table_def) override; ///< required
 
-  THR_LOCK_DATA** store_lock(
-      THD* thd, THR_LOCK_DATA** to,
-      enum thr_lock_type lock_type) override;  ///< required
+  THR_LOCK_DATA **store_lock(
+      THD *thd, THR_LOCK_DATA **to,
+      enum thr_lock_type lock_type) override; ///< required
 
- private:
-  LineairDBTransaction*& get_transaction(THD* thd);
+private:
+  LineairDBTransaction *&get_transaction(THD *thd);
 
-  std::string convert_key_to_ldbformat(const uchar* key);
+  std::string convert_key_to_ldbformat(const uchar *key);
   std::string extract_key();
   std::string autogenerate_key();
   std::string get_key_from_mysql();
 
-  void set_write_buffer(uchar* buf);
+  void set_write_buffer(uchar *buf);
   bool is_primary_key_exists();
   bool is_primary_key_type_int();
-  void set_key_and_key_part_info(const TABLE* const table);
+  void set_key_and_key_part_info(const TABLE *const table);
 
-  bool store_blob_to_field(Field** field);
-  int set_fields_from_lineairdb(uchar* buf, const std::byte* const read_buf,
+  bool store_blob_to_field(Field **field);
+  int set_fields_from_lineairdb(uchar *buf, const std::byte *const read_buf,
                                 const size_t read_buf_size);
 };
 
