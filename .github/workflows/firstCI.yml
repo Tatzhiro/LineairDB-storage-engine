@@ -34,9 +34,20 @@ jobs:
         run: |
           set -eux
           ln -s $(pwd) third_party/mysql-server/storage/lineairdb
-          cmake third_party/mysql-server -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$(pwd)/boost/boost_1_77_0" -G Ninja
+          cmake third_party/mysql-server \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDOWNLOAD_BOOST=0 \
+            -DWITH_BOOST="$(pwd)/boost/boost_1_77_0" \
+            -DWITHOUT_EXAMPLE_STORAGE_ENGINE=1 \
+            -DWITHOUT_FEDERATED_STORAGE_ENGINE=1 \
+            -DWITHOUT_ARCHIVE_STORAGE_ENGINE=1 \
+            -DWITHOUT_BLACKHOLE_STORAGE_ENGINE=0 \
+            -DWITHOUT_NDB_STORAGE_ENGINE=1 \
+            -DWITHOUT_NDBCLUSTER_STORAGE_ENGINE=1 \
+            -DWITHOUT_PARTITION_STORAGE_ENGINE=1 \
+            -G Ninja
           ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
 
       - name: Run tests against built mysqld
         run: |
-          python3 tests/run_tests.py
+          python3 @github_workflows/ci_run_tests.py
