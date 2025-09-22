@@ -45,6 +45,7 @@ jobs:
             -DWITHOUT_NDB_STORAGE_ENGINE=1 \
             -DWITHOUT_NDBCLUSTER_STORAGE_ENGINE=1 \
             -DWITHOUT_PARTITION_STORAGE_ENGINE=1 \
+            -DWITH_ROUTER=OFF \
             -DCMAKE_CXX_FLAGS="-include cstdint" \
             -G Ninja
           ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
