@@ -52,7 +52,7 @@ jobs:
             -DWITHOUT_PARTITION_STORAGE_ENGINE=1 \
             -DWITH_ROUTER=OFF \
             -DWITH_UNIT_TESTS=OFF \
-            -DCMAKE_CXX_FLAGS="$CMAKE_CXX_FLAGS -include cstdint -Wno-error=missing-include-dirs -Wno-error=extra-semi -Wno-extra-semi" \
+            -DCMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:-} -include cstdint -Wno-error=missing-include-dirs -Wno-error=extra-semi -Wno-extra-semi" \
             -G Ninja
           ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
 
