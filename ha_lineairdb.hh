@@ -161,7 +161,7 @@ public:
     return HA_MAX_REC_LENGTH;
   }
 
-  uint max_supported_keys() const override { return 1; }
+  uint max_supported_keys() const override { return 4096; }
 
   /** @brief
     unireg.cc will call this to make sure that the storage engine can handle

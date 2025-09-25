@@ -16,6 +16,7 @@ std::string LineairDBTransaction::get_selected_table_name() {
 
 void LineairDBTransaction::choose_table(std::string db_table_name) {
   db_table_key = db_table_name;
+  tx->SetTable(db_table_key);
 }
 
 bool LineairDBTransaction::table_is_not_chosen() {
