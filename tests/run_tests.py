@@ -14,7 +14,7 @@ def run_tests(test_files):
   os.system("sed -i \"s/#define FENCE.*/#define FENCE true/\" ha_lineairdb.cc")
   os.system("cd build; ninja")
   for f in test_files:
-    os.system("build/bin/mysqld --defaults-file=my.cnf --daemonize")
+    os.system("LD_PRELOAD=/lib/x86_64-linux-gnu/libjemalloc.so.2 build/bin/mysqld --defaults-file=tests/my.cnf --daemonize")
     os.system(f"python3 {f}")
     os.system("pkill mysqld")
 

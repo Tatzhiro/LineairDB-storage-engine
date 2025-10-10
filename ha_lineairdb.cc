@@ -103,6 +103,8 @@
 #include "sql/sql_plugin.h"
 #include "sql/table.h"
 #include "typelib.h"
+#include "storage/innobase/include/dict0mem.h"
+#include "lineairdb_field_types.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
@@ -330,6 +332,32 @@ int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table *)
 */
 
 int ha_lineairdb::close(void)
+{
+  DBUG_TRACE;
+  return 0;
+}
+
+int ha_lineairdb::change_active_index(uint keynr)
+{
+  DBUG_TRACE;
+  active_index = keynr;
+  return 0;
+}
+
+int ha_lineairdb::index_init(uint idx, bool sorted [[maybe_unused]])
+{
+  DBUG_TRACE;
+  return change_active_index(idx);
+}
+
+int ha_lineairdb::index_end()
+{
+  DBUG_TRACE;
+  active_index = MAX_KEY;
+  return 0;
+}
+
+int ha_lineairdb::index_read(uchar *buf, const uchar *key, uint key_len, enum ha_rkey_function find_flag)
 {
   DBUG_TRACE;
   return 0;
@@ -943,16 +971,37 @@ ha_rows ha_lineairdb::records_in_range(uint, key_range *, key_range *)
   ha_create_table() in handle.cc
 */
 
-int ha_lineairdb::create(const char *table_name, TABLE *, HA_CREATE_INFO *,
+int ha_lineairdb::create(const char *table_name, TABLE *table, HA_CREATE_INFO *,
                          dd::Table *)
 {
   DBUG_TRACE;
-  auto current_db = get_db();
   ldbField.set_lineairdb_field(table_name, strlen(table_name));
   db_table_name = ldbField.get_lineairdb_field();
+  auto current_db = get_db();
   if (!current_db->CreateTable(db_table_name))
   {
     return HA_ERR_TABLE_EXIST;
+  }
+  // define interface for create secondary index
+  for (uint i = 0; i < table->s->keys; i++)
+  {
+    auto key_info = table->key_info[i];
+    uint index_type = (key_info.flags & HA_NOSAME) ? DICT_UNIQUE : 0;
+    if (i != table->s->primary_key)
+    {
+      // Now we don't assume composite index
+      // TODO: need to convert mysql type to lineairdb type
+      auto data_type = key_info.key_part[0].field->type();
+      auto lineairdb_data_type = convert_mysql_type_to_lineairdb(data_type);
+      bool is_successful = current_db->CreateSecondaryIndex(db_table_name,
+                                                            std::string(key_info.name),
+                                                            index_type,
+                                                            static_cast<int>(lineairdb_data_type));
+      if (!is_successful)
+      {
+        return HA_ERR_TABLE_EXIST;
+      }
+    }
   }
   return 0;
 }
