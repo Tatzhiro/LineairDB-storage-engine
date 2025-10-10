@@ -211,6 +211,26 @@ public:
   */
   int close(void) override; // required
 
+  int change_active_index(uint keynr);
+
+  /** @brief
+    We implement this in ha_lineairdb.cc. It's not an obligatory method;
+    skip it and and MySQL will treat it as not implemented.
+  */
+  int index_init(uint idx, bool sorted [[maybe_unused]]) override;
+
+  /** @brief
+    We implement this in ha_lineairdb.cc. It's not an obligatory method;
+    skip it and and MySQL will treat it as not implemented.
+  */
+  int index_end() override;
+
+  /** @brief
+    We implement this in ha_lineairdb.cc. It's not an obligatory method;
+    skip it and and MySQL will treat it as not implemented.
+  */
+  int index_read(uchar *buf, const uchar *key, uint key_len, enum ha_rkey_function find_flag) override;
+
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
