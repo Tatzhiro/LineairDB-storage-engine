@@ -37,3 +37,23 @@ elseif(NOT WITHOUT_LINEAIRDB_STORAGE_ENGINE)
   mysql_add_plugin(lineairdb_storage_engine ${LINEAIRDB_SOURCES} STORAGE_ENGINE
                    MODULE_ONLY LINK_LIBRARIES lineairdb::lineairdb)
 endif()
+
+# Ensure InnoDB headers and mutex type definitions are visible to this plugin
+if (TARGET lineairdb_storage_engine)
+  target_include_directories(lineairdb_storage_engine PRIVATE
+    ${CMAKE_SOURCE_DIR}/storage/innobase
+    ${CMAKE_SOURCE_DIR}/storage/innobase/include
+    ${CMAKE_SOURCE_DIR}/storage/innobase/ut
+  )
+
+  if (MUTEXTYPE MATCHES "event")
+    target_compile_definitions(lineairdb_storage_engine PRIVATE MUTEX_EVENT)
+  elseif (MUTEXTYPE MATCHES "futex")
+    target_compile_definitions(lineairdb_storage_engine PRIVATE MUTEX_FUTEX)
+  else()
+    target_compile_definitions(lineairdb_storage_engine PRIVATE MUTEX_SYS)
+  endif()
+
+  # Avoid static TLS allocation failure on dynamic load
+  target_compile_options(lineairdb_storage_engine PRIVATE -ftls-model=global-dynamic)
+endif()
