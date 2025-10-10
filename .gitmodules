@@ -8,4 +8,6 @@ url = git@github.com:cmu-db/benchbase.git
 ignore = dirty
 [submodule "third_party/LineairDB"]
 path = third_party/LineairDB
-url = git@github.com:LineairDB/LineairDB.git
+	url = git@github.com:wasanemon/LineairDB-ssh.git
+branch = secondary_index_test
+
