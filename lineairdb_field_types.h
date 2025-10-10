@@ -5,20 +5,19 @@
 
 /**
  * LineairDB internal field types
- * Simplified type system for TPC-C benchmark support
  */
 enum class LineairDBFieldType
 {
-    // 数値型 (Numeric types)
+    // Numeric types
     LINEAIRDB_INT,
 
-    // 文字列型 (String types)
+    // String types
     LINEAIRDB_STRING,
 
-    // 日付・時刻型 (Date/Time types)
+    // Date/Time types
     LINEAIRDB_DATETIME,
 
-    // その他・未対応型 (Other/Unsupported types)
+    // Other/Unsupported types
     LINEAIRDB_OTHER
 };
 
@@ -32,7 +31,7 @@ inline LineairDBFieldType convert_mysql_type_to_lineairdb(enum_field_types mysql
 {
     switch (mysql_type)
     {
-    // 数値型 (Numeric types)
+    // Numeric types
     case MYSQL_TYPE_TINY:       // TINYINT
     case MYSQL_TYPE_SHORT:      // SMALLINT
     case MYSQL_TYPE_LONG:       // INT
@@ -45,7 +44,7 @@ inline LineairDBFieldType convert_mysql_type_to_lineairdb(enum_field_types mysql
     case MYSQL_TYPE_YEAR:       // YEAR
         return LineairDBFieldType::LINEAIRDB_INT;
 
-    // 文字列型 (String types)
+    // String types
     case MYSQL_TYPE_VARCHAR:     // VARCHAR
     case MYSQL_TYPE_STRING:      // CHAR
     case MYSQL_TYPE_VAR_STRING:  // VAR_STRING
@@ -57,7 +56,7 @@ inline LineairDBFieldType convert_mysql_type_to_lineairdb(enum_field_types mysql
     case MYSQL_TYPE_SET:         // SET
         return LineairDBFieldType::LINEAIRDB_STRING;
 
-    // 日付・時刻型 (Date/Time types)
+    // Date/Time types
     case MYSQL_TYPE_TIMESTAMP:  // TIMESTAMP
     case MYSQL_TYPE_TIMESTAMP2: // TIMESTAMP (internal)
     case MYSQL_TYPE_DATETIME:   // DATETIME
@@ -68,7 +67,7 @@ inline LineairDBFieldType convert_mysql_type_to_lineairdb(enum_field_types mysql
     case MYSQL_TYPE_NEWDATE:    // NEWDATE (internal)
         return LineairDBFieldType::LINEAIRDB_DATETIME;
 
-    // その他・未対応型 (Other/Unsupported types)
+    // Other/Unsupported types
     case MYSQL_TYPE_NULL:        // NULL
     case MYSQL_TYPE_BIT:         // BIT
     case MYSQL_TYPE_JSON:        // JSON

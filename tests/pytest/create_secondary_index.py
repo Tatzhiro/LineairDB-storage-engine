@@ -7,6 +7,7 @@ def reset (db, cursor) :
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
     db.commit()
 
+#TODO: add null column
 def test_create_index_on_int_column (db, cursor) :
     print("CREATE INDEX ON INT COLUMN TEST")
     cursor.execute('CREATE TABLE ha_lineairdb_test.test_int (\
