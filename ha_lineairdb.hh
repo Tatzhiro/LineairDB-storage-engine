@@ -84,18 +84,20 @@ class ha_lineairdb : public handler
 
 private:
   std::string db_table_name;
+  std::string current_index_name;
 
-  KEY* key_info;
+  KEY *key_info;
   size_t num_keys;
-  const size_t key_info_pk_index = 0;
   ha_base_keytype primary_key_type;
 
-  KEY_PART_INFO* key_part;
+  KEY_PART_INFO *key_part;
   size_t num_key_parts;
   KEY_PART_INFO indexed_key_part;
 
   THD *userThread;
+  uint current_position_in_index_;
   std::vector<std::string> scanned_keys_;
+  std::vector<std::unordered_map<std::string, std::vector<std::pair<const std::byte *const, const size_t>>>> secondary_index_results_;
   my_off_t
       current_position_; /* Current position in the file during a file scan */
   std::string write_buffer_;
@@ -265,6 +267,8 @@ public:
   */
   int index_next(uchar *buf) override;
 
+  int index_next_same(uchar *buf, const uchar *key, uint key_len) override;
+
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
@@ -298,10 +302,10 @@ public:
   void position(const uchar *record) override;  ///< required
   int info(uint) override;                      ///< required
   int extra(enum ha_extra_function operation) override;
-  int external_lock(THD* thd, int lock_type) override;  ///< required
-  int start_stmt(THD* thd, thr_lock_type lock_type) override;
+  int external_lock(THD *thd, int lock_type) override; ///< required
+  int start_stmt(THD *thd, thr_lock_type lock_type) override;
   int delete_all_rows(void) override;
-  
+
   ha_rows records_in_range(uint inx, key_range *min_key,
                            key_range *max_key) override;
   int delete_table(const char *from, const dd::Table *table_def) override;
@@ -319,6 +323,7 @@ private:
   LineairDBTransaction *&get_transaction(THD *thd);
 
   std::string convert_key_to_ldbformat(const uchar *key);
+  std::string serialize_key_from_field(Field *field);
   std::string extract_key();
   std::string autogenerate_key();
   std::string get_key_from_mysql();

@@ -40,6 +40,19 @@ LineairDBTransaction::read(std::string key)
   return tx->Read(key);
 }
 
+std::vector<std::pair<const std::byte* const, const size_t>>
+LineairDBTransaction::read_secondary_index(std::string index_name, std::string secondary_key)
+{
+  if (table_is_not_chosen())
+    return {};
+  auto result = tx->ReadSecondaryIndex(index_name, secondary_key);
+  for (auto& [ptr, size] : result) {
+    std::string pk = std::string(reinterpret_cast<const char*>(ptr), size);
+    std::cout << "Primary Key: " << pk << std::endl;
+  }
+  return result;
+}
+
 bool LineairDBTransaction::key_prefix_is_matching(std::string key_prefix,
                                                   std::string key)
 {
@@ -87,6 +100,15 @@ bool LineairDBTransaction::write(std::string key, const std::string value)
             reinterpret_cast<const std::byte *>(value.c_str()), value.length());
   return true;
 }
+
+ bool LineairDBTransaction::write_secondary_index(std::string index_name, std::string secondary_key, const std::string value)
+{
+  if (table_is_not_chosen())
+    return false;
+  tx->WriteSecondaryIndex(index_name, secondary_key,
+            reinterpret_cast<const std::byte *>(value.c_str()), value.length());
+  return true;
+} 
 
 bool LineairDBTransaction::delete_value(std::string key)
 {
