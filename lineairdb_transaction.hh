@@ -14,19 +14,22 @@
  * Set the pointer to this class to nullptr after end_transaction
  * to indicate that LineairDBTransaction is terminated.
  */
-class LineairDBTransaction {
- public:
+class LineairDBTransaction
+{
+public:
   std::string get_selected_table_name();
   void choose_table(std::string db_table_name);
   bool table_is_not_chosen();
 
-  const std::pair<const std::byte* const, const size_t> read(std::string key);
+  const std::pair<const std::byte *const, const size_t> read(std::string key);
   std::vector<std::string> get_all_keys();
   std::vector<std::string> get_matching_keys(std::string key);
   bool write(std::string key, const std::string value);
   bool write_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
-  std::vector<std::pair<const std::byte* const, const size_t>> read_secondary_index(std::string index_name, std::string secondary_key);
- 
+  std::vector<std::pair<const std::byte *const, const size_t>> read_secondary_index(std::string index_name, std::string secondary_key);
+  std::vector<std::string> get_matching_primary_keys_in_range(
+      std::string index_name, std::string start_key, std::string end_key);
+
   bool delete_value(std::string key);
 
   void begin_transaction();
@@ -34,27 +37,30 @@ class LineairDBTransaction {
   void end_transaction();
   void fence() const;
 
-  inline bool is_not_started() const {
-    if (tx == nullptr) return true;
+  inline bool is_not_started() const
+  {
+    if (tx == nullptr)
+      return true;
     return false;
   }
-  inline bool is_aborted() const {
+  inline bool is_aborted() const
+  {
     assert(tx != nullptr);
     return tx->IsAborted();
   }
   inline bool is_a_single_statement() const { return !isTransaction; }
 
-  LineairDBTransaction(THD* thd, LineairDB::Database* ldb,
-                       handlerton* lineairdb_hton, bool isFence);
+  LineairDBTransaction(THD *thd, LineairDB::Database *ldb,
+                       handlerton *lineairdb_hton, bool isFence);
   ~LineairDBTransaction() = default;
 
- private:
-  LineairDB::Transaction* tx;
-  LineairDB::Database* db;
+private:
+  LineairDB::Transaction *tx;
+  LineairDB::Database *db;
   std::string db_table_key;
-  THD* thread;
+  THD *thread;
   bool isTransaction;
-  handlerton* hton;
+  handlerton *hton;
   bool isFence;
 
   bool key_prefix_is_matching(std::string target_key, std::string key);

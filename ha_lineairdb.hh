@@ -97,7 +97,7 @@ private:
   THD *userThread;
   uint current_position_in_index_;
   std::vector<std::string> scanned_keys_;
-  std::vector<std::unordered_map<std::string, std::vector<std::pair<const std::byte *const, const size_t>>>> secondary_index_results_;
+  std::vector<std::string> secondary_index_results_;
   my_off_t
       current_position_; /* Current position in the file during a file scan */
   std::string write_buffer_;
@@ -319,8 +319,28 @@ public:
       THD *thd, THR_LOCK_DATA **to,
       enum thr_lock_type lock_type) override; ///< required
 
+  ha_rows multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
+                                      void *seq_init_param, uint n_ranges,
+                                      uint *bufsz, uint *flags,
+                                      Cost_estimate *cost) override;
+  int multi_range_read_init(RANGE_SEQ_IF *seq, void *seq_init_param,
+                            uint n_ranges, uint mode,
+                            HANDLER_BUFFER *buf) override;
+
+  int multi_range_read_next(char **range_info) override;
+  int read_range_first(const key_range *start_key, const key_range *end_key,
+                       bool eq_range_arg, bool sorted) override;
+
 private:
-  LineairDBTransaction *&get_transaction(THD *thd);
+  /** The multi range read session object */
+  DsMrr_impl m_ds_mrr;
+  LineairDBTransaction *&
+  get_transaction(THD *thd);
+
+  // Key conversion helpers
+  static std::string encode_int_key(const uchar *data, size_t len);
+  static std::string encode_datetime_key(const uchar *data, size_t len);
+  static std::string encode_string_key(const uchar *data, size_t len);
 
   std::string convert_key_to_ldbformat(const uchar *key);
   std::string serialize_key_from_field(Field *field);

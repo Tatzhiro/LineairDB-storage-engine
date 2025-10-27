@@ -18,6 +18,7 @@ std::string LineairDBTransaction::get_selected_table_name()
 void LineairDBTransaction::choose_table(std::string db_table_name)
 {
   db_table_key = db_table_name;
+  fprintf(stderr, "[DEBUG] db_table_key = %s\n", db_table_key.c_str());
   tx->SetTable(db_table_key);
 }
 
@@ -40,14 +41,15 @@ LineairDBTransaction::read(std::string key)
   return tx->Read(key);
 }
 
-std::vector<std::pair<const std::byte* const, const size_t>>
+std::vector<std::pair<const std::byte *const, const size_t>>
 LineairDBTransaction::read_secondary_index(std::string index_name, std::string secondary_key)
 {
   if (table_is_not_chosen())
     return {};
   auto result = tx->ReadSecondaryIndex(index_name, secondary_key);
-  for (auto& [ptr, size] : result) {
-    std::string pk = std::string(reinterpret_cast<const char*>(ptr), size);
+  for (auto &[ptr, size] : result)
+  {
+    std::string pk = std::string(reinterpret_cast<const char *>(ptr), size);
     std::cout << "Primary Key: " << pk << std::endl;
   }
   return result;
@@ -72,6 +74,27 @@ std::vector<std::string> LineairDBTransaction::get_all_keys()
     keyList.push_back(std::string(key));
     return false; });
   return keyList;
+}
+
+std::vector<std::string> LineairDBTransaction::get_matching_primary_keys_in_range(
+    std::string index_name, std::string start_key, std::string end_key)
+{
+  if (table_is_not_chosen())
+    return {};
+
+  std::vector<std::string> result;
+
+  tx->ScanSecondaryIndex(
+      index_name,
+      start_key,
+      end_key,
+      [&result](std::string_view pk, const std::vector<std::string> & /* unused */)
+      {
+        result.push_back(std::string(pk));
+        return false; 
+      });
+
+  return result;
 }
 
 std::vector<std::string> LineairDBTransaction::get_matching_keys(
@@ -101,14 +124,14 @@ bool LineairDBTransaction::write(std::string key, const std::string value)
   return true;
 }
 
- bool LineairDBTransaction::write_secondary_index(std::string index_name, std::string secondary_key, const std::string value)
+bool LineairDBTransaction::write_secondary_index(std::string index_name, std::string secondary_key, const std::string value)
 {
   if (table_is_not_chosen())
     return false;
   tx->WriteSecondaryIndex(index_name, secondary_key,
-            reinterpret_cast<const std::byte *>(value.c_str()), value.length());
+                          reinterpret_cast<const std::byte *>(value.c_str()), value.length());
   return true;
-} 
+}
 
 bool LineairDBTransaction::delete_value(std::string key)
 {
