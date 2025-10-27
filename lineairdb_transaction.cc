@@ -88,9 +88,12 @@ std::vector<std::string> LineairDBTransaction::get_matching_primary_keys_in_rang
       index_name,
       start_key,
       end_key,
-      [&result](std::string_view pk, const std::vector<std::string> & /* unused */)
+      [&result](std::string_view secondary_key, const std::vector<std::string> &primary_keys)
       {
-        result.push_back(std::string(pk));
+        for (const auto &pk : primary_keys)
+        {
+          result.push_back(pk);
+        }
         return false; 
       });
 

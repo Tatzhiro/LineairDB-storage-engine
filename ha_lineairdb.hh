@@ -342,7 +342,7 @@ private:
   static std::string encode_datetime_key(const uchar *data, size_t len);
   static std::string encode_string_key(const uchar *data, size_t len);
 
-  std::string convert_key_to_ldbformat(const uchar *key);
+  std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);
   std::string extract_key();
   std::string autogenerate_key();

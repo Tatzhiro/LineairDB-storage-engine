@@ -421,12 +421,18 @@ int ha_lineairdb::write_row(uchar *buf)
     auto key_info = table->key_info[i];
     if (i != table->s->primary_key)
     {
-      auto key_part = key_info.key_part[0];
-      Field *field = table->field[key_part.fieldnr - 1];
       my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
 
-      // Convert secondary index key using the helper function
-      std::string secondary_key = serialize_key_from_field(field);
+      // Support composite indexes: process all key parts
+      std::string secondary_key;
+      for (uint part_idx = 0; part_idx < key_info.user_defined_key_parts; part_idx++)
+      {
+        auto key_part = key_info.key_part[part_idx];
+        Field *field = table->field[key_part.fieldnr - 1];
+
+        // Encode each key part and concatenate
+        secondary_key += serialize_key_from_field(field);
+      }
 
       tmp_restore_column_map(table->read_set, org_bitmap);
 
@@ -502,9 +508,22 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
   secondary_index_results_.clear();
   current_position_in_index_ = 0;
 
-  if (end_range == nullptr)
+  // Check if this is a prefix search (not all key parts are specified)
+  KEY *key_info = &table->key_info[active_index];
+  uint used_key_parts = 0;
+  for (uint i = 0; i < key_info->user_defined_key_parts; i++)
   {
-    auto serialized_key = convert_key_to_ldbformat(key);
+    if ((keypart_map >> i) & 1)
+      used_key_parts++;
+    else
+      break;
+  }
+  bool is_prefix_search = (used_key_parts < key_info->user_defined_key_parts);
+
+  if (end_range == nullptr && !is_prefix_search)
+  {
+    // Exact match search: all key parts are specified
+    auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
     auto index_results = tx->read_secondary_index(current_index_name, serialized_key);
 
     for (auto &[ptr, size] : index_results)
@@ -531,10 +550,22 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
   }
   else
   {
-    auto serialized_start_key = convert_key_to_ldbformat(key);
-    auto serialized_end_key = convert_key_to_ldbformat(end_range->key);
+    // Range search (including prefix search)
+    auto serialized_start_key = convert_key_to_ldbformat(key, keypart_map);
+    std::string serialized_end_key;
 
-    //
+    if (end_range != nullptr)
+    {
+      // Explicit end range provided
+      serialized_end_key = convert_key_to_ldbformat(end_range->key, keypart_map);
+    }
+    else
+    {
+      // Prefix search: generate end key by appending maximum values
+      // This will match all keys that start with serialized_start_key
+      serialized_end_key = serialized_start_key + std::string(256, '\xFF');
+    }
+
     secondary_index_results_ = tx->get_matching_primary_keys_in_range(
         current_index_name, serialized_start_key, serialized_end_key);
 
@@ -1457,47 +1488,111 @@ std::string ha_lineairdb::encode_string_key(const uchar *data, size_t len)
 }
 
 /**
- * @brief Convert MySQL binary key format to LineairDB key format
+ * @brief Convert MySQL binary composite key format to LineairDB sortable key format
  *
- * This function converts keys based on their type:
+ * This function handles composite keys by processing each key part sequentially:
+ * - Reads key_part_map to determine which parts are used
+ * - Converts each part to sortable format based on its type
+ * - Concatenates all parts into a single sortable string
+ *
+ * Key formats by type:
  * - INT: Little-endian to big-endian + sign bit flip (for correct sorting)
  * - DATETIME: Pass through as-is (already sortable)
- * - STRING: Extract actual data (remove length prefix and padding)
+ * - STRING (VARCHAR): Extract actual data (remove length prefix and padding)
  *
- * @param key MySQL binary key data
- * @return LineairDB formatted key string
+ * @param key MySQL binary key data (concatenated byte array)
+ * @param keypart_map Bitmap indicating which key parts are used
+ * @return LineairDB formatted key string (concatenated sortable format)
  */
-std::string ha_lineairdb::convert_key_to_ldbformat(const uchar *key)
+std::string ha_lineairdb::convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map)
 {
-  // Get key part info from the active index (not indexed_key_part which may be primary key)
   KEY *key_info = &table->key_info[active_index];
-  KEY_PART_INFO *key_part = &key_info->key_part[0]; // First key part
-  Field *field = key_part->field;
-  enum_field_types mysql_type = field->type();
+  std::string result;
+  const uchar *key_ptr = key;
 
-  // Use store_length which includes metadata (length prefix, null flag, etc.)
-  size_t key_length = key_part->store_length;
-
-  // Convert to LineairDB field type
-  LineairDBFieldType ldb_type = convert_mysql_type_to_lineairdb(mysql_type);
-
-  // Use appropriate encoder based on type
-  switch (ldb_type)
+  // Process each key part sequentially
+  for (uint i = 0; i < key_info->user_defined_key_parts; i++)
   {
-  case LineairDBFieldType::LINEAIRDB_INT:
-    return encode_int_key(key, key_length);
+    // Check if this key part is used in the query
+    if (!((keypart_map >> i) & 1))
+    {
+      break; // Remaining parts are not used (prefix scan)
+    }
 
-  case LineairDBFieldType::LINEAIRDB_DATETIME:
-    return encode_datetime_key(key, key_length);
+    KEY_PART_INFO *kp = &key_info->key_part[i];
+    Field *field = kp->field;
 
-  case LineairDBFieldType::LINEAIRDB_STRING:
-    return encode_string_key(key, key_length);
+    // Step 1: Handle NULL flag if column is nullable
+    if (kp->null_bit)
+    {
+      bool is_null = (*key_ptr != 0);
+      key_ptr++; // Skip NULL flag byte
 
-  case LineairDBFieldType::LINEAIRDB_OTHER:
-  default:
-    // For unsupported types, treat as string
-    return encode_string_key(key, key_length);
+      if (is_null)
+      {
+        // Encode NULL as maximum value (sorts last in SQL)
+        // Use the field's data length for consistent sizing
+        result += std::string(kp->length, '\xFF');
+        // Skip remaining bytes for this part
+        key_ptr += (kp->store_length - 1);
+        continue;
+      }
+    }
+
+    // Step 2: Handle variable-length fields (VARCHAR, TEXT, BLOB)
+    uint data_len = kp->length;
+    if (kp->key_part_flag & HA_VAR_LENGTH_PART)
+    {
+      // Read 2-byte little-endian length prefix
+      data_len = uint2korr(key_ptr);
+      key_ptr += 2;
+    }
+
+    // Step 3: Encode data based on field type
+    enum_field_types mysql_type = field->type();
+    LineairDBFieldType ldb_type = convert_mysql_type_to_lineairdb(mysql_type);
+
+    switch (ldb_type)
+    {
+    case LineairDBFieldType::LINEAIRDB_INT:
+      // For variable-length key parts, use actual data_len
+      // For fixed-length, data_len equals kp->length
+      result += encode_int_key(key_ptr, data_len);
+      break;
+
+    case LineairDBFieldType::LINEAIRDB_DATETIME:
+      result += encode_datetime_key(key_ptr, data_len);
+      break;
+
+    case LineairDBFieldType::LINEAIRDB_STRING:
+      // String data is already in sortable format (lexicographic order)
+      // Just copy the actual data without length prefix or padding
+      result += std::string(reinterpret_cast<const char *>(key_ptr), data_len);
+      break;
+
+    case LineairDBFieldType::LINEAIRDB_OTHER:
+    default:
+      // Unknown types: treat as raw binary data
+      result += std::string(reinterpret_cast<const char *>(key_ptr), data_len);
+      break;
+    }
+
+    // Step 4: Move pointer to next key part
+    // For variable-length fields, skip the remaining padding
+    if (kp->key_part_flag & HA_VAR_LENGTH_PART)
+    {
+      // We already moved past the 2-byte length prefix
+      // Now skip the data and any padding
+      key_ptr += kp->length;
+    }
+    else
+    {
+      // For fixed-length fields, just skip the data
+      key_ptr += data_len;
+    }
   }
+
+  return result;
 }
 
 /**
