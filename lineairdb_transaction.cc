@@ -94,7 +94,7 @@ std::vector<std::string> LineairDBTransaction::get_matching_primary_keys_in_rang
         {
           result.push_back(pk);
         }
-        return false; 
+        return false;
       });
 
   return result;
@@ -115,6 +115,25 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys(
       keyList.push_back(std::string(key));
     }
     return false; });
+  return keyList;
+}
+
+std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
+    std::string start_key, std::string end_key)
+{
+  if (table_is_not_chosen())
+    return {};
+
+  std::vector<std::string> keyList;
+
+  tx->Scan("", std::nullopt, [&](auto key, auto)
+           {
+    std::string key_str = std::string(key);
+    if (key_str >= start_key && key_str <= end_key) {
+      keyList.push_back(key_str);
+    }
+    return false; });
+
   return keyList;
 }
 

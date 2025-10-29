@@ -520,6 +520,78 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
   }
   bool is_prefix_search = (used_key_parts < key_info->user_defined_key_parts);
 
+  // ===== PRIMARY KEY処理 =====
+  if (active_index == table->s->primary_key)
+  {
+    auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
+
+    if (end_range == nullptr && !is_prefix_search)
+    {
+      // PRIMARY KEY完全一致: 直接read()を使用
+      auto result = tx->read(serialized_key);
+
+      if (result.first == nullptr || result.second == 0)
+      {
+        return HA_ERR_KEY_NOT_FOUND;
+      }
+
+      if (set_fields_from_lineairdb(buf, result.first, result.second))
+      {
+        tx->set_status_to_abort();
+        return HA_ERR_OUT_OF_MEM;
+      }
+
+      // index_next()が呼ばれる可能性があるため、結果を保存
+      secondary_index_results_.push_back(serialized_key);
+      current_position_in_index_ = 1; // 既に1件読み取り済み
+
+      return 0;
+    }
+    else
+    {
+      // PRIMARY KEY前方一致/範囲検索
+      std::string serialized_end_key;
+
+      if (end_range != nullptr)
+      {
+        // 明示的なend_rangeが提供されている場合
+        serialized_end_key = convert_key_to_ldbformat(end_range->key, keypart_map);
+      }
+      else
+      {
+        // プレフィックス検索: 終了キーを生成
+        serialized_end_key = serialized_key + std::string(256, '\xFF');
+      }
+
+      // 範囲検索用のget_matching_keys_in_range()を使用
+      secondary_index_results_ = tx->get_matching_keys_in_range(
+          serialized_key, serialized_end_key);
+
+      if (secondary_index_results_.empty())
+      {
+        return HA_ERR_KEY_NOT_FOUND;
+      }
+
+      std::string primary_key = secondary_index_results_[current_position_in_index_];
+      auto result = tx->read(primary_key);
+
+      if (result.first == nullptr || result.second == 0)
+      {
+        return HA_ERR_KEY_NOT_FOUND;
+      }
+
+      if (set_fields_from_lineairdb(buf, result.first, result.second))
+      {
+        tx->set_status_to_abort();
+        return HA_ERR_OUT_OF_MEM;
+      }
+
+      current_position_in_index_++;
+      return 0;
+    }
+  }
+
+  // ===== SECONDARY INDEX処理（既存のコード） =====
   if (end_range == nullptr && !is_prefix_search)
   {
     // Exact match search: all key parts are specified

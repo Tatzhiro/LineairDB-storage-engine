@@ -24,6 +24,7 @@ public:
   const std::pair<const std::byte *const, const size_t> read(std::string key);
   std::vector<std::string> get_all_keys();
   std::vector<std::string> get_matching_keys(std::string key);
+  std::vector<std::string> get_matching_keys_in_range(std::string start_key, std::string end_key);
   bool write(std::string key, const std::string value);
   bool write_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
   std::vector<std::pair<const std::byte *const, const size_t>> read_secondary_index(std::string index_name, std::string secondary_key);
