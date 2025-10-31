@@ -88,7 +88,14 @@ void LineairDBField::make_mysql_table_row(const std::byte *const ldbRawData,
     byteSize = convert_bytes_to_numeric(ldbField, sizeof(byteSize));
     if (byteSize == noValue)
     {
-      row.emplace_back("");
+      if (offset == 0)
+      {
+        nullFlag.clear();
+      }
+      else
+      {
+        row.emplace_back("");
+      }
       offset += sizeof(byteSize);
       continue;
     }

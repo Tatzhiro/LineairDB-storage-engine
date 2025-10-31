@@ -98,6 +98,7 @@ private:
   uint current_position_in_index_;
   std::vector<std::string> scanned_keys_;
   std::vector<std::string> secondary_index_results_;
+  std::string last_fetched_primary_key_;
   my_off_t
       current_position_; /* Current position in the file during a file scan */
   std::string write_buffer_;
@@ -344,9 +345,11 @@ private:
 
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);
+  std::string build_secondary_key_from_row(const uchar *row_buffer, const KEY &key_info);
   std::string extract_key();
   std::string autogenerate_key();
   std::string get_key_from_mysql();
+  std::string extract_key_from_mysql(const uchar *row_buffer);
 
   void set_write_buffer(uchar *buf);
   bool is_primary_key_exists();

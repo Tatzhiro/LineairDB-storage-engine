@@ -55,6 +55,18 @@ LineairDBTransaction::read_secondary_index(std::string index_name, std::string s
   return result;
 }
 
+bool LineairDBTransaction::update_secondary_index(
+    std::string index_name,
+    std::string old_secondary_key,
+    std::string new_secondary_key,
+    const std::byte primary_key_buffer[],
+    const size_t primary_key_size)
+{
+  tx->UpdateSecondaryIndex(index_name, old_secondary_key, new_secondary_key,
+                           primary_key_buffer, primary_key_size);
+  return true;
+}
+
 bool LineairDBTransaction::key_prefix_is_matching(std::string key_prefix,
                                                   std::string key)
 {

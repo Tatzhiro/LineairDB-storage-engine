@@ -374,6 +374,7 @@ int ha_lineairdb::index_init(uint idx, bool sorted [[maybe_unused]])
 {
   DBUG_TRACE;
   current_position_in_index_ = 0;
+  last_fetched_primary_key_.clear();
   return change_active_index(idx);
 }
 
@@ -401,6 +402,8 @@ int ha_lineairdb::write_row(uchar *buf)
   DBUG_TRACE;
 
   auto key = extract_key();
+  std::cout << "[LineairDB][write_row] table=" << db_table_name
+            << " key=" << key << " (len=" << key.size() << ")" << std::endl;
   set_write_buffer(buf);
 
   auto tx = get_transaction(userThread);
@@ -445,12 +448,26 @@ int ha_lineairdb::write_row(uchar *buf)
   return 0;
 }
 
-int ha_lineairdb::update_row(const uchar *, uchar *buf)
+int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
 {
   DBUG_TRACE;
 
-  auto key = extract_key();
-  set_write_buffer(buf);
+  auto key = extract_key_from_mysql(old_data);
+
+  if (key.empty())
+  {
+    key = last_fetched_primary_key_;
+  }
+
+  if (key.empty())
+  {
+    std::cerr << "[LineairDB][update_row] failed to resolve primary key" << std::endl;
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  last_fetched_primary_key_ = key;
+
+  set_write_buffer(new_data);
 
   auto tx = get_transaction(userThread);
 
@@ -464,6 +481,41 @@ int ha_lineairdb::update_row(const uchar *, uchar *buf)
   bool is_successful = tx->write(key, write_buffer_);
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
+
+  for (uint i = 0; i < table->s->keys; i++)
+  {
+    auto key_info = table->key_info[i];
+
+    // プライマリキーはスキップ
+    if (i == table->s->primary_key)
+    {
+      continue;
+    }
+
+    std::string old_secondary_key = build_secondary_key_from_row(old_data, key_info);
+    std::string new_secondary_key = build_secondary_key_from_row(new_data, key_info);
+
+    // セカンダリキーが変更されていない場合はスキップ
+    if (old_secondary_key == new_secondary_key)
+    {
+      continue;
+    }
+
+    // セカンダリインデックスを更新
+    tx->update_secondary_index(
+        key_info.name,
+        old_secondary_key,
+        new_secondary_key,
+        reinterpret_cast<const std::byte *>(key.data()),
+        key.size());
+
+    // トランザクションがabortされた場合
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(userThread, 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+  }
 
   return 0;
 }
@@ -544,6 +596,7 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
       // index_next()が呼ばれる可能性があるため、結果を保存
       secondary_index_results_.push_back(serialized_key);
       current_position_in_index_ = 1; // 既に1件読み取り済み
+      last_fetched_primary_key_ = serialized_key;
 
       return 0;
     }
@@ -587,6 +640,7 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
       }
 
       current_position_in_index_++;
+      last_fetched_primary_key_ = primary_key;
       return 0;
     }
   }
@@ -618,6 +672,7 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
       return HA_ERR_OUT_OF_MEM;
     }
     current_position_in_index_++;
+    last_fetched_primary_key_ = primary_key;
     return 0;
   }
   else
@@ -655,6 +710,7 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
       return HA_ERR_OUT_OF_MEM;
     }
     current_position_in_index_++;
+    last_fetched_primary_key_ = primary_key;
     return 0;
   }
 }
@@ -691,6 +747,7 @@ int ha_lineairdb::index_next(uchar *buf)
     return HA_ERR_OUT_OF_MEM;
   }
   current_position_in_index_++;
+  last_fetched_primary_key_ = primary_key;
   return 0;
 }
 
@@ -721,6 +778,7 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
     return HA_ERR_OUT_OF_MEM;
   }
   current_position_in_index_++;
+  last_fetched_primary_key_ = primary_key;
   return 0;
 }
 
@@ -799,8 +857,17 @@ int ha_lineairdb::rnd_init(bool)
 {
   DBUG_ENTER("ha_lineairdb::rnd_init");
   scanned_keys_.clear();
+  last_fetched_primary_key_.clear();
   current_position_ = 0;
   stats.records = 0;
+  if (table->s->primary_key != MAX_KEY)
+  {
+    change_active_index(table->s->primary_key);
+  }
+  else
+  {
+    active_index = MAX_KEY;
+  }
 
   auto tx = get_transaction(userThread);
 
@@ -812,6 +879,8 @@ int ha_lineairdb::rnd_init(bool)
 
   tx->choose_table(db_table_name);
   scanned_keys_ = tx->get_all_keys();
+  std::cout << "[LineairDB][rnd_init] table=" << db_table_name
+            << " scanned_keys=" << scanned_keys_.size() << std::endl;
 
   DBUG_RETURN(0);
 }
@@ -845,17 +914,16 @@ int ha_lineairdb::rnd_next(uchar *buf)
   DBUG_ENTER("ha_lineairdb::rnd_next");
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
-  if (scanned_keys_.size() == 0)
+  if (current_position_ >= scanned_keys_.size())
+  {
     DBUG_RETURN(HA_ERR_END_OF_FILE);
-
-read_from_lineairdb:
-  if (current_position_ == scanned_keys_.size())
-    DBUG_RETURN(HA_ERR_END_OF_FILE);
+  }
 
   auto &key = scanned_keys_[current_position_];
+  std::cout << "[LineairDB][rnd_next] table=" << db_table_name
+            << " key=" << key << " (index=" << current_position_ << ")" << std::endl;
 
   auto tx = get_transaction(userThread);
-
   if (tx->is_aborted())
   {
     thd_mark_transaction_to_rollback(userThread, 1);
@@ -864,19 +932,21 @@ read_from_lineairdb:
 
   assert(tx->get_selected_table_name() == db_table_name);
   auto read_buffer = tx->read(key);
-
+  int error = 0;
   if (read_buffer.first == nullptr)
   {
-    current_position_++;
-    goto read_from_lineairdb;
+    error = HA_ERR_KEY_NOT_FOUND;
   }
-  if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second))
+  else
   {
-    tx->set_status_to_abort();
-    return HA_ERR_OUT_OF_MEM;
+    error = set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second);
+    if (error == 0)
+    {
+      last_fetched_primary_key_ = key;
+    }
   }
   current_position_++;
-  DBUG_RETURN(0);
+  DBUG_RETURN(error);
 }
 
 /**
@@ -1389,6 +1459,39 @@ std::string ha_lineairdb::serialize_key_from_field(Field *field)
   }
 }
 
+std::string ha_lineairdb::build_secondary_key_from_row(
+    const uchar *row_buffer,
+    const KEY &key_info)
+{
+  // read_setを一時的に全カラムに設定
+  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+
+  // row_bufferとrecord[0]の差分を計算
+  ptrdiff_t offset = row_buffer - table->record[0];
+
+  // セカンダリキーを構築
+  std::string secondary_key;
+  for (uint part_idx = 0; part_idx < key_info.user_defined_key_parts; part_idx++)
+  {
+    auto key_part = key_info.key_part[part_idx];
+    Field *field = table->field[key_part.fieldnr - 1];
+
+    // Fieldのptrをrow_bufferに合わせて調整
+    field->move_field_offset(offset);
+
+    // 各キーパートをシリアライズして連結
+    secondary_key += serialize_key_from_field(field);
+
+    // Fieldのptrを元に戻す
+    field->move_field_offset(-offset);
+  }
+
+  // read_setを元に戻す
+  tmp_restore_column_map(table->read_set, org_bitmap);
+
+  return secondary_key;
+}
+
 std::string ha_lineairdb::extract_key()
 {
   if (is_primary_key_exists())
@@ -1418,6 +1521,34 @@ std::string ha_lineairdb::get_key_from_mysql()
   }
 
   tmp_restore_column_map(table->read_set, org_bitmap);
+
+  return complete_key;
+}
+
+std::string ha_lineairdb::extract_key_from_mysql(const uchar *row_buffer)
+{
+  std::string complete_key;
+
+  /*   if (!is_primary_key_exists())
+    {
+      return complete_key;
+    } */
+
+  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+  ptrdiff_t offset = row_buffer - table->record[0];
+
+  for (size_t i = 0; i < num_key_parts; ++i)
+  {
+    auto field_index = key_part[i].fieldnr - 1;
+    Field *field = table->field[field_index];
+
+    field->move_field_offset(offset);
+    complete_key += serialize_key_from_field(field);
+    field->move_field_offset(-offset);
+  }
+
+  tmp_restore_column_map(table->read_set, org_bitmap);
+  std::cout << "[LineairDB][extract_key_from_mysql] complete_key=" << complete_key << std::endl;
 
   return complete_key;
 }

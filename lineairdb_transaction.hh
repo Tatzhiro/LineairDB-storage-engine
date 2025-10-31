@@ -30,7 +30,13 @@ public:
   std::vector<std::pair<const std::byte *const, const size_t>> read_secondary_index(std::string index_name, std::string secondary_key);
   std::vector<std::string> get_matching_primary_keys_in_range(
       std::string index_name, std::string start_key, std::string end_key);
-
+  bool update_secondary_index(
+      std::string index_name,
+      std::string old_secondary_key,
+      std::string new_secondary_key,
+      const std::byte primary_key_buffer[],
+      const size_t primary_key_size);
+      
   bool delete_value(std::string key);
 
   void begin_transaction();
