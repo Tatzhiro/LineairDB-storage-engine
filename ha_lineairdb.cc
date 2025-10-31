@@ -97,6 +97,10 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <sstream>
 
 #include "my_dbug.h"
 #include "mysql/plugin.h"
@@ -225,6 +229,7 @@ static std::shared_ptr<LineairDB::Database> get_or_allocate_database(
 LineairDB_share::LineairDB_share()
 {
   thr_lock_init(&lock);
+  next_hidden_pk.store(0);
   if (lineairdb_ == nullptr)
   {
     LineairDB::Config conf;
@@ -324,10 +329,20 @@ int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table *)
   thr_lock_data_init(&share->lock, &lock, nullptr);
 
   db_table_name = std::string(table_name);
-  fprintf(stderr, "[DEBUG] db_table_name = %s\n", db_table_name.c_str());
+  fprintf(stderr, "[DEBUG] --------------------------------------------------db_table_name = %s\n", db_table_name.c_str());
 
   if ((num_keys = table->s->keys))
     set_key_and_key_part_info(table);
+
+  if (table->s->primary_key != MAX_KEY)
+  {
+    uint pk_index = table->s->primary_key;
+    ref_length = sizeof(uint16_t) + table->key_info[pk_index].key_length;
+  }
+  else
+  {
+    ref_length = sizeof(uint16_t) + serialize_hidden_primary_key(0).size();
+  }
 
   return 0;
 }
@@ -461,13 +476,28 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
 
   if (key.empty())
   {
+    key = extract_primary_key_from_ref(ref);
+  }
+
+  if (key.empty())
+  {
     std::cerr << "[LineairDB][update_row] failed to resolve primary key" << std::endl;
     return HA_ERR_KEY_NOT_FOUND;
   }
 
+  std::cout << "[LineairDB][update_row] table=" << db_table_name
+            << " key=" << key << " (len=" << key.size() << ")" << std::endl;
+
+  std::cout << "[LineairDB][update_row] old_row=" << format_row_debug(old_data)
+            << std::endl;
+  std::cout << "[LineairDB][update_row] new_row" << format_row_debug(new_data) << std::endl;
+
   last_fetched_primary_key_ = key;
 
   set_write_buffer(new_data);
+
+  std::cout << "[LineairDB][update_row] new_row_buffer=" << write_buffer_.size()
+            << std::endl;
 
   auto tx = get_transaction(userThread);
 
@@ -970,7 +1000,20 @@ int ha_lineairdb::rnd_next(uchar *buf)
   @see
   filesort.cc, sql_select.cc, sql_delete.cc and sql_update.cc
 */
-void ha_lineairdb::position(const uchar *) { DBUG_TRACE; }
+void ha_lineairdb::position(const uchar *)
+{
+  DBUG_TRACE;
+
+  if (last_fetched_primary_key_.empty())
+  {
+    return;
+  }
+
+  std::cout << "[LineairDB][position] table=" << db_table_name
+            << " key=" << last_fetched_primary_key_
+            << " (len=" << last_fetched_primary_key_.size() << ")" << std::endl;
+  store_primary_key_in_ref(last_fetched_primary_key_);
+}
 
 /**
   @brief
@@ -986,12 +1029,45 @@ void ha_lineairdb::position(const uchar *) { DBUG_TRACE; }
   @see
   filesort.cc, records.cc, sql_insert.cc, sql_select.cc and sql_update.cc
 */
-int ha_lineairdb::rnd_pos(uchar *, uchar *)
+int ha_lineairdb::rnd_pos(uchar *buf, uchar *pos)
 {
-  int rc;
   DBUG_TRACE;
-  rc = HA_ERR_WRONG_COMMAND;
-  return rc;
+
+  std::string primary_key = extract_primary_key_from_ref(pos);
+
+  if (primary_key.empty())
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  auto tx = get_transaction(userThread);
+
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(userThread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  tx->choose_table(db_table_name);
+  auto result = tx->read(primary_key);
+
+  if (result.first == nullptr || result.second == 0)
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  if (set_fields_from_lineairdb(buf, result.first, result.second))
+  {
+    tx->set_status_to_abort();
+    return HA_ERR_OUT_OF_MEM;
+  }
+
+  last_fetched_primary_key_ = primary_key;
+
+  std::cout << "[LineairDB][rnd_pos] table=" << db_table_name << " key="
+            << primary_key << std::endl;
+
+  return 0;
 }
 
 /**
@@ -1492,6 +1568,155 @@ std::string ha_lineairdb::build_secondary_key_from_row(
   return secondary_key;
 }
 
+void ha_lineairdb::store_primary_key_in_ref(const std::string &primary_key)
+{
+  if (table == nullptr || table->s == nullptr || ref == nullptr)
+  {
+    return;
+  }
+
+  const size_t ref_length_local = ref_length;
+  if (ref_length_local < sizeof(uint16_t))
+  {
+    return;
+  }
+
+  if (primary_key.size() > std::numeric_limits<uint16_t>::max())
+  {
+    std::cerr << "[LineairDB][position] primary key length exceeds uint16_t: "
+              << primary_key.size() << std::endl;
+    return;
+  }
+
+  const size_t payload_capacity = ref_length_local - sizeof(uint16_t);
+  if (primary_key.size() > payload_capacity)
+  {
+    std::cerr << "[LineairDB][position] primary key length exceeds ref capacity: "
+              << primary_key.size() << " > " << payload_capacity << std::endl;
+    return;
+  }
+
+  const uint16_t key_length = static_cast<uint16_t>(primary_key.size());
+  std::memcpy(ref, &key_length, sizeof(uint16_t));
+
+  if (key_length > 0)
+  {
+    std::memcpy(ref + sizeof(uint16_t), primary_key.data(), key_length);
+  }
+
+  std::cout << "[LineairDB][store_ref] table=" << db_table_name << " key="
+            << primary_key << " (len=" << key_length << ") ref_length="
+            << ref_length_local << std::endl;
+
+  const size_t remaining = payload_capacity - key_length;
+  if (remaining > 0)
+  {
+    std::memset(ref + sizeof(uint16_t) + key_length, 0, remaining);
+  }
+}
+
+std::string ha_lineairdb::extract_primary_key_from_ref(const uchar *pos) const
+{
+  if (pos == nullptr || table == nullptr || table->s == nullptr)
+  {
+    return {};
+  }
+
+  const size_t ref_length_local = ref_length;
+  if (ref_length_local < sizeof(uint16_t))
+  {
+    return {};
+  }
+
+  uint16_t key_length = 0;
+  std::memcpy(&key_length, pos, sizeof(uint16_t));
+
+  if (key_length == 0)
+  {
+    return {};
+  }
+
+  if (sizeof(uint16_t) + key_length > ref_length_local)
+  {
+    return {};
+  }
+
+  std::string key(reinterpret_cast<const char *>(pos + sizeof(uint16_t)),
+                  key_length);
+
+  std::cout << "[LineairDB][extract_ref] table=" << db_table_name << " key="
+            << key << " (len=" << key_length << ")" << std::endl;
+
+  return key;
+}
+
+bool ha_lineairdb::uses_hidden_primary_key() const
+{
+  if (table == nullptr || table->s == nullptr)
+  {
+    return false;
+  }
+  return table->s->primary_key == MAX_KEY;
+}
+
+std::string ha_lineairdb::serialize_hidden_primary_key(uint64_t row_id) const
+{
+  std::ostringstream oss;
+  oss << std::hex << std::setw(16) << std::setfill('0') << row_id;
+  return oss.str();
+}
+
+std::string ha_lineairdb::generate_hidden_primary_key()
+{
+  if (share == nullptr)
+  {
+    share = get_share();
+  }
+  uint64_t row_id = share->next_hidden_pk.fetch_add(1, std::memory_order_relaxed);
+  std::string key = serialize_hidden_primary_key(row_id);
+  std::cout << "[LineairDB][hidden_pk] table=" << db_table_name
+            << " row_id=" << row_id << " key=" << key << std::endl;
+  return key;
+}
+
+std::string ha_lineairdb::format_row_debug(const uchar *row_buffer) const
+{
+  if (row_buffer == nullptr || table == nullptr)
+  {
+    return "{}";
+  }
+
+  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+  ptrdiff_t offset = row_buffer - table->record[0];
+
+  std::ostringstream row_values;
+  row_values << "{";
+  bool first = true;
+
+  char attribute_buffer[1024];
+  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
+
+  for (Field **field = table->field; *field; field++)
+  {
+    (*field)->move_field_offset(offset);
+    attribute.length(0);
+    (*field)->val_str(&attribute, &attribute);
+    (*field)->move_field_offset(-offset);
+
+    if (!first)
+    {
+      row_values << ", ";
+    }
+    first = false;
+    row_values << (*field)->field_name << "='" << attribute.c_ptr() << "'";
+  }
+
+  tmp_restore_column_map(table->read_set, org_bitmap);
+
+  row_values << "}";
+  return row_values.str();
+}
+
 std::string ha_lineairdb::extract_key()
 {
   if (is_primary_key_exists())
@@ -1555,16 +1780,7 @@ std::string ha_lineairdb::extract_key_from_mysql(const uchar *row_buffer)
 
 std::string ha_lineairdb::autogenerate_key()
 {
-  /**
-   * @WANTFIX: This function relies on a class member `auto_generated_keys_`.
-   * `auto_generated_keys_` is not recovered when the handler is constructed.
-   * It has to be a recoverable data.
-   */
-  std::cout << "ha_lineairdb::autogenerate_key NEEDS FIX" << std::endl;
-  std::string generated_key;
-  auto inserted_count = auto_generated_keys_[db_table_name]++;
-  generated_key = std::to_string(inserted_count);
-  return generated_key;
+  return generate_hidden_primary_key();
 }
 
 /**
@@ -1829,13 +2045,27 @@ void ha_lineairdb::set_write_buffer(uchar *buf)
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
   my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+  std::ostringstream row_values;
+  row_values << "{";
+  bool first = true;
   for (Field **field = table->field; *field; field++)
   {
     (*field)->val_str(&attribute, &attribute);
     ldbField.set_lineairdb_field(attribute.c_ptr(), attribute.length());
     write_buffer_ += ldbField.get_lineairdb_field();
+
+    if (!first)
+    {
+      row_values << ", ";
+    }
+    first = false;
+    row_values << (*field)->field_name << "='" << attribute.c_ptr() << "'";
   }
   tmp_restore_column_map(table->read_set, org_bitmap);
+
+  std::cout << "[LineairDB][set_write_buffer] table=" << db_table_name
+            << " row=" << row_values.str() << " size=" << write_buffer_.size()
+            << std::endl;
 }
 
 bool ha_lineairdb::is_primary_key_exists()
@@ -1888,6 +2118,9 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar *buf,
    * store each column value to corresponding field
    */
   size_t columnIndex = 0;
+  std::ostringstream row_values;
+  row_values << "{";
+  bool first = true;
   for (Field **field = table->field; *field; field++)
   {
     const auto mysqlFieldValue = ldbField.get_column_of_row(columnIndex++);
@@ -1895,8 +2128,17 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar *buf,
                     &my_charset_bin, CHECK_FIELD_WARN);
     if (store_blob_to_field(field))
       return HA_ERR_OUT_OF_MEM;
+
+    if (!first)
+    {
+      row_values << ", ";
+    }
+    first = false;
+    row_values << (*field)->field_name << "='" << mysqlFieldValue << "'";
   }
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
+  std::cout << "[LineairDB][set_fields_from_lineairdb] table=" << db_table_name
+            << " row=" << row_values.str() << std::endl;
   return 0;
 }
 

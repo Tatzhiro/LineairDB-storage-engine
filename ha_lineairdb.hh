@@ -45,7 +45,7 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include <unordered_map>
+#include <atomic>
 #include <vector>
 
 #include "lineairdb_field.hh"
@@ -70,6 +70,7 @@ public:
   // get_or_allocate_database(LineairDB::Config conf);
   ~LineairDB_share() override { thr_lock_delete(&lock); }
   std::shared_ptr<LineairDB::Database> lineairdb_;
+  std::atomic<uint64_t> next_hidden_pk{0};
 };
 
 /** @brief
@@ -102,9 +103,15 @@ private:
   my_off_t
       current_position_; /* Current position in the file during a file scan */
   std::string write_buffer_;
-  std::unordered_map<std::string, size_t> auto_generated_keys_;
   LineairDBField ldbField;
   MEM_ROOT blobroot;
+
+  void store_primary_key_in_ref(const std::string &primary_key);
+  std::string extract_primary_key_from_ref(const uchar *pos) const;
+  bool uses_hidden_primary_key() const;
+  std::string generate_hidden_primary_key();
+  std::string serialize_hidden_primary_key(uint64_t row_id) const;
+  std::string format_row_debug(const uchar *row_buffer) const;
 
 public:
   ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg);
