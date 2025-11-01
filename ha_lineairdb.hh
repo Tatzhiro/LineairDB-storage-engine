@@ -48,6 +48,7 @@
 #include <atomic>
 #include <vector>
 
+#include "lineairdb_field_types.h"
 #include "lineairdb_field.hh"
 #include "lineairdb_transaction.hh"
 #include "my_base.h" /* ha_rows */
@@ -349,6 +350,12 @@ private:
   static std::string encode_int_key(const uchar *data, size_t len);
   static std::string encode_datetime_key(const uchar *data, size_t len);
   static std::string encode_string_key(const uchar *data, size_t len);
+
+  static unsigned char key_part_type_tag(LineairDBFieldType type);
+  static void append_key_part_encoding(std::string &out, bool is_null,
+                                       LineairDBFieldType type,
+                                       const std::string &payload);
+  static std::string build_prefix_range_end(const std::string &prefix);
 
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);

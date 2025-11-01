@@ -94,6 +94,7 @@
 
 #include "storage/lineairdb/ha_lineairdb.hh"
 
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <iomanip>
@@ -114,6 +115,17 @@
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
+
+namespace
+{
+  constexpr unsigned char kKeyMarkerNotNull = 0x00;
+  constexpr unsigned char kKeyMarkerNull = 0x01;
+
+  constexpr unsigned char kKeyTypeInt = 0x10;
+  constexpr unsigned char kKeyTypeString = 0x20;
+  constexpr unsigned char kKeyTypeDatetime = 0x30;
+  constexpr unsigned char kKeyTypeOther = 0xF0;
+}
 
 static std::shared_ptr<LineairDB::Database> get_or_allocate_database(
     LineairDB::Config conf);
@@ -643,7 +655,7 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
       else
       {
         // プレフィックス検索: 終了キーを生成
-        serialized_end_key = serialized_key + std::string(256, '\xFF');
+        serialized_end_key = build_prefix_range_end(serialized_key);
       }
 
       // 範囲検索用のget_matching_keys_in_range()を使用
@@ -720,7 +732,7 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
     {
       // Prefix search: generate end key by appending maximum values
       // This will match all keys that start with serialized_start_key
-      serialized_end_key = serialized_start_key + std::string(256, '\xFF');
+      serialized_end_key = build_prefix_range_end(serialized_start_key);
     }
 
     secondary_index_results_ = tx->get_matching_primary_keys_in_range(
@@ -1440,6 +1452,57 @@ int ha_lineairdb::read_range_first(const key_range *start_key, const key_range *
   return handler::read_range_first(start_key, end_key, eq_range_arg, sorted);
 }
 
+unsigned char ha_lineairdb::key_part_type_tag(LineairDBFieldType type)
+{
+  switch (type)
+  {
+  case LineairDBFieldType::LINEAIRDB_INT:
+    return kKeyTypeInt;
+  case LineairDBFieldType::LINEAIRDB_STRING:
+    return kKeyTypeString;
+  case LineairDBFieldType::LINEAIRDB_DATETIME:
+    return kKeyTypeDatetime;
+  case LineairDBFieldType::LINEAIRDB_OTHER:
+  default:
+    return kKeyTypeOther;
+  }
+}
+
+void ha_lineairdb::append_key_part_encoding(std::string &out, bool is_null,
+                                            LineairDBFieldType type,
+                                            const std::string &payload)
+{
+  constexpr size_t kLengthFieldSize = 2;
+  const size_t max_payload_length = std::numeric_limits<uint16_t>::max();
+  size_t copy_length = std::min(payload.size(), max_payload_length);
+
+  if (payload.size() > max_payload_length)
+  {
+    std::cerr << "[LineairDB][encode_key_part] payload truncated: length="
+              << payload.size() << std::endl;
+  }
+
+  out.reserve(out.size() + 1 + 1 + kLengthFieldSize + copy_length);
+  out.push_back(static_cast<char>(is_null ? kKeyMarkerNull : kKeyMarkerNotNull));
+  out.push_back(static_cast<char>(key_part_type_tag(type)));
+
+  uint16_t length_field = static_cast<uint16_t>(copy_length);
+  out.push_back(static_cast<char>((length_field >> 8) & 0xFF));
+  out.push_back(static_cast<char>(length_field & 0xFF));
+
+  if (copy_length > 0)
+  {
+    out.append(payload.data(), copy_length);
+  }
+}
+
+std::string ha_lineairdb::build_prefix_range_end(const std::string &prefix)
+{
+  std::string end = prefix;
+  end.push_back(static_cast<char>(0xFF));
+  return end;
+}
+
 /**
  * @brief Serialize a single field value to LineairDB key format
  *
@@ -1452,87 +1515,88 @@ int ha_lineairdb::read_range_first(const key_range *start_key, const key_range *
  */
 std::string ha_lineairdb::serialize_key_from_field(Field *field)
 {
+  const bool is_null = field->is_null();
   enum_field_types mysql_type = field->type();
   LineairDBFieldType ldb_type = convert_mysql_type_to_lineairdb(mysql_type);
 
-  switch (ldb_type)
-  {
-  case LineairDBFieldType::LINEAIRDB_INT:
-  {
-    // Get integer value and convert to MySQL binary format first
-    int64_t value = field->val_int();
-    size_t field_len = field->pack_length();
+  std::string payload;
 
-    // Convert to little-endian (MySQL format)
-    uchar buf[8];
-    if (field_len == 1)
+  if (!is_null)
+  {
+    switch (ldb_type)
     {
-      buf[0] = static_cast<uchar>(value & 0xFF);
-    }
-    else if (field_len == 2)
+    case LineairDBFieldType::LINEAIRDB_INT:
     {
-      buf[0] = static_cast<uchar>(value & 0xFF);
-      buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
+      int64_t value = field->val_int();
+      size_t field_len = field->pack_length();
+
+      uchar buf[8] = {0};
+      if (field_len == 1)
+      {
+        buf[0] = static_cast<uchar>(value & 0xFF);
+      }
+      else if (field_len == 2)
+      {
+        buf[0] = static_cast<uchar>(value & 0xFF);
+        buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
+      }
+      else if (field_len == 4)
+      {
+        buf[0] = static_cast<uchar>(value & 0xFF);
+        buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
+        buf[2] = static_cast<uchar>((value >> 16) & 0xFF);
+        buf[3] = static_cast<uchar>((value >> 24) & 0xFF);
+      }
+      else
+      {
+        buf[0] = static_cast<uchar>(value & 0xFF);
+        buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
+        buf[2] = static_cast<uchar>((value >> 16) & 0xFF);
+        buf[3] = static_cast<uchar>((value >> 24) & 0xFF);
+        buf[4] = static_cast<uchar>((value >> 32) & 0xFF);
+        buf[5] = static_cast<uchar>((value >> 40) & 0xFF);
+        buf[6] = static_cast<uchar>((value >> 48) & 0xFF);
+        buf[7] = static_cast<uchar>((value >> 56) & 0xFF);
+        field_len = 8;
+      }
+
+      payload = encode_int_key(buf, field_len);
+      break;
     }
-    else if (field_len == 4)
+
+    case LineairDBFieldType::LINEAIRDB_DATETIME:
     {
-      buf[0] = static_cast<uchar>(value & 0xFF);
-      buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
-      buf[2] = static_cast<uchar>((value >> 16) & 0xFF);
-      buf[3] = static_cast<uchar>((value >> 24) & 0xFF);
+      size_t field_len = field->pack_length();
+      std::string raw(field_len, '\0');
+      field->get_key_image(reinterpret_cast<uchar *>(raw.data()), field_len,
+                           Field::itRAW);
+      payload = encode_datetime_key(reinterpret_cast<const uchar *>(raw.data()),
+                                    field_len);
+      break;
     }
-    else
-    { // 8 bytes
-      buf[0] = static_cast<uchar>(value & 0xFF);
-      buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
-      buf[2] = static_cast<uchar>((value >> 16) & 0xFF);
-      buf[3] = static_cast<uchar>((value >> 24) & 0xFF);
-      buf[4] = static_cast<uchar>((value >> 32) & 0xFF);
-      buf[5] = static_cast<uchar>((value >> 40) & 0xFF);
-      buf[6] = static_cast<uchar>((value >> 48) & 0xFF);
-      buf[7] = static_cast<uchar>((value >> 56) & 0xFF);
+
+    case LineairDBFieldType::LINEAIRDB_STRING:
+    {
+      String buffer;
+      field->val_str(&buffer, &buffer);
+      payload.assign(buffer.c_ptr(), buffer.length());
+      break;
     }
-    // Use the same encoder as convert_key_to_ldbformat
-    std::string result = encode_int_key(buf, field_len);
 
-    return result;
+    case LineairDBFieldType::LINEAIRDB_OTHER:
+    default:
+    {
+      String buffer;
+      field->val_str(&buffer, &buffer);
+      payload.assign(buffer.c_ptr(), buffer.length());
+      break;
+    }
+    }
   }
 
-  case LineairDBFieldType::LINEAIRDB_DATETIME:
-  {
-    // For DATETIME, get the packed binary representation
-    // MySQL stores DATETIME in a packed format that is already sortable
-    size_t field_len = field->pack_length();
-    uchar buf[8];
-
-    // Pack the datetime value
-    field->get_key_image(buf, field_len, Field::itRAW);
-
-    // Use the datetime encoder (which just copies it)
-    std::string result = encode_datetime_key(buf, field_len);
-
-    return result;
-  }
-
-  case LineairDBFieldType::LINEAIRDB_STRING:
-  {
-    // For string types, use as-is (no conversion needed)
-    String buffer;
-    field->val_str(&buffer, &buffer);
-
-    return std::string(buffer.c_ptr(), buffer.length());
-  }
-
-  case LineairDBFieldType::LINEAIRDB_OTHER:
-  default:
-  {
-    // For unsupported types, treat as string
-    String buffer;
-    field->val_str(&buffer, &buffer);
-
-    return std::string(buffer.c_ptr(), buffer.length());
-  }
-  }
+  std::string encoded;
+  append_key_part_encoding(encoded, is_null, ldb_type, payload);
+  return encoded;
 }
 
 std::string ha_lineairdb::build_secondary_key_from_row(
@@ -1940,74 +2004,65 @@ std::string ha_lineairdb::convert_key_to_ldbformat(const uchar *key, key_part_ma
 
     KEY_PART_INFO *kp = &key_info->key_part[i];
     Field *field = kp->field;
-
-    // Step 1: Handle NULL flag if column is nullable
+    bool is_null = false;
     if (kp->null_bit)
     {
-      bool is_null = (*key_ptr != 0);
+      is_null = (*key_ptr != 0);
       key_ptr++; // Skip NULL flag byte
 
       if (is_null)
       {
-        // Encode NULL as maximum value (sorts last in SQL)
-        // Use the field's data length for consistent sizing
-        result += std::string(kp->length, '\xFF');
-        // Skip remaining bytes for this part
         key_ptr += (kp->store_length - 1);
+        append_key_part_encoding(result, true,
+                                 convert_mysql_type_to_lineairdb(field->type()),
+                                 std::string());
         continue;
       }
     }
 
-    // Step 2: Handle variable-length fields (VARCHAR, TEXT, BLOB)
     uint data_len = kp->length;
+    const uchar *data_ptr = key_ptr;
+
     if (kp->key_part_flag & HA_VAR_LENGTH_PART)
     {
-      // Read 2-byte little-endian length prefix
-      data_len = uint2korr(key_ptr);
-      key_ptr += 2;
+      data_len = uint2korr(data_ptr);
+      data_ptr += 2; // Skip length prefix
+      key_ptr = data_ptr;
     }
 
-    // Step 3: Encode data based on field type
     enum_field_types mysql_type = field->type();
     LineairDBFieldType ldb_type = convert_mysql_type_to_lineairdb(mysql_type);
 
+    std::string payload;
     switch (ldb_type)
     {
     case LineairDBFieldType::LINEAIRDB_INT:
-      // For variable-length key parts, use actual data_len
-      // For fixed-length, data_len equals kp->length
-      result += encode_int_key(key_ptr, data_len);
+      payload = encode_int_key(data_ptr, data_len);
       break;
 
     case LineairDBFieldType::LINEAIRDB_DATETIME:
-      result += encode_datetime_key(key_ptr, data_len);
+      payload = encode_datetime_key(data_ptr, data_len);
       break;
 
     case LineairDBFieldType::LINEAIRDB_STRING:
-      // String data is already in sortable format (lexicographic order)
-      // Just copy the actual data without length prefix or padding
-      result += std::string(reinterpret_cast<const char *>(key_ptr), data_len);
+      payload.assign(reinterpret_cast<const char *>(data_ptr), data_len);
       break;
 
     case LineairDBFieldType::LINEAIRDB_OTHER:
     default:
-      // Unknown types: treat as raw binary data
-      result += std::string(reinterpret_cast<const char *>(key_ptr), data_len);
+      payload.assign(reinterpret_cast<const char *>(data_ptr), data_len);
       break;
     }
 
-    // Step 4: Move pointer to next key part
-    // For variable-length fields, skip the remaining padding
+    append_key_part_encoding(result, false, ldb_type, payload);
+
     if (kp->key_part_flag & HA_VAR_LENGTH_PART)
     {
-      // We already moved past the 2-byte length prefix
-      // Now skip the data and any padding
       key_ptr += kp->length;
     }
     else
     {
-      // For fixed-length fields, just skip the data
-      key_ptr += data_len;
+      key_ptr += kp->length;
     }
   }
 
