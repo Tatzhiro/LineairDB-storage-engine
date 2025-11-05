@@ -55,7 +55,7 @@ def update_secondary_index_basic(db, cursor):
     print("\nUPDATE SECONDARY INDEX BASIC TEST")
     
     table_name = f"test_update_idx_{int(time.time() * 100000)}"
-        cursor.execute(f'''CREATE TABLE ha_lineairdb_test.{table_name} (
+    cursor.execute(f'''CREATE TABLE ha_lineairdb_test.{table_name} (
         name VARCHAR(50) NOT NULL,
         age INT NOT NULL,
         department VARCHAR(50) NOT NULL,
