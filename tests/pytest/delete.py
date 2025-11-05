@@ -3,6 +3,7 @@ import mysql.connector
 from utils.reset import reset
 import argparse
 
+#Deletion is not supported in TPC-C, so we don't need to test it.
 def delete (db, cursor) :
     reset(db, cursor)
     print("DELETE TEST")

@@ -341,7 +341,6 @@ int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table *)
   thr_lock_data_init(&share->lock, &lock, nullptr);
 
   db_table_name = std::string(table_name);
-  fprintf(stderr, "[DEBUG] --------------------------------------------------db_table_name = %s\n", db_table_name.c_str());
 
   if ((num_keys = table->s->keys))
     set_key_and_key_part_info(table);
@@ -429,8 +428,6 @@ int ha_lineairdb::write_row(uchar *buf)
   DBUG_TRACE;
 
   auto key = extract_key();
-  std::cout << "[LineairDB][write_row] table=" << db_table_name
-            << " key=" << key << " (len=" << key.size() << ")" << std::endl;
   set_write_buffer(buf);
 
   auto tx = get_transaction(userThread);
@@ -497,19 +494,9 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
     return HA_ERR_KEY_NOT_FOUND;
   }
 
-  std::cout << "[LineairDB][update_row] table=" << db_table_name
-            << " key=" << key << " (len=" << key.size() << ")" << std::endl;
-
-  std::cout << "[LineairDB][update_row] old_row=" << format_row_debug(old_data)
-            << std::endl;
-  std::cout << "[LineairDB][update_row] new_row" << format_row_debug(new_data) << std::endl;
-
   last_fetched_primary_key_ = key;
 
   set_write_buffer(new_data);
-
-  std::cout << "[LineairDB][update_row] new_row_buffer=" << write_buffer_.size()
-            << std::endl;
 
   auto tx = get_transaction(userThread);
 
@@ -687,7 +674,6 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
     }
   }
 
-  // ===== SECONDARY INDEX処理（既存のコード） =====
   if (end_range == nullptr && !is_prefix_search)
   {
     // Exact match search: all key parts are specified
@@ -849,7 +835,6 @@ int ha_lineairdb::index_prev(uchar *)
 */
 int ha_lineairdb::index_first(uchar *buf)
 {
-  int rc;
   DBUG_TRACE;
   int error = index_read(buf, nullptr, 0, HA_READ_AFTER_KEY);
 
@@ -921,8 +906,6 @@ int ha_lineairdb::rnd_init(bool)
 
   tx->choose_table(db_table_name);
   scanned_keys_ = tx->get_all_keys();
-  std::cout << "[LineairDB][rnd_init] table=" << db_table_name
-            << " scanned_keys=" << scanned_keys_.size() << std::endl;
 
   DBUG_RETURN(0);
 }
@@ -962,8 +945,6 @@ int ha_lineairdb::rnd_next(uchar *buf)
   }
 
   auto &key = scanned_keys_[current_position_];
-  std::cout << "[LineairDB][rnd_next] table=" << db_table_name
-            << " key=" << key << " (index=" << current_position_ << ")" << std::endl;
 
   auto tx = get_transaction(userThread);
   if (tx->is_aborted())
@@ -1021,9 +1002,6 @@ void ha_lineairdb::position(const uchar *)
     return;
   }
 
-  std::cout << "[LineairDB][position] table=" << db_table_name
-            << " key=" << last_fetched_primary_key_
-            << " (len=" << last_fetched_primary_key_.size() << ")" << std::endl;
   store_primary_key_in_ref(last_fetched_primary_key_);
 }
 
@@ -1075,9 +1053,6 @@ int ha_lineairdb::rnd_pos(uchar *buf, uchar *pos)
   }
 
   last_fetched_primary_key_ = primary_key;
-
-  std::cout << "[LineairDB][rnd_pos] table=" << db_table_name << " key="
-            << primary_key << std::endl;
 
   return 0;
 }
@@ -1394,7 +1369,6 @@ int ha_lineairdb::create(const char *table_name, TABLE *table, HA_CREATE_INFO *,
 {
   DBUG_TRACE;
   db_table_name = std::string(table_name);
-  fprintf(stderr, "[DEBUG] db_table_name = %s\n", db_table_name.c_str());
   auto current_db = get_db();
   if (!current_db->CreateTable(db_table_name))
   {
@@ -1603,30 +1577,30 @@ std::string ha_lineairdb::build_secondary_key_from_row(
     const uchar *row_buffer,
     const KEY &key_info)
 {
-  // read_setを一時的に全カラムに設定
+  // Temporarily set read_set to include all columns
   my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
 
-  // row_bufferとrecord[0]の差分を計算
+  // Calculate the offset between row_buffer and record[0]
   ptrdiff_t offset = row_buffer - table->record[0];
 
-  // セカンダリキーを構築
+  // Construct the secondary key
   std::string secondary_key;
   for (uint part_idx = 0; part_idx < key_info.user_defined_key_parts; part_idx++)
   {
     auto key_part = key_info.key_part[part_idx];
     Field *field = table->field[key_part.fieldnr - 1];
 
-    // Fieldのptrをrow_bufferに合わせて調整
+    // Adjust the Field pointer to match row_buffer
     field->move_field_offset(offset);
 
-    // 各キーパートをシリアライズして連結
+    // Serialize each key part and concatenate
     secondary_key += serialize_key_from_field(field);
 
-    // Fieldのptrを元に戻す
+    // Restore the Field pointer back to original position
     field->move_field_offset(-offset);
   }
 
-  // read_setを元に戻す
+  // Restore the original read_set
   tmp_restore_column_map(table->read_set, org_bitmap);
 
   return secondary_key;
@@ -1668,10 +1642,6 @@ void ha_lineairdb::store_primary_key_in_ref(const std::string &primary_key)
     std::memcpy(ref + sizeof(uint16_t), primary_key.data(), key_length);
   }
 
-  std::cout << "[LineairDB][store_ref] table=" << db_table_name << " key="
-            << primary_key << " (len=" << key_length << ") ref_length="
-            << ref_length_local << std::endl;
-
   const size_t remaining = payload_capacity - key_length;
   if (remaining > 0)
   {
@@ -1708,9 +1678,6 @@ std::string ha_lineairdb::extract_primary_key_from_ref(const uchar *pos) const
   std::string key(reinterpret_cast<const char *>(pos + sizeof(uint16_t)),
                   key_length);
 
-  std::cout << "[LineairDB][extract_ref] table=" << db_table_name << " key="
-            << key << " (len=" << key_length << ")" << std::endl;
-
   return key;
 }
 
@@ -1738,8 +1705,6 @@ std::string ha_lineairdb::generate_hidden_primary_key()
   }
   uint64_t row_id = share->next_hidden_pk.fetch_add(1, std::memory_order_relaxed);
   std::string key = serialize_hidden_primary_key(row_id);
-  std::cout << "[LineairDB][hidden_pk] table=" << db_table_name
-            << " row_id=" << row_id << " key=" << key << std::endl;
   return key;
 }
 
@@ -1837,7 +1802,6 @@ std::string ha_lineairdb::extract_key_from_mysql(const uchar *row_buffer)
   }
 
   tmp_restore_column_map(table->read_set, org_bitmap);
-  std::cout << "[LineairDB][extract_key_from_mysql] complete_key=" << complete_key << std::endl;
 
   return complete_key;
 }
@@ -2117,10 +2081,6 @@ void ha_lineairdb::set_write_buffer(uchar *buf)
     row_values << (*field)->field_name << "='" << attribute.c_ptr() << "'";
   }
   tmp_restore_column_map(table->read_set, org_bitmap);
-
-  std::cout << "[LineairDB][set_write_buffer] table=" << db_table_name
-            << " row=" << row_values.str() << " size=" << write_buffer_.size()
-            << std::endl;
 }
 
 bool ha_lineairdb::is_primary_key_exists()
@@ -2192,8 +2152,6 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar *buf,
     row_values << (*field)->field_name << "='" << mysqlFieldValue << "'";
   }
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
-  std::cout << "[LineairDB][set_fields_from_lineairdb] table=" << db_table_name
-            << " row=" << row_values.str() << std::endl;
   return 0;
 }
 

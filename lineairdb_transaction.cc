@@ -18,7 +18,6 @@ std::string LineairDBTransaction::get_selected_table_name()
 void LineairDBTransaction::choose_table(std::string db_table_name)
 {
   db_table_key = db_table_name;
-  fprintf(stderr, "[DEBUG] db_table_key = %s\n", db_table_key.c_str());
   tx->SetTable(db_table_key);
 }
 
@@ -26,8 +25,6 @@ bool LineairDBTransaction::table_is_not_chosen()
 {
   if (db_table_key.size() == 0)
   {
-    std::cout << "Database and Table is not chosen in LineairDBTransaction"
-              << std::endl;
     return true;
   }
   return false;
@@ -47,11 +44,6 @@ LineairDBTransaction::read_secondary_index(std::string index_name, std::string s
   if (table_is_not_chosen())
     return {};
   auto result = tx->ReadSecondaryIndex(index_name, secondary_key);
-  for (auto &[ptr, size] : result)
-  {
-    std::string pk = std::string(reinterpret_cast<const char *>(ptr), size);
-    std::cout << "Primary Key: " << pk << std::endl;
-  }
   return result;
 }
 
