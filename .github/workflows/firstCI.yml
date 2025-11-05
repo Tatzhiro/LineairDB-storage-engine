@@ -45,6 +45,15 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-
 
+      - name: Cache MySQL build directory
+        id: build-cache
+        uses: actions/cache@v3
+        with:
+          path: build
+          key: mysql-build-${{ runner.os }}-${{ hashFiles('third_party/mysql-server/**/CMakeLists.txt') }}
+          restore-keys: |
+            mysql-build-${{ runner.os }}-
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -74,9 +83,8 @@ jobs:
           mkdir -p third_party/mysql-server/storage/lineairdb/third_party/LineairDB/PRIVATE
           mkdir -p build
           cd build
-          rm -f CMakeCache.txt
-          rm -rf CMakeFiles/
-          cmake ../third_party/mysql-server \
+          if [ "${{ steps.build-cache.outputs.cache-hit }}" != 'true' ]; then
+            cmake ../third_party/mysql-server \
             -DCMAKE_BUILD_TYPE=Release \
             -DDOWNLOAD_BOOST=0 \
             -DWITH_BOOST="$(pwd)/../boost/boost_1_77_0" \
@@ -93,6 +101,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:-} -include cstdint -Wno-error=missing-include-dirs -Wno-error=extra-semi -Wno-extra-semi" \
             -G Ninja
+          fi
           ninja mysqld ha_lineairdb_storage_engine.so -j "$(nproc)"
 
       - name: Show ccache stats

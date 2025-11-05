@@ -45,7 +45,8 @@ def main():
     db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
     cursor=db.cursor()
     
-    sys.exit(delete(db, cursor))
+    #sys.exit(delete(db, cursor))
+
 
 
 if __name__ == "__main__":
