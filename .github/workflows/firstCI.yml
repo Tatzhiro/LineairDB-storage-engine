@@ -9,31 +9,68 @@ on:
 jobs:
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: checkout
         uses: actions/checkout@v3
         with:
+          fetch-depth: 1
           submodules: recursive
 
-      - name: Install dependencies
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: tests/pytest/requirements.txt
+
+      - name: Install system dependencies
         run: |
           sudo apt update
-          sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev libtirpc-dev
-          sudo pip3 install -r tests/pytest/requirements.txt
+          sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev libtirpc-dev ccache
+
+      - name: Cache Boost (1.77.0)
+        uses: actions/cache@v3
+        with:
+          path: |
+            boost/boost_1_77_0.tar.bz2
+            boost/boost_1_77_0
+          key: boost-1.77-${{ runner.os }}
+
+      - name: Cache ccache
+        uses: actions/cache@v3
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'third_party/mysql-server/storage/lineairdb/**', 'third_party/LineairDB/**') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/pytest/requirements.txt
 
       - name: Prepare Boost (1.77.0)
         run: |
           set -eux
           mkdir -p boost
-          curl -fsSL https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2 -o boost/boost_1_77_0.tar.bz2
+          if [ ! -f boost/boost_1_77_0.tar.bz2 ]; then
+            curl -fsSL https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2 -o boost/boost_1_77_0.tar.bz2
+          fi
           echo "fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854  boost/boost_1_77_0.tar.bz2" | sha256sum -c -
-          tar -xjf boost/boost_1_77_0.tar.bz2 -C boost
+          if [ ! -d boost/boost_1_77_0 ]; then
+            tar -xjf boost/boost_1_77_0.tar.bz2 -C boost
+          fi
+
+      - name: Configure ccache
+        run: |
+          ccache --zero-stats || true
+          ccache --max-size=2G
 
       - name: Build mysqld and plugin
         run: |
           set -eux
-          ln -s $(pwd) third_party/mysql-server/storage/lineairdb
+          ln -sfn "$(pwd)" third_party/mysql-server/storage/lineairdb
           mkdir -p third_party/mysql-server/storage/lineairdb/third_party/LineairDB/PRIVATE
           mkdir -p build
           cd build
@@ -52,9 +89,16 @@ jobs:
             -DWITHOUT_PARTITION_STORAGE_ENGINE=1 \
             -DWITH_ROUTER=OFF \
             -DWITH_UNIT_TESTS=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:-} -include cstdint -Wno-error=missing-include-dirs -Wno-error=extra-semi -Wno-extra-semi" \
             -G Ninja
-          ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
+          ninja mysqld ha_lineairdb_storage_engine.so -j "$(nproc)"
+
+      - name: Show ccache stats
+        if: always()
+        run: |
+          ccache --show-stats || true
 
       - name: Run tests against built mysqld
         run: |
