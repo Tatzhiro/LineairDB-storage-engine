@@ -25,8 +25,6 @@ bool LineairDBTransaction::table_is_not_chosen()
 {
   if (db_table_key.size() == 0)
   {
-    std::cout << "Database and Table is not chosen in LineairDBTransaction"
-              << std::endl;
     return true;
   }
   return false;
@@ -38,6 +36,27 @@ LineairDBTransaction::read(std::string key)
   if (table_is_not_chosen())
     return std::pair<const std::byte *const, const size_t>{nullptr, 0};
   return tx->Read(key);
+}
+
+std::vector<std::pair<const std::byte *const, const size_t>>
+LineairDBTransaction::read_secondary_index(std::string index_name, std::string secondary_key)
+{
+  if (table_is_not_chosen())
+    return {};
+  auto result = tx->ReadSecondaryIndex(index_name, secondary_key);
+  return result;
+}
+
+bool LineairDBTransaction::update_secondary_index(
+    std::string index_name,
+    std::string old_secondary_key,
+    std::string new_secondary_key,
+    const std::byte primary_key_buffer[],
+    const size_t primary_key_size)
+{
+  tx->UpdateSecondaryIndex(index_name, old_secondary_key, new_secondary_key,
+                           primary_key_buffer, primary_key_size);
+  return true;
 }
 
 bool LineairDBTransaction::key_prefix_is_matching(std::string key_prefix,
@@ -61,6 +80,30 @@ std::vector<std::string> LineairDBTransaction::get_all_keys()
   return keyList;
 }
 
+std::vector<std::string> LineairDBTransaction::get_matching_primary_keys_in_range(
+    std::string index_name, std::string start_key, std::string end_key)
+{
+  if (table_is_not_chosen())
+    return {};
+
+  std::vector<std::string> result;
+
+  tx->ScanSecondaryIndex(
+      index_name,
+      start_key,
+      end_key,
+      [&result](std::string_view secondary_key, const std::vector<std::string> &primary_keys)
+      {
+        for (const auto &pk : primary_keys)
+        {
+          result.push_back(pk);
+        }
+        return false;
+      });
+
+  return result;
+}
+
 std::vector<std::string> LineairDBTransaction::get_matching_keys(
     std::string first_key_part)
 {
@@ -79,12 +122,40 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys(
   return keyList;
 }
 
+std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
+    std::string start_key, std::string end_key)
+{
+  if (table_is_not_chosen())
+    return {};
+
+  std::vector<std::string> keyList;
+
+  tx->Scan("", std::nullopt, [&](auto key, auto)
+           {
+    std::string key_str = std::string(key);
+    if (key_str >= start_key && key_str <= end_key) {
+      keyList.push_back(key_str);
+    }
+    return false; });
+
+  return keyList;
+}
+
 bool LineairDBTransaction::write(std::string key, const std::string value)
 {
   if (table_is_not_chosen())
     return false;
   tx->Write(key,
             reinterpret_cast<const std::byte *>(value.c_str()), value.length());
+  return true;
+}
+
+bool LineairDBTransaction::write_secondary_index(std::string index_name, std::string secondary_key, const std::string value)
+{
+  if (table_is_not_chosen())
+    return false;
+  tx->WriteSecondaryIndex(index_name, secondary_key,
+                          reinterpret_cast<const std::byte *>(value.c_str()), value.length());
   return true;
 }
 

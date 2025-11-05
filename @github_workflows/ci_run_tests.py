@@ -25,11 +25,12 @@ def toggle_fence_and_rebuild():
     # Match tests/run_tests.py behavior
     run([
         "sed", "-i", "s/#define FENCE.*/#define FENCE true/", "ha_lineairdb.cc",
-    ])
-    # Rebuild only if Ninja files exist at repo root
-    build_ninja = os.path.join(REPO_ROOT, "build.ninja")
+    ], cwd=REPO_ROOT)
+    # Rebuild only if Ninja files exist under build directory
+    build_dir = os.path.join(REPO_ROOT, "build")
+    build_ninja = os.path.join(build_dir, "build.ninja")
     if os.path.exists(build_ninja):
-        run(["ninja"])  # uses repo-root ninja file
+        run(["ninja", "-C", build_dir, "ha_lineairdb_storage_engine.so"])  # rebuild plugin only
 
 
 # --- New: prepare datadir based on my.cnf ---

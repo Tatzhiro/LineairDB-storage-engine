@@ -94,7 +94,14 @@
 
 #include "storage/lineairdb/ha_lineairdb.hh"
 
+#include <algorithm>
 #include <iostream>
+#include <fstream>
+#include <iomanip>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <sstream>
 
 #include "my_dbug.h"
 #include "mysql/plugin.h"
@@ -108,6 +115,17 @@
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
+
+namespace
+{
+  constexpr unsigned char kKeyMarkerNotNull = 0x00;
+  constexpr unsigned char kKeyMarkerNull = 0x01;
+
+  constexpr unsigned char kKeyTypeInt = 0x10;
+  constexpr unsigned char kKeyTypeString = 0x20;
+  constexpr unsigned char kKeyTypeDatetime = 0x30;
+  constexpr unsigned char kKeyTypeOther = 0xF0;
+}
 
 static std::shared_ptr<LineairDB::Database> get_or_allocate_database(
     LineairDB::Config conf);
@@ -223,6 +241,7 @@ static std::shared_ptr<LineairDB::Database> get_or_allocate_database(
 LineairDB_share::LineairDB_share()
 {
   thr_lock_init(&lock);
+  next_hidden_pk.store(0);
   if (lineairdb_ == nullptr)
   {
     LineairDB::Config conf;
@@ -270,18 +289,32 @@ static PSI_memory_key csv_key_memory_blobroot;
 
 ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg),
+      m_ds_mrr(this),
       current_position_(0),
       blobroot(csv_key_memory_blobroot, BLOB_MEMROOT_ALLOC_SIZE) {}
 
 void ha_lineairdb::set_key_and_key_part_info(const TABLE *const table)
 {
   key_info = table->key_info;
-  primary_key_type = static_cast<ha_base_keytype>(
-      table->key_info[key_info_pk_index].key_part[0].type);
+  uint pk_index = table->s->primary_key;
 
-  key_part = table->key_info->key_part;
-  indexed_key_part = key_part[0];
-  num_key_parts = table->s->key_parts;
+  // 主キーが存在する場合のみ情報を設定
+  if (pk_index != MAX_KEY)
+  {
+    primary_key_type = static_cast<ha_base_keytype>(
+        table->key_info[pk_index].key_part[0].type);
+
+    key_part = table->key_info[pk_index].key_part;
+    indexed_key_part = key_part[0];
+    num_key_parts = table->key_info[pk_index].user_defined_key_parts;
+  }
+  else
+  {
+    // 主キーがない場合はデフォルト値を設定
+    primary_key_type = HA_KEYTYPE_END;
+    key_part = nullptr;
+    num_key_parts = 0;
+  }
 }
 
 /**
@@ -307,11 +340,20 @@ int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table *)
     return 1;
   thr_lock_data_init(&share->lock, &lock, nullptr);
 
-  ldbField.set_lineairdb_field(table_name, strlen(table_name));
-  db_table_name = ldbField.get_lineairdb_field();
+  db_table_name = std::string(table_name);
 
   if ((num_keys = table->s->keys))
     set_key_and_key_part_info(table);
+
+  if (table->s->primary_key != MAX_KEY)
+  {
+    uint pk_index = table->s->primary_key;
+    ref_length = sizeof(uint16_t) + table->key_info[pk_index].key_length;
+  }
+  else
+  {
+    ref_length = sizeof(uint16_t) + serialize_hidden_primary_key(0).size();
+  }
 
   return 0;
 }
@@ -341,12 +383,24 @@ int ha_lineairdb::change_active_index(uint keynr)
 {
   DBUG_TRACE;
   active_index = keynr;
+
+  if (table && table->s && keynr < table->s->keys)
+  {
+    current_index_name = std::string(table->key_info[keynr].name);
+  }
+  else
+  {
+    current_index_name.clear();
+  }
+
   return 0;
 }
 
 int ha_lineairdb::index_init(uint idx, bool sorted [[maybe_unused]])
 {
   DBUG_TRACE;
+  current_position_in_index_ = 0;
+  last_fetched_primary_key_.clear();
   return change_active_index(idx);
 }
 
@@ -389,15 +443,60 @@ int ha_lineairdb::write_row(uchar *buf)
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
 
+  for (uint i = 0; i < table->s->keys; i++)
+  {
+    auto key_info = table->key_info[i];
+    if (i != table->s->primary_key)
+    {
+      my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+
+      // Support composite indexes: process all key parts
+      std::string secondary_key;
+      for (uint part_idx = 0; part_idx < key_info.user_defined_key_parts; part_idx++)
+      {
+        auto key_part = key_info.key_part[part_idx];
+        Field *field = table->field[key_part.fieldnr - 1];
+
+        // Encode each key part and concatenate
+        secondary_key += serialize_key_from_field(field);
+      }
+
+      tmp_restore_column_map(table->read_set, org_bitmap);
+
+      bool is_successful = tx->write_secondary_index(key_info.name, secondary_key, key);
+      if (!is_successful)
+        return HA_ERR_LOCK_DEADLOCK;
+    }
+  }
+
   return 0;
 }
 
-int ha_lineairdb::update_row(const uchar *, uchar *buf)
+int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
 {
   DBUG_TRACE;
 
-  auto key = extract_key();
-  set_write_buffer(buf);
+  auto key = extract_key_from_mysql(old_data);
+
+  if (key.empty())
+  {
+    key = last_fetched_primary_key_;
+  }
+
+  if (key.empty())
+  {
+    key = extract_primary_key_from_ref(ref);
+  }
+
+  if (key.empty())
+  {
+    std::cerr << "[LineairDB][update_row] failed to resolve primary key" << std::endl;
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  last_fetched_primary_key_ = key;
+
+  set_write_buffer(new_data);
 
   auto tx = get_transaction(userThread);
 
@@ -411,6 +510,41 @@ int ha_lineairdb::update_row(const uchar *, uchar *buf)
   bool is_successful = tx->write(key, write_buffer_);
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
+
+  for (uint i = 0; i < table->s->keys; i++)
+  {
+    auto key_info = table->key_info[i];
+
+    // プライマリキーはスキップ
+    if (i == table->s->primary_key)
+    {
+      continue;
+    }
+
+    std::string old_secondary_key = build_secondary_key_from_row(old_data, key_info);
+    std::string new_secondary_key = build_secondary_key_from_row(new_data, key_info);
+
+    // セカンダリキーが変更されていない場合はスキップ
+    if (old_secondary_key == new_secondary_key)
+    {
+      continue;
+    }
+
+    // セカンダリインデックスを更新
+    tx->update_secondary_index(
+        key_info.name,
+        old_secondary_key,
+        new_secondary_key,
+        reinterpret_cast<const std::byte *>(key.data()),
+        key.size());
+
+    // トランザクションがabortされた場合
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(userThread, 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+  }
 
   return 0;
 }
@@ -437,15 +571,12 @@ int ha_lineairdb::delete_row(const uchar *)
   return 0;
 }
 
-int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map,
+int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,
                                  enum ha_rkey_function)
 {
   DBUG_TRACE;
 
-  auto key_prefix = convert_key_to_ldbformat(key);
-
   stats.records = 0;
-
   auto tx = get_transaction(userThread);
 
   if (tx->is_aborted())
@@ -455,10 +586,161 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map,
   }
 
   tx->choose_table(db_table_name);
-  scanned_keys_ = tx->get_matching_keys(key_prefix);
-  current_position_ = 0;
+  secondary_index_results_.clear();
+  current_position_in_index_ = 0;
 
-  return index_next(buf);
+  // Check if this is a prefix search (not all key parts are specified)
+  KEY *key_info = &table->key_info[active_index];
+  uint used_key_parts = 0;
+  for (uint i = 0; i < key_info->user_defined_key_parts; i++)
+  {
+    if ((keypart_map >> i) & 1)
+      used_key_parts++;
+    else
+      break;
+  }
+  bool is_prefix_search = (used_key_parts < key_info->user_defined_key_parts);
+
+  // ===== PRIMARY KEY処理 =====
+  if (active_index == table->s->primary_key)
+  {
+    auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
+
+    if (end_range == nullptr && !is_prefix_search)
+    {
+      // PRIMARY KEY完全一致: 直接read()を使用
+      auto result = tx->read(serialized_key);
+
+      if (result.first == nullptr || result.second == 0)
+      {
+        return HA_ERR_KEY_NOT_FOUND;
+      }
+
+      if (set_fields_from_lineairdb(buf, result.first, result.second))
+      {
+        tx->set_status_to_abort();
+        return HA_ERR_OUT_OF_MEM;
+      }
+
+      // index_next()が呼ばれる可能性があるため、結果を保存
+      secondary_index_results_.push_back(serialized_key);
+      current_position_in_index_ = 1; // 既に1件読み取り済み
+      last_fetched_primary_key_ = serialized_key;
+
+      return 0;
+    }
+    else
+    {
+      // PRIMARY KEY前方一致/範囲検索
+      std::string serialized_end_key;
+
+      if (end_range != nullptr)
+      {
+        // 明示的なend_rangeが提供されている場合
+        serialized_end_key = convert_key_to_ldbformat(end_range->key, keypart_map);
+      }
+      else
+      {
+        // プレフィックス検索: 終了キーを生成
+        serialized_end_key = build_prefix_range_end(serialized_key);
+      }
+
+      // 範囲検索用のget_matching_keys_in_range()を使用
+      secondary_index_results_ = tx->get_matching_keys_in_range(
+          serialized_key, serialized_end_key);
+
+      if (secondary_index_results_.empty())
+      {
+        return HA_ERR_KEY_NOT_FOUND;
+      }
+
+      std::string primary_key = secondary_index_results_[current_position_in_index_];
+      auto result = tx->read(primary_key);
+
+      if (result.first == nullptr || result.second == 0)
+      {
+        return HA_ERR_KEY_NOT_FOUND;
+      }
+
+      if (set_fields_from_lineairdb(buf, result.first, result.second))
+      {
+        tx->set_status_to_abort();
+        return HA_ERR_OUT_OF_MEM;
+      }
+
+      current_position_in_index_++;
+      last_fetched_primary_key_ = primary_key;
+      return 0;
+    }
+  }
+
+  if (end_range == nullptr && !is_prefix_search)
+  {
+    // Exact match search: all key parts are specified
+    auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
+    auto index_results = tx->read_secondary_index(current_index_name, serialized_key);
+
+    for (auto &[ptr, size] : index_results)
+    {
+      std::string pk = std::string(reinterpret_cast<const char *>(ptr), size);
+      secondary_index_results_.push_back(pk);
+    }
+
+    if (secondary_index_results_.empty())
+    {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    std::string primary_key = secondary_index_results_[current_position_in_index_];
+    auto result = tx->read(primary_key);
+
+    if (set_fields_from_lineairdb(buf, result.first, result.second))
+    {
+      tx->set_status_to_abort();
+      return HA_ERR_OUT_OF_MEM;
+    }
+    current_position_in_index_++;
+    last_fetched_primary_key_ = primary_key;
+    return 0;
+  }
+  else
+  {
+    // Range search (including prefix search)
+    auto serialized_start_key = convert_key_to_ldbformat(key, keypart_map);
+    std::string serialized_end_key;
+
+    if (end_range != nullptr)
+    {
+      // Explicit end range provided
+      serialized_end_key = convert_key_to_ldbformat(end_range->key, keypart_map);
+    }
+    else
+    {
+      // Prefix search: generate end key by appending maximum values
+      // This will match all keys that start with serialized_start_key
+      serialized_end_key = build_prefix_range_end(serialized_start_key);
+    }
+
+    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+        current_index_name, serialized_start_key, serialized_end_key);
+
+    if (secondary_index_results_.empty())
+    {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    std::string primary_key = secondary_index_results_[current_position_in_index_];
+    auto result = tx->read(primary_key);
+
+    if (set_fields_from_lineairdb(buf, result.first, result.second))
+    {
+      tx->set_status_to_abort();
+      return HA_ERR_OUT_OF_MEM;
+    }
+    current_position_in_index_++;
+    last_fetched_primary_key_ = primary_key;
+    return 0;
+  }
 }
 
 /**
@@ -469,7 +751,63 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map,
 int ha_lineairdb::index_next(uchar *buf)
 {
   DBUG_TRACE;
-  return rnd_next(buf);
+  if (secondary_index_results_.size() == 0)
+  {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  if (current_position_in_index_ >= secondary_index_results_.size())
+  {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  auto tx = get_transaction(userThread);
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(userThread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+  std::string primary_key = secondary_index_results_[current_position_in_index_];
+  auto result = tx->read(primary_key);
+  if (set_fields_from_lineairdb(buf, result.first, result.second))
+  {
+    tx->set_status_to_abort();
+    return HA_ERR_OUT_OF_MEM;
+  }
+  current_position_in_index_++;
+  last_fetched_primary_key_ = primary_key;
+  return 0;
+}
+
+int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
+{
+  DBUG_TRACE;
+  if (secondary_index_results_.size() == 0)
+  {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  if (current_position_in_index_ >= secondary_index_results_.size())
+  {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  auto tx = get_transaction(userThread);
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(userThread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+  std::string primary_key = secondary_index_results_[current_position_in_index_];
+  auto result = tx->read(primary_key);
+  if (set_fields_from_lineairdb(buf, result.first, result.second))
+  {
+    tx->set_status_to_abort();
+    return HA_ERR_OUT_OF_MEM;
+  }
+  current_position_in_index_++;
+  last_fetched_primary_key_ = primary_key;
+  return 0;
 }
 
 /**
@@ -495,12 +833,19 @@ int ha_lineairdb::index_prev(uchar *)
   @see
   opt_range.cc, opt_sum.cc, sql_handler.cc and sql_select.cc
 */
-int ha_lineairdb::index_first(uchar *)
+int ha_lineairdb::index_first(uchar *buf)
 {
-  int rc;
   DBUG_TRACE;
-  rc = HA_ERR_WRONG_COMMAND;
-  return rc;
+  int error = index_read(buf, nullptr, 0, HA_READ_AFTER_KEY);
+
+  /* MySQL does not seem to allow this to return HA_ERR_KEY_NOT_FOUND */
+
+  if (error == HA_ERR_KEY_NOT_FOUND)
+  {
+    error = HA_ERR_END_OF_FILE;
+  }
+
+  return error;
 }
 
 /**
@@ -539,8 +884,17 @@ int ha_lineairdb::rnd_init(bool)
 {
   DBUG_ENTER("ha_lineairdb::rnd_init");
   scanned_keys_.clear();
+  last_fetched_primary_key_.clear();
   current_position_ = 0;
   stats.records = 0;
+  if (table->s->primary_key != MAX_KEY)
+  {
+    change_active_index(table->s->primary_key);
+  }
+  else
+  {
+    active_index = MAX_KEY;
+  }
 
   auto tx = get_transaction(userThread);
 
@@ -585,17 +939,14 @@ int ha_lineairdb::rnd_next(uchar *buf)
   DBUG_ENTER("ha_lineairdb::rnd_next");
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
-  if (scanned_keys_.size() == 0)
+  if (current_position_ >= scanned_keys_.size())
+  {
     DBUG_RETURN(HA_ERR_END_OF_FILE);
-
-read_from_lineairdb:
-  if (current_position_ == scanned_keys_.size())
-    DBUG_RETURN(HA_ERR_END_OF_FILE);
+  }
 
   auto &key = scanned_keys_[current_position_];
 
   auto tx = get_transaction(userThread);
-
   if (tx->is_aborted())
   {
     thd_mark_transaction_to_rollback(userThread, 1);
@@ -604,19 +955,21 @@ read_from_lineairdb:
 
   assert(tx->get_selected_table_name() == db_table_name);
   auto read_buffer = tx->read(key);
-
+  int error = 0;
   if (read_buffer.first == nullptr)
   {
-    current_position_++;
-    goto read_from_lineairdb;
+    error = HA_ERR_KEY_NOT_FOUND;
   }
-  if (set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second))
+  else
   {
-    tx->set_status_to_abort();
-    return HA_ERR_OUT_OF_MEM;
+    error = set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second);
+    if (error == 0)
+    {
+      last_fetched_primary_key_ = key;
+    }
   }
   current_position_++;
-  DBUG_RETURN(0);
+  DBUG_RETURN(error);
 }
 
 /**
@@ -640,7 +993,17 @@ read_from_lineairdb:
   @see
   filesort.cc, sql_select.cc, sql_delete.cc and sql_update.cc
 */
-void ha_lineairdb::position(const uchar *) { DBUG_TRACE; }
+void ha_lineairdb::position(const uchar *)
+{
+  DBUG_TRACE;
+
+  if (last_fetched_primary_key_.empty())
+  {
+    return;
+  }
+
+  store_primary_key_in_ref(last_fetched_primary_key_);
+}
 
 /**
   @brief
@@ -656,12 +1019,42 @@ void ha_lineairdb::position(const uchar *) { DBUG_TRACE; }
   @see
   filesort.cc, records.cc, sql_insert.cc, sql_select.cc and sql_update.cc
 */
-int ha_lineairdb::rnd_pos(uchar *, uchar *)
+int ha_lineairdb::rnd_pos(uchar *buf, uchar *pos)
 {
-  int rc;
   DBUG_TRACE;
-  rc = HA_ERR_WRONG_COMMAND;
-  return rc;
+
+  std::string primary_key = extract_primary_key_from_ref(pos);
+
+  if (primary_key.empty())
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  auto tx = get_transaction(userThread);
+
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(userThread, 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  tx->choose_table(db_table_name);
+  auto result = tx->read(primary_key);
+
+  if (result.first == nullptr || result.second == 0)
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  if (set_fields_from_lineairdb(buf, result.first, result.second))
+  {
+    tx->set_status_to_abort();
+    return HA_ERR_OUT_OF_MEM;
+  }
+
+  last_fetched_primary_key_ = primary_key;
+
+  return 0;
 }
 
 /**
@@ -975,8 +1368,7 @@ int ha_lineairdb::create(const char *table_name, TABLE *table, HA_CREATE_INFO *,
                          dd::Table *)
 {
   DBUG_TRACE;
-  ldbField.set_lineairdb_field(table_name, strlen(table_name));
-  db_table_name = ldbField.get_lineairdb_field();
+  db_table_name = std::string(table_name);
   auto current_db = get_db();
   if (!current_db->CreateTable(db_table_name))
   {
@@ -991,12 +1383,9 @@ int ha_lineairdb::create(const char *table_name, TABLE *table, HA_CREATE_INFO *,
     {
       // Now we don't assume composite index
       // TODO: need to convert mysql type to lineairdb type
-      auto data_type = key_info.key_part[0].field->type();
-      auto lineairdb_data_type = convert_mysql_type_to_lineairdb(data_type);
       bool is_successful = current_db->CreateSecondaryIndex(db_table_name,
                                                             std::string(key_info.name),
-                                                            index_type,
-                                                            static_cast<int>(lineairdb_data_type));
+                                                            index_type);
       if (!is_successful)
       {
         return HA_ERR_TABLE_EXIST;
@@ -1004,6 +1393,357 @@ int ha_lineairdb::create(const char *table_name, TABLE *table, HA_CREATE_INFO *,
     }
   }
   return 0;
+}
+
+ha_rows ha_lineairdb::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
+                                                  void *seq_init_param, uint n_ranges,
+                                                  uint *bufsz, uint *flags,
+                                                  Cost_estimate *cost)
+{
+  /* See comments in ha_myisam::multi_range_read_info_const */
+  m_ds_mrr.init(table);
+
+  return (m_ds_mrr.dsmrr_info_const(keyno, seq, seq_init_param, n_ranges, bufsz,
+                                    flags, cost));
+}
+
+int ha_lineairdb::multi_range_read_init(RANGE_SEQ_IF *seq, void *seq_init_param,
+                                        uint n_ranges, uint mode,
+                                        HANDLER_BUFFER *buf)
+{
+  m_ds_mrr.init(table);
+  return m_ds_mrr.dsmrr_init(seq, seq_init_param, n_ranges, mode, buf);
+}
+
+int ha_lineairdb::multi_range_read_next(char **range_info)
+{
+  return (m_ds_mrr.dsmrr_next(range_info));
+}
+
+int ha_lineairdb::read_range_first(const key_range *start_key, const key_range *end_key,
+                                   bool eq_range_arg, bool sorted)
+{
+  return handler::read_range_first(start_key, end_key, eq_range_arg, sorted);
+}
+
+unsigned char ha_lineairdb::key_part_type_tag(LineairDBFieldType type)
+{
+  switch (type)
+  {
+  case LineairDBFieldType::LINEAIRDB_INT:
+    return kKeyTypeInt;
+  case LineairDBFieldType::LINEAIRDB_STRING:
+    return kKeyTypeString;
+  case LineairDBFieldType::LINEAIRDB_DATETIME:
+    return kKeyTypeDatetime;
+  case LineairDBFieldType::LINEAIRDB_OTHER:
+  default:
+    return kKeyTypeOther;
+  }
+}
+
+void ha_lineairdb::append_key_part_encoding(std::string &out, bool is_null,
+                                            LineairDBFieldType type,
+                                            const std::string &payload)
+{
+  constexpr size_t kLengthFieldSize = 2;
+  const size_t max_payload_length = std::numeric_limits<uint16_t>::max();
+  size_t copy_length = std::min(payload.size(), max_payload_length);
+
+  if (payload.size() > max_payload_length)
+  {
+    std::cerr << "[LineairDB][encode_key_part] payload truncated: length="
+              << payload.size() << std::endl;
+  }
+
+  out.reserve(out.size() + 1 + 1 + kLengthFieldSize + copy_length);
+  out.push_back(static_cast<char>(is_null ? kKeyMarkerNull : kKeyMarkerNotNull));
+  out.push_back(static_cast<char>(key_part_type_tag(type)));
+
+  uint16_t length_field = static_cast<uint16_t>(copy_length);
+  out.push_back(static_cast<char>((length_field >> 8) & 0xFF));
+  out.push_back(static_cast<char>(length_field & 0xFF));
+
+  if (copy_length > 0)
+  {
+    out.append(payload.data(), copy_length);
+  }
+}
+
+std::string ha_lineairdb::build_prefix_range_end(const std::string &prefix)
+{
+  std::string end = prefix;
+  end.push_back(static_cast<char>(0xFF));
+  return end;
+}
+
+/**
+ * @brief Serialize a single field value to LineairDB key format
+ *
+ * This helper function converts a MySQL Field to LineairDB's sortable key format
+ * based on its type. This eliminates code duplication across different key handling
+ * functions.
+ *
+ * @param field MySQL Field object
+ * @return Serialized key string
+ */
+std::string ha_lineairdb::serialize_key_from_field(Field *field)
+{
+  const bool is_null = field->is_null();
+  enum_field_types mysql_type = field->type();
+  LineairDBFieldType ldb_type = convert_mysql_type_to_lineairdb(mysql_type);
+
+  std::string payload;
+
+  if (!is_null)
+  {
+    switch (ldb_type)
+    {
+    case LineairDBFieldType::LINEAIRDB_INT:
+    {
+      int64_t value = field->val_int();
+      size_t field_len = field->pack_length();
+
+      uchar buf[8] = {0};
+      if (field_len == 1)
+      {
+        buf[0] = static_cast<uchar>(value & 0xFF);
+      }
+      else if (field_len == 2)
+      {
+        buf[0] = static_cast<uchar>(value & 0xFF);
+        buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
+      }
+      else if (field_len == 4)
+      {
+        buf[0] = static_cast<uchar>(value & 0xFF);
+        buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
+        buf[2] = static_cast<uchar>((value >> 16) & 0xFF);
+        buf[3] = static_cast<uchar>((value >> 24) & 0xFF);
+      }
+      else
+      {
+        buf[0] = static_cast<uchar>(value & 0xFF);
+        buf[1] = static_cast<uchar>((value >> 8) & 0xFF);
+        buf[2] = static_cast<uchar>((value >> 16) & 0xFF);
+        buf[3] = static_cast<uchar>((value >> 24) & 0xFF);
+        buf[4] = static_cast<uchar>((value >> 32) & 0xFF);
+        buf[5] = static_cast<uchar>((value >> 40) & 0xFF);
+        buf[6] = static_cast<uchar>((value >> 48) & 0xFF);
+        buf[7] = static_cast<uchar>((value >> 56) & 0xFF);
+        field_len = 8;
+      }
+
+      payload = encode_int_key(buf, field_len);
+      break;
+    }
+
+    case LineairDBFieldType::LINEAIRDB_DATETIME:
+    {
+      size_t field_len = field->pack_length();
+      std::string raw(field_len, '\0');
+      field->get_key_image(reinterpret_cast<uchar *>(raw.data()), field_len,
+                           Field::itRAW);
+      payload = encode_datetime_key(reinterpret_cast<const uchar *>(raw.data()),
+                                    field_len);
+      break;
+    }
+
+    case LineairDBFieldType::LINEAIRDB_STRING:
+    {
+      String buffer;
+      field->val_str(&buffer, &buffer);
+      payload.assign(buffer.c_ptr(), buffer.length());
+      break;
+    }
+
+    case LineairDBFieldType::LINEAIRDB_OTHER:
+    default:
+    {
+      String buffer;
+      field->val_str(&buffer, &buffer);
+      payload.assign(buffer.c_ptr(), buffer.length());
+      break;
+    }
+    }
+  }
+
+  std::string encoded;
+  append_key_part_encoding(encoded, is_null, ldb_type, payload);
+  return encoded;
+}
+
+std::string ha_lineairdb::build_secondary_key_from_row(
+    const uchar *row_buffer,
+    const KEY &key_info)
+{
+  // Temporarily set read_set to include all columns
+  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+
+  // Calculate the offset between row_buffer and record[0]
+  ptrdiff_t offset = row_buffer - table->record[0];
+
+  // Construct the secondary key
+  std::string secondary_key;
+  for (uint part_idx = 0; part_idx < key_info.user_defined_key_parts; part_idx++)
+  {
+    auto key_part = key_info.key_part[part_idx];
+    Field *field = table->field[key_part.fieldnr - 1];
+
+    // Adjust the Field pointer to match row_buffer
+    field->move_field_offset(offset);
+
+    // Serialize each key part and concatenate
+    secondary_key += serialize_key_from_field(field);
+
+    // Restore the Field pointer back to original position
+    field->move_field_offset(-offset);
+  }
+
+  // Restore the original read_set
+  tmp_restore_column_map(table->read_set, org_bitmap);
+
+  return secondary_key;
+}
+
+void ha_lineairdb::store_primary_key_in_ref(const std::string &primary_key)
+{
+  if (table == nullptr || table->s == nullptr || ref == nullptr)
+  {
+    return;
+  }
+
+  const size_t ref_length_local = ref_length;
+  if (ref_length_local < sizeof(uint16_t))
+  {
+    return;
+  }
+
+  if (primary_key.size() > std::numeric_limits<uint16_t>::max())
+  {
+    std::cerr << "[LineairDB][position] primary key length exceeds uint16_t: "
+              << primary_key.size() << std::endl;
+    return;
+  }
+
+  const size_t payload_capacity = ref_length_local - sizeof(uint16_t);
+  if (primary_key.size() > payload_capacity)
+  {
+    std::cerr << "[LineairDB][position] primary key length exceeds ref capacity: "
+              << primary_key.size() << " > " << payload_capacity << std::endl;
+    return;
+  }
+
+  const uint16_t key_length = static_cast<uint16_t>(primary_key.size());
+  std::memcpy(ref, &key_length, sizeof(uint16_t));
+
+  if (key_length > 0)
+  {
+    std::memcpy(ref + sizeof(uint16_t), primary_key.data(), key_length);
+  }
+
+  const size_t remaining = payload_capacity - key_length;
+  if (remaining > 0)
+  {
+    std::memset(ref + sizeof(uint16_t) + key_length, 0, remaining);
+  }
+}
+
+std::string ha_lineairdb::extract_primary_key_from_ref(const uchar *pos) const
+{
+  if (pos == nullptr || table == nullptr || table->s == nullptr)
+  {
+    return {};
+  }
+
+  const size_t ref_length_local = ref_length;
+  if (ref_length_local < sizeof(uint16_t))
+  {
+    return {};
+  }
+
+  uint16_t key_length = 0;
+  std::memcpy(&key_length, pos, sizeof(uint16_t));
+
+  if (key_length == 0)
+  {
+    return {};
+  }
+
+  if (sizeof(uint16_t) + key_length > ref_length_local)
+  {
+    return {};
+  }
+
+  std::string key(reinterpret_cast<const char *>(pos + sizeof(uint16_t)),
+                  key_length);
+
+  return key;
+}
+
+bool ha_lineairdb::uses_hidden_primary_key() const
+{
+  if (table == nullptr || table->s == nullptr)
+  {
+    return false;
+  }
+  return table->s->primary_key == MAX_KEY;
+}
+
+std::string ha_lineairdb::serialize_hidden_primary_key(uint64_t row_id) const
+{
+  std::ostringstream oss;
+  oss << std::hex << std::setw(16) << std::setfill('0') << row_id;
+  return oss.str();
+}
+
+std::string ha_lineairdb::generate_hidden_primary_key()
+{
+  if (share == nullptr)
+  {
+    share = get_share();
+  }
+  uint64_t row_id = share->next_hidden_pk.fetch_add(1, std::memory_order_relaxed);
+  std::string key = serialize_hidden_primary_key(row_id);
+  return key;
+}
+
+std::string ha_lineairdb::format_row_debug(const uchar *row_buffer) const
+{
+  if (row_buffer == nullptr || table == nullptr)
+  {
+    return "{}";
+  }
+
+  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+  ptrdiff_t offset = row_buffer - table->record[0];
+
+  std::ostringstream row_values;
+  row_values << "{";
+  bool first = true;
+
+  char attribute_buffer[1024];
+  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
+
+  for (Field **field = table->field; *field; field++)
+  {
+    (*field)->move_field_offset(offset);
+    attribute.length(0);
+    (*field)->val_str(&attribute, &attribute);
+    (*field)->move_field_offset(-offset);
+
+    if (!first)
+    {
+      row_values << ", ";
+    }
+    first = false;
+    row_values << (*field)->field_name << "='" << attribute.c_ptr() << "'";
+  }
+
+  tmp_restore_column_map(table->read_set, org_bitmap);
+
+  row_values << "}";
+  return row_values.str();
 }
 
 std::string ha_lineairdb::extract_key()
@@ -1024,15 +1764,43 @@ std::string ha_lineairdb::get_key_from_mysql()
 
   my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
   assert((*(table->field + indexed_key_part.fieldnr - 1))->key_start.is_set(0));
+
   for (size_t i = 0; i < num_key_parts; i++)
   {
     auto field_index = key_part[i].fieldnr - 1;
     auto key_part_field = table->field[field_index];
-    String b;
-    (key_part_field)->val_str(&b, &b);
-    ldbField.set_lineairdb_field(b.c_ptr(), b.length());
-    complete_key += ldbField.get_lineairdb_field();
+
+    // Convert key part using the helper function
+    complete_key += serialize_key_from_field(key_part_field);
   }
+
+  tmp_restore_column_map(table->read_set, org_bitmap);
+
+  return complete_key;
+}
+
+std::string ha_lineairdb::extract_key_from_mysql(const uchar *row_buffer)
+{
+  std::string complete_key;
+
+  /*   if (!is_primary_key_exists())
+    {
+      return complete_key;
+    } */
+
+  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+  ptrdiff_t offset = row_buffer - table->record[0];
+
+  for (size_t i = 0; i < num_key_parts; ++i)
+  {
+    auto field_index = key_part[i].fieldnr - 1;
+    Field *field = table->field[field_index];
+
+    field->move_field_offset(offset);
+    complete_key += serialize_key_from_field(field);
+    field->move_field_offset(-offset);
+  }
+
   tmp_restore_column_map(table->read_set, org_bitmap);
 
   return complete_key;
@@ -1040,43 +1808,229 @@ std::string ha_lineairdb::get_key_from_mysql()
 
 std::string ha_lineairdb::autogenerate_key()
 {
-  /**
-   * @WANTFIX: This function relies on a class member `auto_generated_keys_`.
-   * `auto_generated_keys_` is not recovered when the handler is constructed.
-   * It has to be a recoverable data.
-   */
-  std::cout << "ha_lineairdb::autogenerate_key NEEDS FIX" << std::endl;
-  std::string generated_key;
-  auto inserted_count = auto_generated_keys_[db_table_name]++;
-  std::string &&s = std::to_string(inserted_count);
-  ldbField.set_lineairdb_field(s.c_str(), s.size());
-  generated_key = ldbField.get_lineairdb_field();
-  return generated_key;
+  return generate_hidden_primary_key();
 }
 
-std::string ha_lineairdb::convert_key_to_ldbformat(const uchar *key)
+/**
+ * @brief Encode INT key from MySQL format to LineairDB sortable format
+ *
+ * Converts little-endian integer to big-endian with sign bit flipped.
+ * This ensures correct lexicographic ordering: negative < 0 < positive
+ *
+ * @param data MySQL key data (little-endian)
+ * @param len Key length (1, 2, 4, or 8 bytes)
+ * @return Big-endian binary string with sign bit flipped
+ */
+std::string ha_lineairdb::encode_int_key(const uchar *data, size_t len)
 {
-  std::string current_key;
-  if (is_primary_key_type_int())
+  uint64_t value = 0;
+
+  // Read little-endian integer (支持1/2/4/8字节)
+  if (len == 1)
   {
-    /**
-     * @WANTFIX: need to use appropriate type for numeric primary key
-     * Currently, primary_key can only handle signed numeric keys up to 8 bytes
-     * Appropriate types must be selected for unsigned numbers.
-     */
-    size_t key_length = indexed_key_part.length;
-    long primary_key = ldbField.convert_bytes_to_numeric(key, key_length);
-    std::string &&intKey = std::to_string(primary_key);
-    ldbField.set_lineairdb_field(intKey.c_str(), intKey.size());
-    current_key += ldbField.get_lineairdb_field();
+    value = static_cast<uint8_t>(data[0]);
+  }
+  else if (len == 2)
+  {
+    value = static_cast<uint16_t>(data[0]) |
+            (static_cast<uint16_t>(data[1]) << 8);
+  }
+  else if (len == 4)
+  {
+    value = static_cast<uint32_t>(data[0]) |
+            (static_cast<uint32_t>(data[1]) << 8) |
+            (static_cast<uint32_t>(data[2]) << 16) |
+            (static_cast<uint32_t>(data[3]) << 24);
+  }
+  else if (len == 8)
+  {
+    value = static_cast<uint64_t>(data[0]) |
+            (static_cast<uint64_t>(data[1]) << 8) |
+            (static_cast<uint64_t>(data[2]) << 16) |
+            (static_cast<uint64_t>(data[3]) << 24) |
+            (static_cast<uint64_t>(data[4]) << 32) |
+            (static_cast<uint64_t>(data[5]) << 40) |
+            (static_cast<uint64_t>(data[6]) << 48) |
+            (static_cast<uint64_t>(data[7]) << 56);
   }
   else
   {
-    auto pk_bytes = ldbField.convert_bytes_to_numeric(key, 2);
-    ldbField.set_lineairdb_field(&key[2], pk_bytes);
-    current_key += ldbField.get_lineairdb_field();
+    // Unsupported length
+    return std::string();
   }
-  return current_key;
+
+  // Flip sign bit for correct sorting
+  // This makes: negative numbers < 0 < positive numbers
+  if (len == 1)
+  {
+    value ^= 0x80ULL;
+  }
+  else if (len == 2)
+  {
+    value ^= 0x8000ULL;
+  }
+  else if (len == 4)
+  {
+    value ^= 0x80000000ULL;
+  }
+  else if (len == 8)
+  {
+    value ^= 0x8000000000000000ULL;
+  }
+
+  // Convert to big-endian
+  char buf[8];
+  size_t output_len = len;
+  for (size_t i = 0; i < output_len; i++)
+  {
+    buf[i] = static_cast<char>((value >> ((output_len - 1 - i) * 8)) & 0xFF);
+  }
+
+  return std::string(buf, output_len);
+}
+
+/**
+ * @brief Encode DATETIME key from MySQL format to LineairDB format
+ *
+ * MySQL DATETIME is already stored in a sortable binary format,
+ * so we just copy it as-is.
+ *
+ * @param data MySQL DATETIME binary data
+ * @param len Key length (typically 5 or 8 bytes)
+ * @return Binary string (unchanged)
+ */
+std::string ha_lineairdb::encode_datetime_key(const uchar *data, size_t len)
+{
+  // MySQL DATETIME2 is already in sortable format, just copy it
+  return std::string(reinterpret_cast<const char *>(data), len);
+}
+
+/**
+ * @brief Encode VARCHAR key from MySQL format to LineairDB format
+ *
+ * MySQL stores VARCHAR keys with a 2-byte length prefix (little-endian).
+ * We extract the actual string data without padding.
+ *
+ * @param data MySQL VARCHAR key data (length prefix + string + padding)
+ * @param len Total key length
+ * @return Actual string data without prefix or padding
+ */
+std::string ha_lineairdb::encode_string_key(const uchar *data, size_t len)
+{
+  if (len < 2)
+    return std::string();
+
+  // First 2 bytes are length (little-endian)
+  uint16_t str_len = static_cast<uint16_t>(data[0]) |
+                     (static_cast<uint16_t>(data[1]) << 8);
+
+  if (str_len == 0 || len < 2 + str_len)
+  {
+    // Invalid or empty string
+    return std::string();
+  }
+
+  // Return actual string data (skip 2-byte prefix, exclude padding)
+  return std::string(reinterpret_cast<const char *>(data + 2), str_len);
+}
+
+/**
+ * @brief Convert MySQL binary composite key format to LineairDB sortable key format
+ *
+ * This function handles composite keys by processing each key part sequentially:
+ * - Reads key_part_map to determine which parts are used
+ * - Converts each part to sortable format based on its type
+ * - Concatenates all parts into a single sortable string
+ *
+ * Key formats by type:
+ * - INT: Little-endian to big-endian + sign bit flip (for correct sorting)
+ * - DATETIME: Pass through as-is (already sortable)
+ * - STRING (VARCHAR): Extract actual data (remove length prefix and padding)
+ *
+ * @param key MySQL binary key data (concatenated byte array)
+ * @param keypart_map Bitmap indicating which key parts are used
+ * @return LineairDB formatted key string (concatenated sortable format)
+ */
+std::string ha_lineairdb::convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map)
+{
+  KEY *key_info = &table->key_info[active_index];
+  std::string result;
+  const uchar *key_ptr = key;
+
+  // Process each key part sequentially
+  for (uint i = 0; i < key_info->user_defined_key_parts; i++)
+  {
+    // Check if this key part is used in the query
+    if (!((keypart_map >> i) & 1))
+    {
+      break; // Remaining parts are not used (prefix scan)
+    }
+
+    KEY_PART_INFO *kp = &key_info->key_part[i];
+    Field *field = kp->field;
+    bool is_null = false;
+    if (kp->null_bit)
+    {
+      is_null = (*key_ptr != 0);
+      key_ptr++; // Skip NULL flag byte
+
+      if (is_null)
+      {
+        key_ptr += (kp->store_length - 1);
+        append_key_part_encoding(result, true,
+                                 convert_mysql_type_to_lineairdb(field->type()),
+                                 std::string());
+        continue;
+      }
+    }
+
+    uint data_len = kp->length;
+    const uchar *data_ptr = key_ptr;
+
+    if (kp->key_part_flag & HA_VAR_LENGTH_PART)
+    {
+      data_len = uint2korr(data_ptr);
+      data_ptr += 2; // Skip length prefix
+      key_ptr = data_ptr;
+    }
+
+    enum_field_types mysql_type = field->type();
+    LineairDBFieldType ldb_type = convert_mysql_type_to_lineairdb(mysql_type);
+
+    std::string payload;
+    switch (ldb_type)
+    {
+    case LineairDBFieldType::LINEAIRDB_INT:
+      payload = encode_int_key(data_ptr, data_len);
+      break;
+
+    case LineairDBFieldType::LINEAIRDB_DATETIME:
+      payload = encode_datetime_key(data_ptr, data_len);
+      break;
+
+    case LineairDBFieldType::LINEAIRDB_STRING:
+      payload.assign(reinterpret_cast<const char *>(data_ptr), data_len);
+      break;
+
+    case LineairDBFieldType::LINEAIRDB_OTHER:
+    default:
+      payload.assign(reinterpret_cast<const char *>(data_ptr), data_len);
+      break;
+    }
+
+    append_key_part_encoding(result, false, ldb_type, payload);
+
+    if (kp->key_part_flag & HA_VAR_LENGTH_PART)
+    {
+      key_ptr += kp->length;
+    }
+    else
+    {
+      key_ptr += kp->length;
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -1110,16 +2064,29 @@ void ha_lineairdb::set_write_buffer(uchar *buf)
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
   my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+  std::ostringstream row_values;
+  row_values << "{";
+  bool first = true;
   for (Field **field = table->field; *field; field++)
   {
     (*field)->val_str(&attribute, &attribute);
     ldbField.set_lineairdb_field(attribute.c_ptr(), attribute.length());
     write_buffer_ += ldbField.get_lineairdb_field();
+
+    if (!first)
+    {
+      row_values << ", ";
+    }
+    first = false;
+    row_values << (*field)->field_name << "='" << attribute.c_ptr() << "'";
   }
   tmp_restore_column_map(table->read_set, org_bitmap);
 }
 
-bool ha_lineairdb::is_primary_key_exists() { return (0 < table->s->keys); }
+bool ha_lineairdb::is_primary_key_exists()
+{
+  return table->s->primary_key != MAX_KEY;
+}
 
 bool ha_lineairdb::store_blob_to_field(Field **field)
 {
@@ -1166,6 +2133,9 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar *buf,
    * store each column value to corresponding field
    */
   size_t columnIndex = 0;
+  std::ostringstream row_values;
+  row_values << "{";
+  bool first = true;
   for (Field **field = table->field; *field; field++)
   {
     const auto mysqlFieldValue = ldbField.get_column_of_row(columnIndex++);
@@ -1173,6 +2143,13 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar *buf,
                     &my_charset_bin, CHECK_FIELD_WARN);
     if (store_blob_to_field(field))
       return HA_ERR_OUT_OF_MEM;
+
+    if (!first)
+    {
+      row_values << ", ";
+    }
+    first = false;
+    row_values << (*field)->field_name << "='" << mysqlFieldValue << "'";
   }
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
   return 0;
