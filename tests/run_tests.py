@@ -33,11 +33,15 @@ def main():
         test_files.append(os.path.join("tests/pytest", test))
       elif os.path.exists(os.path.join("tests/pytest", f"{test}.py")):
         test_files.append(os.path.join("tests/pytest", f"{test}.py"))
+      elif os.path.exists(os.path.join("tests/pytest/tpc-c", test)):
+        test_files.append(os.path.join("tests/pytest/tpc-c", test))
+      elif os.path.exists(os.path.join("tests/pytest/tpc-c", f"{test}.py")):
+        test_files.append(os.path.join("tests/pytest/tpc-c", f"{test}.py"))
       else:
         print(f"Warning: Test file not found: {test}")
   else:
     # 引数が指定されていない場合は全てのテストを実行
-    test_files = glob.glob(os.path.join("tests/pytest", "*.py"))
+    test_files = glob.glob(os.path.join("tests/pytest", "**", "*.py"), recursive=True)
   
   if not test_files:
     print("Error: No test files found")
