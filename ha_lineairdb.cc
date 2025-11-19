@@ -414,7 +414,7 @@ int ha_lineairdb::index_end()
 int ha_lineairdb::index_read(uchar *buf, const uchar *key, uint key_len, enum ha_rkey_function find_flag)
 {
   DBUG_TRACE;
-  return 0;
+  return index_read_map(buf, key, HA_WHOLE_KEY, find_flag);
 }
 
 /**
@@ -552,11 +552,6 @@ int ha_lineairdb::delete_row(const uchar *buf)
   if (key.empty())
   {
     key = last_fetched_primary_key_;
-  }
-
-  if (key.empty())
-  {
-    key = extract_primary_key_from_ref(ref);
   }
 
   if (key.empty())
