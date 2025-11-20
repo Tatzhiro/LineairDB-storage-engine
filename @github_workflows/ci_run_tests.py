@@ -59,9 +59,14 @@ def parse_my_cnf(cnf_path: str) -> Tuple[str, str, str]:
     if basedir and not os.path.isabs(basedir):
         basedir = os.path.abspath(os.path.join(REPO_ROOT, basedir))
     if datadir and not os.path.isabs(datadir):
-        datadir = os.path.abspath(os.path.join(basedir or REPO_ROOT, datadir))
+        # In my.cnf for this repo, datadir is usually relative to REPO_ROOT (e.g. ./build/data_workflows)
+        # Avoid using basedir as prefix because it might duplicate paths (build/build/...)
+        datadir = os.path.abspath(os.path.join(REPO_ROOT, datadir))
     if plugin_dir and not os.path.isabs(plugin_dir):
+        # plugin_dir is often inside basedir, but checking REPO_ROOT first is safer for our layout
         plugin_dir = os.path.abspath(os.path.join(basedir or REPO_ROOT, plugin_dir))
+    
+    print(f"Parsed my.cnf: basedir={basedir}, datadir={datadir}, plugin_dir={plugin_dir}")
     return basedir, datadir, plugin_dir
 
 
