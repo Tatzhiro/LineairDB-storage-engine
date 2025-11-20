@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 import subprocess
 import sys
 import time
@@ -66,10 +67,9 @@ def parse_my_cnf(cnf_path: str) -> Tuple[str, str, str]:
 
 def ensure_and_initialize_datadir():
     basedir, datadir, plugin_dir = parse_my_cnf(MY_CNF)
-    if datadir:
-        os.makedirs(datadir, exist_ok=True)
     if plugin_dir:
         os.makedirs(plugin_dir, exist_ok=True)
+
     # Skip initialize if it looks already initialized (presence of mysql system db dir)
     needs_init = True
     try:
@@ -77,7 +77,15 @@ def ensure_and_initialize_datadir():
             needs_init = False
     except Exception:
         needs_init = True
+
     if needs_init:
+        # If the directory exists but we need init, it might contain garbage or failed init files.
+        # mysqld --initialize requires an empty directory.
+        if datadir and os.path.exists(datadir):
+            shutil.rmtree(datadir)
+        if datadir:
+            os.makedirs(datadir, exist_ok=True)
+
         run([
             MYSQLD,
             f"--defaults-file={MY_CNF}",
