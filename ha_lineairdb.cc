@@ -427,7 +427,7 @@ int ha_lineairdb::write_row(uchar *buf)
 {
   DBUG_TRACE;
 
-  auto key = extract_key();
+  auto key = extract_key(buf);
   set_write_buffer(buf);
 
   auto tx = get_transaction(userThread);
@@ -1777,37 +1777,16 @@ std::string ha_lineairdb::format_row_debug(const uchar *row_buffer) const
   return row_values.str();
 }
 
-std::string ha_lineairdb::extract_key()
+std::string ha_lineairdb::extract_key(const uchar *buf)
 {
   if (is_primary_key_exists())
   {
-    return get_key_from_mysql();
+    return extract_key_from_mysql(buf);
   }
   else
   {
     return autogenerate_key();
   }
-}
-
-std::string ha_lineairdb::get_key_from_mysql()
-{
-  std::string complete_key;
-
-  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
-  assert((*(table->field + indexed_key_part.fieldnr - 1))->key_start.is_set(0));
-
-  for (size_t i = 0; i < num_key_parts; i++)
-  {
-    auto field_index = key_part[i].fieldnr - 1;
-    auto key_part_field = table->field[field_index];
-
-    // Convert key part using the helper function
-    complete_key += serialize_key_from_field(key_part_field);
-  }
-
-  tmp_restore_column_map(table->read_set, org_bitmap);
-
-  return complete_key;
 }
 
 std::string ha_lineairdb::extract_key_from_mysql(const uchar *row_buffer)
