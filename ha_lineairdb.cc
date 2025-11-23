@@ -1281,11 +1281,17 @@ void terminate_tx(LineairDBTransaction *&tx)
   @see
   get_lock_data() in lock.cc
 */
-THR_LOCK_DATA **ha_lineairdb::store_lock(THD *, THR_LOCK_DATA **to,
+THR_LOCK_DATA **ha_lineairdb::store_lock(THD *thd, THR_LOCK_DATA **to,
                                          enum thr_lock_type lock_type)
 {
   if (lock_type != TL_IGNORE && lock.type == TL_UNLOCK)
+  {
+    if (lock_type == TL_WRITE && !thd->in_lock_tables)
+    {
+      lock_type = TL_WRITE_ALLOW_WRITE;
+    }
     lock.type = lock_type;
+  }
   *to++ = &lock;
   return to;
 }

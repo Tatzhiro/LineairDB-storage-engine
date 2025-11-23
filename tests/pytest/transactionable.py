@@ -41,7 +41,7 @@ def tx2_expect_no_row () :
     return rows
 
 def transaction (db, cursor) :
-    reset(db, cursor)
+    clear_data(db, cursor)
     print("TRANSACTIONABLE TEST")
 
     print("\ttx1 BEGIN")
@@ -78,13 +78,49 @@ def transaction (db, cursor) :
     return 0
 
 
+def clear_data(db, cursor):
+    cursor.execute('DELETE FROM ha_lineairdb_test.items')
+    db.commit()
+
+def simple_for_update_test(db, cursor):
+    clear_data(db, cursor)
+    print("SIMPLE FOR UPDATE TEST")
+
+    cursor.execute('INSERT INTO ha_lineairdb_test.items (title, content) VALUES ("alice", "alice content")')
+    db.commit()
+
+    print("\ttx BEGIN")
+    cursor.execute('BEGIN')
+
+    print("\ttx SELECT FOR UPDATE")
+    cursor.execute('SELECT * FROM ha_lineairdb_test.items WHERE title="alice" FOR UPDATE')
+    rows = cursor.fetchall()
+
+    if not rows:
+        print("\tFailed: rows empty")
+        return 1
+
+    print("\ttx COMMIT")
+    cursor.execute('COMMIT')
+
+    print("\tPassed!")
+    return 0
+
 
 def main():
     # test
     db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
     cursor=db.cursor()
     
-    sys.exit(transaction(db, cursor))
+    reset(db, cursor)
+
+    if transaction(db, cursor) != 0:
+        sys.exit(1)
+
+    if simple_for_update_test(db, cursor) != 0:
+        sys.exit(1)
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":
