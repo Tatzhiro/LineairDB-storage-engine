@@ -130,7 +130,7 @@ namespace
 static std::shared_ptr<LineairDB::Database> get_or_allocate_database(
     LineairDB::Config conf);
 
-void terminate_tx(LineairDBTransaction *&tx);
+bool terminate_tx(LineairDBTransaction *&tx);
 static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit);
 static int lineairdb_abort(handlerton *hton, THD *thd, bool);
 
@@ -1219,8 +1219,8 @@ static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldTerminate)
 
   assert(tx != nullptr);
 
-  terminate_tx(tx);
-  return 0;
+  bool committed = terminate_tx(tx);
+  return committed ? 0 : HA_ERR_GENERIC;
 }
 
 /**
@@ -1238,10 +1238,11 @@ static int lineairdb_abort(handlerton *hton, THD *thd, bool)
   return 0;
 }
 
-void terminate_tx(LineairDBTransaction *&tx)
+bool terminate_tx(LineairDBTransaction *&tx)
 {
-  tx->end_transaction();
+  bool committed = tx->end_transaction();
   tx = nullptr;
+  return committed;
 }
 
 /**

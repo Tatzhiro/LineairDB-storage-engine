@@ -36,12 +36,12 @@ public:
       std::string new_secondary_key,
       const std::byte primary_key_buffer[],
       const size_t primary_key_size);
-      
+
   bool delete_value(std::string key);
 
   void begin_transaction();
   void set_status_to_abort();
-  void end_transaction();
+  bool end_transaction();
   void fence() const;
 
   inline bool is_not_started() const

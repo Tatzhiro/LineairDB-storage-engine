@@ -185,13 +185,14 @@ void LineairDBTransaction::begin_transaction()
 
 void LineairDBTransaction::set_status_to_abort() { tx->Abort(); }
 
-void LineairDBTransaction::end_transaction()
+bool LineairDBTransaction::end_transaction()
 {
   assert(tx != nullptr);
-  db->EndTransaction(*tx, [&](auto) {});
+  bool committed = db->EndTransaction(*tx, [&](auto) {});
   if (isFence)
     fence();
   delete this;
+  return committed;
 }
 
 void LineairDBTransaction::fence() const { db->Fence(); }
