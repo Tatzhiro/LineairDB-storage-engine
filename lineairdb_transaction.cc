@@ -137,12 +137,9 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
 
   std::vector<std::string> keyList;
 
-  tx->Scan("", std::nullopt, [&](auto key, auto)
+  tx->Scan(start_key, end_key, [&](auto key, auto)
            {
-    std::string key_str = std::string(key);
-    if (key_str >= start_key && key_str <= end_key) {
-      keyList.push_back(key_str);
-    }
+    keyList.push_back(std::string(key));
     return false; });
 
   return keyList;
