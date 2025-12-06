@@ -1234,8 +1234,8 @@ static int lineairdb_abort(handlerton *hton, THD *thd, bool)
   assert(tx != nullptr);
 
   tx->set_status_to_abort();
-  terminate_tx(tx);
-  return 0;
+  bool success = terminate_tx(tx);
+  return success ? 0 : HA_ERR_GENERIC;
 }
 
 bool terminate_tx(LineairDBTransaction *&tx)
