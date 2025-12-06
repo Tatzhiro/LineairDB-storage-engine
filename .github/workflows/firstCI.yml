@@ -58,4 +58,7 @@ jobs:
 
       - name: Run tests against built mysqld
         run: |
+          pkill mysqld || true
+          sleep 2
+          rm -rf ./ibdata1 ./mysql.sock
           python3 @github_workflows/ci_run_tests.py
