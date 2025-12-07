@@ -75,7 +75,14 @@ std::vector<std::string> LineairDBTransaction::get_all_keys()
   std::vector<std::string> keyList;
   tx->Scan("", std::nullopt, [&](auto key, auto)
            {
-    keyList.push_back(std::string(key));
+    std::string key_str(key);
+    auto value = tx->Read(key_str);
+    if (value.second == 0 || value.first == nullptr)
+    {
+      // tombstone: skip
+      return false;
+    }
+    keyList.push_back(std::move(key_str));
     return false; });
   return keyList;
 }
@@ -130,12 +137,9 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
 
   std::vector<std::string> keyList;
 
-  tx->Scan("", std::nullopt, [&](auto key, auto)
+  tx->Scan(start_key, end_key, [&](auto key, auto)
            {
-    std::string key_str = std::string(key);
-    if (key_str >= start_key && key_str <= end_key) {
-      keyList.push_back(key_str);
-    }
+    keyList.push_back(std::string(key));
     return false; });
 
   return keyList;
@@ -164,6 +168,14 @@ bool LineairDBTransaction::delete_value(std::string key)
   if (table_is_not_chosen())
     return false;
   tx->Write(key, nullptr, 0);
+  return true;
+}
+
+bool LineairDBTransaction::delete_secondary_index(std::string index_name, std::string secondary_key, const std::string value)
+{
+  if (table_is_not_chosen())
+    return false;
+  tx->DeleteSecondaryIndex(index_name, secondary_key, reinterpret_cast<const std::byte *>(value.c_str()), value.length());
   return true;
 }
 

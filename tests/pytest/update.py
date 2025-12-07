@@ -78,6 +78,8 @@ def update_secondary_index_basic(db, cursor):
     cursor.execute(f'UPDATE ha_lineairdb_test.{table_name} SET age=26 WHERE name="Alice"')
     print("\t[DEBUG] UPDATE committed")
 
+    db.commit()
+
     cursor.execute(f'SELECT name, age FROM ha_lineairdb_test.{table_name} WHERE age=26')
     rows_26 = cursor.fetchall()
     print("\t[DEBUG] After UPDATE - Age=26:", rows_26)

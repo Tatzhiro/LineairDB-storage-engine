@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 import subprocess
 import sys
 import time
@@ -58,18 +59,22 @@ def parse_my_cnf(cnf_path: str) -> Tuple[str, str, str]:
     if basedir and not os.path.isabs(basedir):
         basedir = os.path.abspath(os.path.join(REPO_ROOT, basedir))
     if datadir and not os.path.isabs(datadir):
-        datadir = os.path.abspath(os.path.join(basedir or REPO_ROOT, datadir))
+        # In my.cnf for this repo, datadir is usually relative to REPO_ROOT (e.g. ./build/data_workflows)
+        # Avoid using basedir as prefix because it might duplicate paths (build/build/...)
+        datadir = os.path.abspath(os.path.join(REPO_ROOT, datadir))
     if plugin_dir and not os.path.isabs(plugin_dir):
+        # plugin_dir is often inside basedir, but checking REPO_ROOT first is safer for our layout
         plugin_dir = os.path.abspath(os.path.join(basedir or REPO_ROOT, plugin_dir))
+    
+    print(f"Parsed my.cnf: basedir={basedir}, datadir={datadir}, plugin_dir={plugin_dir}")
     return basedir, datadir, plugin_dir
 
 
 def ensure_and_initialize_datadir():
     basedir, datadir, plugin_dir = parse_my_cnf(MY_CNF)
-    if datadir:
-        os.makedirs(datadir, exist_ok=True)
     if plugin_dir:
         os.makedirs(plugin_dir, exist_ok=True)
+
     # Skip initialize if it looks already initialized (presence of mysql system db dir)
     needs_init = True
     try:
@@ -77,7 +82,15 @@ def ensure_and_initialize_datadir():
             needs_init = False
     except Exception:
         needs_init = True
+
     if needs_init:
+        # If the directory exists but we need init, it might contain garbage or failed init files.
+        # mysqld --initialize requires an empty directory.
+        if datadir and os.path.exists(datadir):
+            shutil.rmtree(datadir)
+        if datadir:
+            os.makedirs(datadir, exist_ok=True)
+
         run([
             MYSQLD,
             f"--defaults-file={MY_CNF}",

@@ -360,9 +360,8 @@ private:
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);
   std::string build_secondary_key_from_row(const uchar *row_buffer, const KEY &key_info);
-  std::string extract_key();
+  std::string extract_key(const uchar *buf);
   std::string autogenerate_key();
-  std::string get_key_from_mysql();
   std::string extract_key_from_mysql(const uchar *row_buffer);
 
   void set_write_buffer(uchar *buf);
