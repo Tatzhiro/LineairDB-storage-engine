@@ -338,7 +338,7 @@ def populate_delivery_fixture(db, cursor, dbname):
                 order_id,
                 line_number,
                 line_number,
-                datetime.now(),
+                datetime(2000, 1, 1),  # Use a clearly different date to ensure UPDATE changes the value
                 amount,
                 1,
                 Decimal('5'),

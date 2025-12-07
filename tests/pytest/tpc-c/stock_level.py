@@ -385,7 +385,7 @@ def main():
         populate_stock_level_fixture(db, cursor, "ha_lineairdb_test")
 
         result = 0
-        result |= test_tpcc_stocklevel(db, cursor, "ha_lineairdb_test", threshold=50)
+        result |= test_tpcc_stocklevel(db, cursor, "ha_lineairdb_test", terminalDistrictUpperID=2, threshold=50)
 
         if result == 0:
             print("\nALL TESTS PASSED!")
