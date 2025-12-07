@@ -414,7 +414,7 @@ int ha_lineairdb::index_end()
 int ha_lineairdb::index_read(uchar *buf, const uchar *key, uint key_len, enum ha_rkey_function find_flag)
 {
   DBUG_TRACE;
-  return 0;
+  return index_read_map(buf, key, HA_WHOLE_KEY, find_flag);
 }
 
 /**
@@ -427,7 +427,7 @@ int ha_lineairdb::write_row(uchar *buf)
 {
   DBUG_TRACE;
 
-  auto key = extract_key();
+  auto key = extract_key(buf);
   set_write_buffer(buf);
 
   auto tx = get_transaction(userThread);
@@ -488,12 +488,6 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
     key = extract_primary_key_from_ref(ref);
   }
 
-  if (key.empty())
-  {
-    std::cerr << "[LineairDB][update_row] failed to resolve primary key" << std::endl;
-    return HA_ERR_KEY_NOT_FOUND;
-  }
-
   last_fetched_primary_key_ = key;
 
   set_write_buffer(new_data);
@@ -549,11 +543,23 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
   return 0;
 }
 
-int ha_lineairdb::delete_row(const uchar *)
+int ha_lineairdb::delete_row(const uchar *buf)
 {
   DBUG_TRACE;
 
-  auto key = extract_key();
+  auto key = extract_key_from_mysql(buf);
+
+  if (key.empty())
+  {
+    key = last_fetched_primary_key_;
+  }
+
+  if (key.empty())
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  last_fetched_primary_key_ = key;
 
   auto tx = get_transaction(userThread);
 
@@ -568,6 +574,31 @@ int ha_lineairdb::delete_row(const uchar *)
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
 
+  for (uint i = 0; i < table->s->keys; i++)
+  {
+    auto key_info = table->key_info[i];
+    if (i != table->s->primary_key)
+    {
+      my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+
+      // Support composite indexes: process all key parts
+      std::string secondary_key;
+      for (uint part_idx = 0; part_idx < key_info.user_defined_key_parts; part_idx++)
+      {
+        auto key_part = key_info.key_part[part_idx];
+        Field *field = table->field[key_part.fieldnr - 1];
+
+        // Encode each key part and concatenate
+        secondary_key += serialize_key_from_field(field);
+      }
+
+      tmp_restore_column_map(table->read_set, org_bitmap);
+
+      bool is_successful = tx->delete_secondary_index(key_info.name, secondary_key, key);
+      if (!is_successful)
+        return HA_ERR_LOCK_DEADLOCK;
+    }
+  }
   return 0;
 }
 
@@ -1752,37 +1783,16 @@ std::string ha_lineairdb::format_row_debug(const uchar *row_buffer) const
   return row_values.str();
 }
 
-std::string ha_lineairdb::extract_key()
+std::string ha_lineairdb::extract_key(const uchar *buf)
 {
   if (is_primary_key_exists())
   {
-    return get_key_from_mysql();
+    return extract_key_from_mysql(buf);
   }
   else
   {
     return autogenerate_key();
   }
-}
-
-std::string ha_lineairdb::get_key_from_mysql()
-{
-  std::string complete_key;
-
-  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
-  assert((*(table->field + indexed_key_part.fieldnr - 1))->key_start.is_set(0));
-
-  for (size_t i = 0; i < num_key_parts; i++)
-  {
-    auto field_index = key_part[i].fieldnr - 1;
-    auto key_part_field = table->field[field_index];
-
-    // Convert key part using the helper function
-    complete_key += serialize_key_from_field(key_part_field);
-  }
-
-  tmp_restore_column_map(table->read_set, org_bitmap);
-
-  return complete_key;
 }
 
 std::string ha_lineairdb::extract_key_from_mysql(const uchar *row_buffer)

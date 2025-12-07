@@ -38,7 +38,7 @@ public:
       const size_t primary_key_size);
       
   bool delete_value(std::string key);
-
+  bool delete_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
   void begin_transaction();
   void set_status_to_abort();
   void end_transaction();
