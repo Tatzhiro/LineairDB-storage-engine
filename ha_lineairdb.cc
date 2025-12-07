@@ -638,6 +638,13 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
       {
         // 明示的なend_rangeが提供されている場合
         serialized_end_key = convert_key_to_ldbformat(end_range->key, keypart_map);
+
+        // プレフィックス検索で、かつstart_keyとend_keyが同一の場合は
+        // プレフィックス範囲を生成（MySQLはプレフィックス等価条件で同一キーを渡す仕様）
+        if (is_prefix_search && serialized_end_key == serialized_key)
+        {
+          serialized_end_key = build_prefix_range_end(serialized_key);
+        }
       }
       else
       {
