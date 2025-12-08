@@ -1,5 +1,7 @@
 #include "lineairdb_transaction.hh"
 
+#include <utility>
+
 LineairDBTransaction::LineairDBTransaction(THD *thd, LineairDB::Database *ldb,
                                            handlerton *lineairdb_hton,
                                            bool isFence)
@@ -143,6 +145,21 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
     return false; });
 
   return keyList;
+}
+
+const std::optional<size_t>
+LineairDBTransaction::Scan(std::string_view begin,
+                           std::optional<std::string_view> end,
+                           std::function<bool(std::string_view,
+                                              const std::pair<const void *,
+                                                              const size_t>)>
+                               operation)
+{
+  if (table_is_not_chosen())
+  {
+    return std::nullopt;
+  }
+  return tx->Scan(begin, end, std::move(operation));
 }
 
 bool LineairDBTransaction::write(std::string key, const std::string value)

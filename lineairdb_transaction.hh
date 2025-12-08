@@ -1,4 +1,7 @@
 #include <lineairdb/lineairdb.h>
+#include <functional>
+#include <optional>
+#include <string_view>
 
 #include "mysql/plugin.h"
 #include "sql/handler.h" /* handler */
@@ -25,6 +28,11 @@ public:
   std::vector<std::string> get_all_keys();
   std::vector<std::string> get_matching_keys(std::string key);
   std::vector<std::string> get_matching_keys_in_range(std::string start_key, std::string end_key);
+  const std::optional<size_t> Scan(
+      std::string_view begin, std::optional<std::string_view> end,
+      std::function<bool(std::string_view,
+                         const std::pair<const void *, const size_t>)>
+          operation);
   bool write(std::string key, const std::string value);
   bool write_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
   std::vector<std::pair<const std::byte *const, const size_t>> read_secondary_index(std::string index_name, std::string secondary_key);
@@ -36,7 +44,7 @@ public:
       std::string new_secondary_key,
       const std::byte primary_key_buffer[],
       const size_t primary_key_size);
-      
+
   bool delete_value(std::string key);
   bool delete_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
   void begin_transaction();
