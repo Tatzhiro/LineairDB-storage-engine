@@ -107,12 +107,19 @@ private:
   LineairDBField ldbField;
   MEM_ROOT blobroot;
 
+  // バッファフェッチ用の状態
+  static constexpr size_t SCAN_BATCH_SIZE = 100;
+  size_t buffer_position_{0};
+  std::string last_batch_key_;
+  bool scan_exhausted_{false};
+
   void store_primary_key_in_ref(const std::string &primary_key);
   std::string extract_primary_key_from_ref(const uchar *pos) const;
   bool uses_hidden_primary_key() const;
   std::string generate_hidden_primary_key();
   std::string serialize_hidden_primary_key(uint64_t row_id) const;
   std::string format_row_debug(const uchar *row_buffer) const;
+  bool fetch_next_batch();
 
 public:
   ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg);
