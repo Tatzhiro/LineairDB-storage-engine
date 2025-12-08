@@ -1210,7 +1210,8 @@ int ha_lineairdb::external_lock(THD *thd, int lock_type)
   const bool tx_is_ready_to_commit = lock_type == F_UNLCK;
   if (tx_is_ready_to_commit)
   {
-    if (tx->is_a_single_statement())
+    // tx may be nullptr for DDL operations like CREATE INDEX
+    if (tx != nullptr && tx->is_a_single_statement())
     {
       lineairdb_commit(lineairdb_hton, thd, true);
     }
@@ -1437,6 +1438,62 @@ int ha_lineairdb::create(const char *table_name, TABLE *table, HA_CREATE_INFO *,
     }
   }
   return 0;
+}
+
+/**
+  Check if inplace alter is supported for the given operation.
+  Currently supports ADD_INDEX and ADD_UNIQUE_INDEX.
+*/
+enum_alter_inplace_result ha_lineairdb::check_if_supported_inplace_alter(
+    TABLE *altered_table [[maybe_unused]],
+    Alter_inplace_info *ha_alter_info)
+{
+  DBUG_TRACE;
+
+  // Support ADD_INDEX and ADD_UNIQUE_INDEX operations
+  Alter_inplace_info::HA_ALTER_FLAGS dominated_flags =
+      Alter_inplace_info::ADD_INDEX |
+      Alter_inplace_info::ADD_UNIQUE_INDEX;
+
+  if (ha_alter_info->handler_flags & ~dominated_flags)
+  {
+    // Unsupported operation requested
+    return HA_ALTER_INPLACE_NOT_SUPPORTED;
+  }
+
+  return HA_ALTER_INPLACE_EXCLUSIVE_LOCK;
+}
+
+bool ha_lineairdb::inplace_alter_table(
+    TABLE *altered_table [[maybe_unused]],
+    Alter_inplace_info *ha_alter_info,
+    const dd::Table *old_table_def [[maybe_unused]],
+    dd::Table *new_table_def [[maybe_unused]])
+{
+  DBUG_TRACE;
+
+  auto current_db = get_db();
+
+  for (uint i = 0; i < ha_alter_info->index_add_count; i++)
+  {
+    uint key_idx = ha_alter_info->index_add_buffer[i];
+    KEY *key_info = &ha_alter_info->key_info_buffer[key_idx];
+
+    uint index_type = (key_info->flags & HA_NOSAME) ? DICT_UNIQUE : 0;
+
+    bool is_successful = current_db->CreateSecondaryIndex(
+        db_table_name,
+        std::string(key_info->name),
+        index_type);
+
+    if (!is_successful)
+    {
+      my_error(ER_DUP_KEYNAME, MYF(0), key_info->name);
+      return true; 
+    }
+  }
+
+  return false; 
 }
 
 ha_rows ha_lineairdb::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
