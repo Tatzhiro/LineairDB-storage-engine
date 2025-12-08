@@ -324,6 +324,14 @@ public:
   int create(const char *name, TABLE *form, HA_CREATE_INFO *create_info,
              dd::Table *table_def) override; ///< required
 
+  enum_alter_inplace_result check_if_supported_inplace_alter(
+      TABLE *altered_table, Alter_inplace_info *ha_alter_info) override;
+
+  bool inplace_alter_table(TABLE *altered_table,
+                           Alter_inplace_info *ha_alter_info,
+                           const dd::Table *old_table_def,
+                           dd::Table *new_table_def) override;
+
   THR_LOCK_DATA **store_lock(
       THD *thd, THR_LOCK_DATA **to,
       enum thr_lock_type lock_type) override; ///< required

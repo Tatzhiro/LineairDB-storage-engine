@@ -199,10 +199,13 @@ void LineairDBTransaction::set_status_to_abort() { tx->Abort(); }
 
 void LineairDBTransaction::end_transaction()
 {
-  assert(tx != nullptr);
-  db->EndTransaction(*tx, [&](auto) {});
-  if (isFence)
-    fence();
+  // tx may be nullptr for DDL operations like CREATE INDEX
+  if (tx != nullptr)
+  {
+    db->EndTransaction(*tx, [&](auto) {});
+    if (isFence)
+      fence();
+  }
   delete this;
 }
 
