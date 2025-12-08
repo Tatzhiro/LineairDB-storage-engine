@@ -102,6 +102,7 @@
 #include <cstring>
 #include <limits>
 #include <sstream>
+#include <string_view>
 
 #include "my_dbug.h"
 #include "mysql/plugin.h"
@@ -291,6 +292,9 @@ ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg),
       m_ds_mrr(this),
       current_position_(0),
+      buffer_position_(0),
+      last_batch_key_(),
+      scan_exhausted_(false),
       blobroot(csv_key_memory_blobroot, BLOB_MEMROOT_ALLOC_SIZE) {}
 
 void ha_lineairdb::set_key_and_key_part_info(const TABLE *const table)
@@ -922,6 +926,9 @@ int ha_lineairdb::rnd_init(bool)
 {
   DBUG_ENTER("ha_lineairdb::rnd_init");
   scanned_keys_.clear();
+  buffer_position_ = 0;
+  last_batch_key_.clear();
+  scan_exhausted_ = false;
   last_fetched_primary_key_.clear();
   current_position_ = 0;
   stats.records = 0;
@@ -943,7 +950,6 @@ int ha_lineairdb::rnd_init(bool)
   }
 
   tx->choose_table(db_table_name);
-  scanned_keys_ = tx->get_all_keys();
 
   DBUG_RETURN(0);
 }
@@ -951,8 +957,65 @@ int ha_lineairdb::rnd_init(bool)
 int ha_lineairdb::rnd_end()
 {
   DBUG_TRACE;
+  scanned_keys_.clear();
+  scanned_keys_.shrink_to_fit();
+  buffer_position_ = 0;
+  last_batch_key_.clear();
+  scan_exhausted_ = false;
   blobroot.Clear();
   return 0;
+}
+
+bool ha_lineairdb::fetch_next_batch()
+{
+  DBUG_ENTER("ha_lineairdb::fetch_next_batch");
+
+  auto tx = get_transaction(userThread);
+  if (tx->is_aborted())
+  {
+    DBUG_RETURN(false);
+  }
+
+  scanned_keys_.clear();
+  buffer_position_ = 0;
+  scanned_keys_.reserve(SCAN_BATCH_SIZE);
+
+  std::string begin = last_batch_key_;
+  bool skip_first = !last_batch_key_.empty();
+
+  tx->Scan(begin, std::nullopt,
+           [&](std::string_view key, std::pair<const void *, const size_t> value)
+           {
+             if (skip_first)
+             {
+               if (key == begin)
+               {
+                 return false; // skip the last key of previous batch
+               }
+               skip_first = false;
+             }
+
+             // skip tombstone
+             if (value.first == nullptr || value.second == 0)
+             {
+               return false;
+             }
+
+             scanned_keys_.emplace_back(key);
+             if (scanned_keys_.size() >= SCAN_BATCH_SIZE)
+             {
+               return true; // stop scan
+             }
+             return false;
+           });
+
+  if (scanned_keys_.empty())
+  {
+    DBUG_RETURN(false);
+  }
+
+  last_batch_key_ = scanned_keys_.back();
+  DBUG_RETURN(true);
 }
 
 /**
@@ -977,12 +1040,23 @@ int ha_lineairdb::rnd_next(uchar *buf)
   DBUG_ENTER("ha_lineairdb::rnd_next");
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
-  if (current_position_ >= scanned_keys_.size())
+  // 追加で読み込む必要がある場合はバッチ取得
+  if (buffer_position_ >= scanned_keys_.size())
   {
-    DBUG_RETURN(HA_ERR_END_OF_FILE);
+    if (scan_exhausted_)
+    {
+      DBUG_RETURN(HA_ERR_END_OF_FILE);
+    }
+
+    if (!fetch_next_batch())
+    {
+      scan_exhausted_ = true;
+      DBUG_RETURN(HA_ERR_END_OF_FILE);
+    }
   }
 
-  auto &key = scanned_keys_[current_position_];
+  auto &key = scanned_keys_[buffer_position_];
+  buffer_position_++;
 
   auto tx = get_transaction(userThread);
   if (tx->is_aborted())
