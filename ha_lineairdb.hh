@@ -164,7 +164,7 @@ public:
   ulong index_flags(uint inx [[maybe_unused]], uint part [[maybe_unused]],
                     bool all_parts [[maybe_unused]]) const override
   {
-    return 0;
+    return HA_READ_RANGE;
   }
 
   /** @brief
