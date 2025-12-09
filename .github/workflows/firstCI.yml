@@ -15,12 +15,50 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: recursive
+          # Need full history to checkout different mysql-server tags
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev libtirpc-dev
+          sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev libtirpc-dev libjemalloc-dev
           sudo pip3 install -r tests/pytest/requirements.txt
+
+      - name: Start MySQL server and get version
+        id: mysql_version
+        run: |
+          sudo systemctl start mysql.service
+          # Set root password explicitly (GitHub Actions image uses auth_socket by default)
+          sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'root'; FLUSH PRIVILEGES;"
+          # Show MySQL version for debugging
+          mysql --version
+          mysql -uroot -proot -e "SELECT version();"
+          # Export version for later steps (e.g., 8.0.44)
+          MYSQL_VERSION=$(mysql -uroot -proot -N -e "SELECT version();" | cut -d'-' -f1)
+          echo "version=$MYSQL_VERSION" >> $GITHUB_OUTPUT
+          echo "MySQL version detected: $MYSQL_VERSION"
+
+      - name: Checkout matching mysql-server source
+        run: |
+          set -eux
+          MYSQL_VERSION=${{ steps.mysql_version.outputs.version }}
+          echo "Checking out mysql-server version: mysql-${MYSQL_VERSION}"
+          
+          cd third_party/mysql-server
+          
+          # Fetch the specific tag (with full depth for submodule)
+          git fetch --tags origin
+          
+          # Check if tag exists
+          if git rev-parse "mysql-${MYSQL_VERSION}" >/dev/null 2>&1; then
+            git checkout "mysql-${MYSQL_VERSION}"
+            echo "Successfully checked out mysql-${MYSQL_VERSION}"
+          else
+            echo "ERROR: Tag mysql-${MYSQL_VERSION} not found!"
+            echo "Available 8.0.x tags:"
+            git tag -l 'mysql-8.0.*' | tail -20
+            exit 1
+          fi
 
       - name: Prepare Boost (1.77.0)
         run: |
@@ -30,10 +68,10 @@ jobs:
           echo "fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854  boost/boost_1_77_0.tar.bz2" | sha256sum -c -
           tar -xjf boost/boost_1_77_0.tar.bz2 -C boost
 
-      - name: Build mysqld and plugin
+      - name: Build only the storage engine plugin
         run: |
           set -eux
-          ln -s $(pwd) third_party/mysql-server/storage/lineairdb
+          ln -sfn $(pwd) third_party/mysql-server/storage/lineairdb
           mkdir -p third_party/mysql-server/storage/lineairdb/third_party/LineairDB/PRIVATE
           mkdir -p build
           cd build
@@ -52,10 +90,66 @@ jobs:
             -DWITHOUT_PARTITION_STORAGE_ENGINE=1 \
             -DWITH_ROUTER=OFF \
             -DWITH_UNIT_TESTS=OFF \
-            -DCMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:-} -include cstdint -Wno-error=missing-include-dirs -Wno-error=extra-semi -Wno-extra-semi" \
+            -DCMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:-} -include cstdint -Wno-error=missing-include-dirs -Wno-error=extra-semi -Wno-extra-semi -ftls-model=global-dynamic" \
             -G Ninja
-          ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
+          # Build only the plugin, NOT mysqld (this is much faster!)
+          ninja ha_lineairdb_storage_engine.so -j `nproc`
 
-      - name: Run tests against built mysqld
+      - name: Install plugin to MySQL
         run: |
-          python3 @github_workflows/ci_run_tests.py
+          set -eux
+          # Get plugin directory from running MySQL
+          PLUGIN_DIR=$(mysql -uroot -proot -N -e "SHOW VARIABLES LIKE 'plugin_dir';" | awk '{print $2}')
+          echo "Plugin dir: $PLUGIN_DIR"
+          
+          # Copy the built plugin to MySQL's plugin directory
+          sudo cp build/plugin_output_directory/ha_lineairdb_storage_engine.so $PLUGIN_DIR/
+          
+          # Stop MySQL to configure LD_PRELOAD for jemalloc (avoid TLS errors)
+          sudo systemctl stop mysql.service
+          # Configure MySQL to preload jemalloc for the service
+          sudo systemctl set-environment LD_PRELOAD=/lib/x86_64-linux-gnu/libjemalloc.so.2
+          sudo systemctl start mysql.service
+          
+          # Install the plugin
+          mysql -uroot -proot -e "INSTALL PLUGIN LINEAIRDB SONAME 'ha_lineairdb_storage_engine.so';"
+          
+          # Verify plugin is loaded
+          mysql -uroot -proot -e "SHOW PLUGINS;" | grep -i lineairdb
+
+      - name: Enable FENCE mode and rebuild plugin
+        run: |
+          set -eux
+          # Enable FENCE mode for tests (matches tests/run_tests.py behavior)
+          sed -i 's/#define FENCE.*/#define FENCE true/' ha_lineairdb.cc
+          
+          # Rebuild only the plugin
+          cd build
+          ninja ha_lineairdb_storage_engine.so -j `nproc`
+          
+          # Reinstall the updated plugin
+          PLUGIN_DIR=$(mysql -uroot -proot -N -e "SHOW VARIABLES LIKE 'plugin_dir';" | awk '{print $2}')
+          
+          # Uninstall existing plugin first
+          mysql -uroot -proot -e "UNINSTALL PLUGIN LINEAIRDB;" || true
+          
+          sudo systemctl stop mysql.service
+          sudo cp build/plugin_output_directory/ha_lineairdb_storage_engine.so $PLUGIN_DIR/
+          sudo systemctl start mysql.service
+          
+          mysql -uroot -proot -e "INSTALL PLUGIN LINEAIRDB SONAME 'ha_lineairdb_storage_engine.so';"
+
+      - name: Run tests
+        run: |
+          set -eux
+          # Run pytest tests directly against apt-installed MySQL
+          for test_file in tests/pytest/*.py; do
+            # Skip utility files and directories
+            if [[ -f "$test_file" && "$test_file" != *"__"* ]]; then
+              echo "=========================================="
+              echo "Running test: $test_file"
+              echo "=========================================="
+              python3 "$test_file" --password root || exit 1
+            fi
+          done
+          echo "All tests passed!"
