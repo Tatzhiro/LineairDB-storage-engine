@@ -101,6 +101,7 @@ private:
   std::vector<std::string> scanned_keys_;
   std::vector<std::string> secondary_index_results_;
   std::string last_fetched_primary_key_;
+  std::string end_range_exclusive_key_; // For HA_READ_BEFORE_KEY: exclude this key from results
   my_off_t
       current_position_; /* Current position in the file during a file scan */
   std::string write_buffer_;

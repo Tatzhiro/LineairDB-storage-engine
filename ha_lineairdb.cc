@@ -617,6 +617,7 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
   tx->choose_table(db_table_name);
   secondary_index_results_.clear();
   current_position_in_index_ = 0;
+  end_range_exclusive_key_.clear();
 
   // Check if this is a prefix search (not all key parts are specified)
   KEY *key_info = &table->key_info[active_index];
@@ -1480,7 +1481,10 @@ void ha_lineairdb::append_key_part_encoding(std::string &out, bool is_null,
               << payload.size() << std::endl;
   }
 
-  out.reserve(out.size() + 1 + 1 + kLengthFieldSize + copy_length);
+  // Reserve for worst case (STRING type with terminator):
+  // null_marker(1) + type_tag(1) + payload(copy_length) + terminator(1) + length(2) = 5 + copy_length
+  // For other types: null_marker(1) + type_tag(1) + length(2) + payload(copy_length) = 4 + copy_length
+  out.reserve(out.size() + 5 + copy_length);
   out.push_back(static_cast<char>(is_null ? kKeyMarkerNull : kKeyMarkerNotNull));
   out.push_back(static_cast<char>(key_part_type_tag(type)));
 
@@ -1607,6 +1611,12 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     if (end_range != nullptr)
     {
       serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
+      if (end_range->flag == HA_READ_BEFORE_KEY)
+      {
+        end_range_exclusive_key_ = serialized_end_key;
+      }
     }
     else
     {
@@ -1614,7 +1624,7 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     }
 
     secondary_index_results_ = tx->get_matching_keys_in_range(
-        serialized_start_key, serialized_end_key);
+        serialized_start_key, serialized_end_key, end_range_exclusive_key_);
 
     if (secondary_index_results_.empty())
     {
@@ -1661,6 +1671,12 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     {
       serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
 
+      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
+      if (end_range->flag == HA_READ_BEFORE_KEY)
+      {
+        end_range_exclusive_key_ = serialized_end_key;
+      }
+
       // Extend end key if it's a prefix (not all key parts specified)
       uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
       if (end_used_key_parts < key_info->user_defined_key_parts)
@@ -1679,6 +1695,12 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     {
       serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
 
+      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
+      if (end_range->flag == HA_READ_BEFORE_KEY)
+      {
+        end_range_exclusive_key_ = serialized_end_key;
+      }
+
       // Extend end key if it's a prefix
       uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
       if (end_used_key_parts < key_info->user_defined_key_parts)
@@ -1694,6 +1716,12 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
   else if (end_range != nullptr)
   {
     serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+    // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
+    if (end_range->flag == HA_READ_BEFORE_KEY)
+    {
+      end_range_exclusive_key_ = serialized_end_key;
+    }
 
     // Check if end key needs prefix extension
     uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
@@ -1716,7 +1744,7 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
   }
 
   secondary_index_results_ = tx->get_matching_keys_in_range(
-      effective_start_key, serialized_end_key);
+      effective_start_key, serialized_end_key, end_range_exclusive_key_);
 
   if (secondary_index_results_.empty())
   {
@@ -1759,6 +1787,12 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
     if (end_range != nullptr)
     {
       serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
+      if (end_range->flag == HA_READ_BEFORE_KEY)
+      {
+        end_range_exclusive_key_ = serialized_end_key;
+      }
     }
     else
     {
@@ -1766,7 +1800,7 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
     }
 
     secondary_index_results_ = tx->get_matching_primary_keys_in_range(
-        current_index_name, serialized_start_key, serialized_end_key);
+        current_index_name, serialized_start_key, serialized_end_key, end_range_exclusive_key_);
 
     if (secondary_index_results_.empty())
     {
@@ -1807,6 +1841,12 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
     if (end_range != nullptr)
     {
       serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
+      if (end_range->flag == HA_READ_BEFORE_KEY)
+      {
+        end_range_exclusive_key_ = serialized_end_key;
+      }
     }
     else
     {
@@ -1818,6 +1858,12 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
     if (end_range != nullptr)
     {
       serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
+      if (end_range->flag == HA_READ_BEFORE_KEY)
+      {
+        end_range_exclusive_key_ = serialized_end_key;
+      }
     }
     else
     {
@@ -1827,6 +1873,12 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
   else if (end_range != nullptr)
   {
     serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+    // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
+    if (end_range->flag == HA_READ_BEFORE_KEY)
+    {
+      end_range_exclusive_key_ = serialized_end_key;
+    }
   }
   else
   {
@@ -1840,7 +1892,7 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
   }
 
   secondary_index_results_ = tx->get_matching_primary_keys_in_range(
-      current_index_name, serialized_start_key, serialized_end_key);
+      current_index_name, serialized_start_key, serialized_end_key, end_range_exclusive_key_);
 
   if (secondary_index_results_.empty())
   {
