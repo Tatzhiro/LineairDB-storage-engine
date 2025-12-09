@@ -27,12 +27,32 @@ jobs:
       - name: Start MySQL server and get version
         id: mysql_version
         run: |
+          # Stop MySQL if running
+          sudo systemctl stop mysql.service || true
+          
+          # Start MySQL in safe mode (skip-grant-tables) to reset root password
+          sudo mkdir -p /var/run/mysqld
+          sudo chown mysql:mysql /var/run/mysqld
+          sudo mysqld_safe --skip-grant-tables --skip-networking &
+          sleep 5
+          
+          # Reset root password
+          mysql -u root <<EOF
+          FLUSH PRIVILEGES;
+          ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'root';
+          FLUSH PRIVILEGES;
+          EOF
+          
+          # Stop safe mode MySQL and restart normally
+          sudo pkill -f mysqld || true
+          sleep 2
           sudo systemctl start mysql.service
-          # Set root password explicitly (GitHub Actions image uses auth_socket by default)
-          sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'root'; FLUSH PRIVILEGES;"
+          sleep 2
+          
           # Show MySQL version for debugging
           mysql --version
           mysql -uroot -proot -e "SELECT version();"
+          
           # Export version for later steps (e.g., 8.0.44)
           MYSQL_VERSION=$(mysql -uroot -proot -N -e "SELECT version();" | cut -d'-' -f1)
           echo "version=$MYSQL_VERSION" >> $GITHUB_OUTPUT
