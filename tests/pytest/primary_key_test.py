@@ -169,6 +169,176 @@ def test_primary_key_range_queries(db, cursor):
 
 
 
+def test_primary_key_exclusive_range(db, cursor):
+    """PRIMARY KEY exclusive range boundary test (< and >)"""
+    print("\nPRIMARY KEY EXCLUSIVE RANGE BOUNDARY TEST")
+    
+    cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
+    cursor.execute('CREATE DATABASE ha_lineairdb_test')
+    cursor.execute('''
+        CREATE TABLE ha_lineairdb_test.items (
+            id INT NOT NULL PRIMARY KEY,
+            name VARCHAR(50) NOT NULL
+        ) ENGINE=LineairDB
+    ''')
+    
+    # Insert values 1, 2, 3, 4, 5
+    for i in range(1, 6):
+        cursor.execute(f'INSERT INTO ha_lineairdb_test.items VALUES ({i}, "item_{i}")')
+    db.commit()
+    
+    # Test: id < 3 should return 1, 2 (NOT 3)
+    print("\t範囲検索: id < 3 (exclusive)")
+    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id < 3 ORDER BY id')
+    rows = cursor.fetchall()
+    result_ids = [row[0] for row in rows]
+    
+    if result_ids != [1, 2]:
+        print(f"\t❌ Failed: Expected [1, 2], got {result_ids}")
+        if 3 in result_ids:
+            print("\t*** BUG: end_range->flag (HA_READ_BEFORE_KEY) not honored! ***")
+        return 1
+    print(f"\t✅ Passed: {result_ids}")
+    
+    # Test: id > 3 should return 4, 5 (NOT 3)
+    print("\t範囲検索: id > 3 (exclusive)")
+    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id > 3 ORDER BY id')
+    rows = cursor.fetchall()
+    result_ids = [row[0] for row in rows]
+    
+    if result_ids != [4, 5]:
+        print(f"\t❌ Failed: Expected [4, 5], got {result_ids}")
+        if 3 in result_ids:
+            print("\t*** BUG: find_flag (HA_READ_AFTER_KEY) not working! ***")
+        return 1
+    print(f"\t✅ Passed: {result_ids}")
+    
+    # Test: id <= 3 should return 1, 2, 3
+    print("\t範囲検索: id <= 3 (inclusive)")
+    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id <= 3 ORDER BY id')
+    rows = cursor.fetchall()
+    result_ids = [row[0] for row in rows]
+    
+    if result_ids != [1, 2, 3]:
+        print(f"\t❌ Failed: Expected [1, 2, 3], got {result_ids}")
+        return 1
+    print(f"\t✅ Passed: {result_ids}")
+    
+    # Test: id >= 3 should return 3, 4, 5
+    print("\t範囲検索: id >= 3 (inclusive)")
+    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id >= 3 ORDER BY id')
+    rows = cursor.fetchall()
+    result_ids = [row[0] for row in rows]
+    
+    if result_ids != [3, 4, 5]:
+        print(f"\t❌ Failed: Expected [3, 4, 5], got {result_ids}")
+        return 1
+    print(f"\t✅ Passed: {result_ids}")
+    
+    # Test: 2 < id < 4 should return only 3
+    print("\t範囲検索: 2 < id < 4 (both exclusive)")
+    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id > 2 AND id < 4 ORDER BY id')
+    rows = cursor.fetchall()
+    result_ids = [row[0] for row in rows]
+    
+    if result_ids != [3]:
+        print(f"\t❌ Failed: Expected [3], got {result_ids}")
+        return 1
+    print(f"\t✅ Passed: {result_ids}")
+    
+    return 0
+
+
+def test_composite_primary_key_exclusive_range(db, cursor):
+    """Composite PRIMARY KEY exclusive range boundary test"""
+    print("\nCOMPOSITE PRIMARY KEY EXCLUSIVE RANGE TEST")
+    
+    cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
+    cursor.execute('CREATE DATABASE ha_lineairdb_test')
+    cursor.execute('''
+        CREATE TABLE ha_lineairdb_test.sales (
+            year INT NOT NULL,
+            month INT NOT NULL,
+            amount INT NOT NULL,
+            PRIMARY KEY (year, month)
+        ) ENGINE=LineairDB
+    ''')
+    
+    # Insert test data
+    test_data = [
+        (2024, 1, 100),
+        (2024, 3, 200),
+        (2024, 6, 300),
+        (2024, 9, 400),
+        (2024, 12, 500),
+    ]
+    
+    for year, month, amount in test_data:
+        cursor.execute(f'INSERT INTO ha_lineairdb_test.sales VALUES ({year}, {month}, {amount})')
+    db.commit()
+    
+    # Test: year=2024 AND month < 6 should return months 1, 3 (NOT 6)
+    print("\t複合キー範囲: year=2024 AND month < 6")
+    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month < 6 ORDER BY month')
+    rows = cursor.fetchall()
+    result_months = [row[0] for row in rows]
+    
+    if result_months != [1, 3]:
+        print(f"\t❌ Failed: Expected [1, 3], got {result_months}")
+        if 6 in result_months:
+            print("\t*** BUG: month=6 should be excluded! ***")
+        return 1
+    print(f"\t✅ Passed: {result_months}")
+    
+    # Test: year=2024 AND month > 6 should return months 9, 12 (NOT 6)
+    print("\t複合キー範囲: year=2024 AND month > 6")
+    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month > 6 ORDER BY month')
+    rows = cursor.fetchall()
+    result_months = [row[0] for row in rows]
+    
+    if result_months != [9, 12]:
+        print(f"\t❌ Failed: Expected [9, 12], got {result_months}")
+        if 6 in result_months:
+            print("\t*** BUG: month=6 should be excluded! ***")
+        return 1
+    print(f"\t✅ Passed: {result_months}")
+    
+    # Test: year=2024 AND month <= 6 should return months 1, 3, 6
+    print("\t複合キー範囲: year=2024 AND month <= 6")
+    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month <= 6 ORDER BY month')
+    rows = cursor.fetchall()
+    result_months = [row[0] for row in rows]
+    
+    if result_months != [1, 3, 6]:
+        print(f"\t❌ Failed: Expected [1, 3, 6], got {result_months}")
+        return 1
+    print(f"\t✅ Passed: {result_months}")
+    
+    # Test: year=2024 AND month >= 6 should return months 6, 9, 12
+    print("\t複合キー範囲: year=2024 AND month >= 6")
+    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month >= 6 ORDER BY month')
+    rows = cursor.fetchall()
+    result_months = [row[0] for row in rows]
+    
+    if result_months != [6, 9, 12]:
+        print(f"\t❌ Failed: Expected [6, 9, 12], got {result_months}")
+        return 1
+    print(f"\t✅ Passed: {result_months}")
+    
+    # Test: year=2024 AND 3 < month < 9 should return only 6
+    print("\t複合キー範囲: year=2024 AND 3 < month < 9")
+    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month > 3 AND month < 9 ORDER BY month')
+    rows = cursor.fetchall()
+    result_months = [row[0] for row in rows]
+    
+    if result_months != [6]:
+        print(f"\t❌ Failed: Expected [6], got {result_months}")
+        return 1
+    print(f"\t✅ Passed: {result_months}")
+    
+    return 0
+
+
 def test_primary_key_composite(db, cursor):
     """複合PRIMARY KEYテスト"""
     print("\nCOMPOSITE PRIMARY KEY TEST")
@@ -242,6 +412,8 @@ def main():
     # 各テストを実行
     result |= test_primary_key_exact_match(db, cursor)
     result |= test_primary_key_range_queries(db, cursor)
+    result |= test_primary_key_exclusive_range(db, cursor)
+    result |= test_composite_primary_key_exclusive_range(db, cursor)
     result |= test_primary_key_composite(db, cursor)
     
     if result == 0:

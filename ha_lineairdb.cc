@@ -302,7 +302,6 @@ void ha_lineairdb::set_key_and_key_part_info(const TABLE *const table)
   key_info = table->key_info;
   uint pk_index = table->s->primary_key;
 
-  // 主キーが存在する場合のみ情報を設定
   if (pk_index != MAX_KEY)
   {
     primary_key_type = static_cast<ha_base_keytype>(
@@ -314,7 +313,6 @@ void ha_lineairdb::set_key_and_key_part_info(const TABLE *const table)
   }
   else
   {
-    // 主キーがない場合はデフォルト値を設定
     primary_key_type = HA_KEYTYPE_END;
     key_part = nullptr;
     num_key_parts = 0;
@@ -513,7 +511,6 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
   {
     auto key_info = table->key_info[i];
 
-    // プライマリキーはスキップ
     if (i == table->s->primary_key)
     {
       continue;
@@ -522,13 +519,11 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
     std::string old_secondary_key = build_secondary_key_from_row(old_data, key_info);
     std::string new_secondary_key = build_secondary_key_from_row(new_data, key_info);
 
-    // セカンダリキーが変更されていない場合はスキップ
     if (old_secondary_key == new_secondary_key)
     {
       continue;
     }
 
-    // セカンダリインデックスを更新
     tx->update_secondary_index(
         key_info.name,
         old_secondary_key,
@@ -536,7 +531,6 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
         reinterpret_cast<const std::byte *>(key.data()),
         key.size());
 
-    // トランザクションがabortされた場合
     if (tx->is_aborted())
     {
       thd_mark_transaction_to_rollback(userThread, 1);
@@ -607,7 +601,7 @@ int ha_lineairdb::delete_row(const uchar *buf)
 }
 
 int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,
-                                 enum ha_rkey_function)
+                                 enum ha_rkey_function find_flag)
 {
   DBUG_TRACE;
 
@@ -626,162 +620,18 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
 
   // Check if this is a prefix search (not all key parts are specified)
   KEY *key_info = &table->key_info[active_index];
-  uint used_key_parts = 0;
-  for (uint i = 0; i < key_info->user_defined_key_parts; i++)
-  {
-    if ((keypart_map >> i) & 1)
-      used_key_parts++;
-    else
-      break;
-  }
+  uint used_key_parts = count_used_key_parts(key_info, keypart_map);
   bool is_prefix_search = (used_key_parts < key_info->user_defined_key_parts);
 
-  // ===== PRIMARY KEY処理 =====
   if (active_index == table->s->primary_key)
   {
-    auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
-
-    if (end_range == nullptr && !is_prefix_search)
-    {
-      // PRIMARY KEY完全一致: 直接read()を使用
-      auto result = tx->read(serialized_key);
-
-      if (result.first == nullptr || result.second == 0)
-      {
-        return HA_ERR_KEY_NOT_FOUND;
-      }
-
-      if (set_fields_from_lineairdb(buf, result.first, result.second))
-      {
-        tx->set_status_to_abort();
-        return HA_ERR_OUT_OF_MEM;
-      }
-
-      // index_next()が呼ばれる可能性があるため、結果を保存
-      secondary_index_results_.push_back(serialized_key);
-      current_position_in_index_ = 1; // 既に1件読み取り済み
-      last_fetched_primary_key_ = serialized_key;
-
-      return 0;
-    }
-    else
-    {
-      // PRIMARY KEY前方一致/範囲検索
-      std::string serialized_end_key;
-
-      if (end_range != nullptr)
-      {
-        // 明示的なend_rangeが提供されている場合
-        serialized_end_key = convert_key_to_ldbformat(end_range->key, keypart_map);
-
-        // プレフィックス検索で、かつstart_keyとend_keyが同一の場合は
-        // プレフィックス範囲を生成（MySQLはプレフィックス等価条件で同一キーを渡す仕様）
-        if (is_prefix_search && serialized_end_key == serialized_key)
-        {
-          serialized_end_key = build_prefix_range_end(serialized_key);
-        }
-      }
-      else
-      {
-        // プレフィックス検索: 終了キーを生成
-        serialized_end_key = build_prefix_range_end(serialized_key);
-      }
-
-      // 範囲検索用のget_matching_keys_in_range()を使用
-      secondary_index_results_ = tx->get_matching_keys_in_range(
-          serialized_key, serialized_end_key);
-
-      if (secondary_index_results_.empty())
-      {
-        return HA_ERR_KEY_NOT_FOUND;
-      }
-
-      std::string primary_key = secondary_index_results_[current_position_in_index_];
-      auto result = tx->read(primary_key);
-
-      if (result.first == nullptr || result.second == 0)
-      {
-        return HA_ERR_KEY_NOT_FOUND;
-      }
-
-      if (set_fields_from_lineairdb(buf, result.first, result.second))
-      {
-        tx->set_status_to_abort();
-        return HA_ERR_OUT_OF_MEM;
-      }
-
-      current_position_in_index_++;
-      last_fetched_primary_key_ = primary_key;
-      return 0;
-    }
-  }
-
-  if (end_range == nullptr && !is_prefix_search)
-  {
-    // Exact match search: all key parts are specified
-    auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
-    auto index_results = tx->read_secondary_index(current_index_name, serialized_key);
-
-    for (auto &[ptr, size] : index_results)
-    {
-      std::string pk = std::string(reinterpret_cast<const char *>(ptr), size);
-      secondary_index_results_.push_back(pk);
-    }
-
-    if (secondary_index_results_.empty())
-    {
-      return HA_ERR_KEY_NOT_FOUND;
-    }
-
-    std::string primary_key = secondary_index_results_[current_position_in_index_];
-    auto result = tx->read(primary_key);
-
-    if (set_fields_from_lineairdb(buf, result.first, result.second))
-    {
-      tx->set_status_to_abort();
-      return HA_ERR_OUT_OF_MEM;
-    }
-    current_position_in_index_++;
-    last_fetched_primary_key_ = primary_key;
-    return 0;
+    return index_read_primary_key(buf, key, keypart_map, find_flag,
+                                  key_info, is_prefix_search, tx);
   }
   else
   {
-    // Range search (including prefix search)
-    auto serialized_start_key = convert_key_to_ldbformat(key, keypart_map);
-    std::string serialized_end_key;
-
-    if (end_range != nullptr)
-    {
-      // Explicit end range provided
-      serialized_end_key = convert_key_to_ldbformat(end_range->key, keypart_map);
-    }
-    else
-    {
-      // Prefix search: generate end key by appending maximum values
-      // This will match all keys that start with serialized_start_key
-      serialized_end_key = build_prefix_range_end(serialized_start_key);
-    }
-
-    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
-        current_index_name, serialized_start_key, serialized_end_key);
-
-    if (secondary_index_results_.empty())
-    {
-      return HA_ERR_KEY_NOT_FOUND;
-    }
-
-    std::string primary_key = secondary_index_results_[current_position_in_index_];
-    auto result = tx->read(primary_key);
-
-    if (set_fields_from_lineairdb(buf, result.first, result.second))
-    {
-      tx->set_status_to_abort();
-      return HA_ERR_OUT_OF_MEM;
-    }
-    current_position_in_index_++;
-    last_fetched_primary_key_ = primary_key;
-    return 0;
+    return index_read_secondary(buf, key, keypart_map, find_flag,
+                                key_info, is_prefix_search, tx);
   }
 }
 
@@ -1040,7 +890,6 @@ int ha_lineairdb::rnd_next(uchar *buf)
   DBUG_ENTER("ha_lineairdb::rnd_next");
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
-  // 追加で読み込む必要がある場合はバッチ取得
   if (buffer_position_ >= scanned_keys_.size())
   {
     if (scan_exhausted_)
@@ -1563,11 +1412,11 @@ bool ha_lineairdb::inplace_alter_table(
     if (!is_successful)
     {
       my_error(ER_DUP_KEYNAME, MYF(0), key_info->name);
-      return true; 
+      return true;
     }
   }
 
-  return false; 
+  return false;
 }
 
 ha_rows ha_lineairdb::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
@@ -1635,13 +1484,33 @@ void ha_lineairdb::append_key_part_encoding(std::string &out, bool is_null,
   out.push_back(static_cast<char>(is_null ? kKeyMarkerNull : kKeyMarkerNotNull));
   out.push_back(static_cast<char>(key_part_type_tag(type)));
 
-  uint16_t length_field = static_cast<uint16_t>(copy_length);
-  out.push_back(static_cast<char>((length_field >> 8) & 0xFF));
-  out.push_back(static_cast<char>(length_field & 0xFF));
-
-  if (copy_length > 0)
+  // For STRING type, place payload BEFORE length to preserve lexicographic order.
+  // For other types (INT, DATETIME), they are fixed-length so order doesn't matter.
+  // Format for STRING: [null_marker][type_tag][payload][0x00][length_high][length_low]
+  // Format for others: [null_marker][type_tag][length_high][length_low][payload]
+  if (type == LineairDBFieldType::LINEAIRDB_STRING)
   {
-    out.append(payload.data(), copy_length);
+    // STRING: payload first, then terminator (0x00), then length
+    if (copy_length > 0)
+    {
+      out.append(payload.data(), copy_length);
+    }
+    out.push_back('\0'); // terminator to ensure shorter strings sort before longer ones with same prefix
+    uint16_t length_field = static_cast<uint16_t>(copy_length);
+    out.push_back(static_cast<char>((length_field >> 8) & 0xFF));
+    out.push_back(static_cast<char>(length_field & 0xFF));
+  }
+  else
+  {
+    // INT, DATETIME, OTHER: length first, then payload (fixed-length types)
+    uint16_t length_field = static_cast<uint16_t>(copy_length);
+    out.push_back(static_cast<char>((length_field >> 8) & 0xFF));
+    out.push_back(static_cast<char>(length_field & 0xFF));
+
+    if (copy_length > 0)
+    {
+      out.append(payload.data(), copy_length);
+    }
   }
 }
 
@@ -1650,6 +1519,335 @@ std::string ha_lineairdb::build_prefix_range_end(const std::string &prefix)
   std::string end = prefix;
   end.push_back(static_cast<char>(0xFF));
   return end;
+}
+
+/**
+ * @brief Count the number of key parts used in a key_part_map
+ *
+ * @param key_info KEY structure containing key part information
+ * @param keypart_map Bitmap indicating which key parts are used
+ * @return Number of consecutive key parts used (from the beginning)
+ */
+uint ha_lineairdb::count_used_key_parts(const KEY *key_info, key_part_map keypart_map)
+{
+  uint count = 0;
+  for (uint i = 0; i < key_info->user_defined_key_parts; i++)
+  {
+    if ((keypart_map >> i) & 1)
+      count++;
+    else
+      break;
+  }
+  return count;
+}
+
+/**
+ * @brief Fetch and set the current result from secondary_index_results_
+ *
+ * This helper function reads the primary key at current_position_in_index_,
+ * fetches the data from LineairDB, and sets the fields in the buffer.
+ *
+ * @param buf Buffer to store the result
+ * @param tx Transaction object
+ * @return 0 on success, error code on failure
+ */
+int ha_lineairdb::fetch_and_set_current_result(uchar *buf, LineairDBTransaction *tx)
+{
+  if (secondary_index_results_.empty())
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  std::string primary_key = secondary_index_results_[current_position_in_index_];
+  auto result = tx->read(primary_key);
+
+  if (result.first == nullptr || result.second == 0)
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  if (set_fields_from_lineairdb(buf, result.first, result.second))
+  {
+    tx->set_status_to_abort();
+    return HA_ERR_OUT_OF_MEM;
+  }
+
+  current_position_in_index_++;
+  last_fetched_primary_key_ = primary_key;
+  return 0;
+}
+
+/**
+ * @brief Handle PRIMARY KEY index read operations
+ *
+ * This function handles all PRIMARY KEY search operations including:
+ * - Full scan (key == nullptr)
+ * - Exact match search
+ * - Prefix/range search with various find_flag values
+ *
+ * @param buf Buffer to store the result
+ * @param key Search key (nullptr for full scan)
+ * @param keypart_map Bitmap indicating which key parts are used
+ * @param find_flag Search mode (HA_READ_KEY_EXACT, HA_READ_AFTER_KEY, etc.)
+ * @param key_info KEY structure for the active index
+ * @param is_prefix_search True if not all key parts are specified
+ * @param tx Transaction object
+ * @return 0 on success, error code on failure
+ */
+int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_map keypart_map,
+                                         enum ha_rkey_function find_flag, KEY *key_info,
+                                         bool is_prefix_search, LineairDBTransaction *tx)
+{
+  // Full scan: key == nullptr
+  if (key == nullptr)
+  {
+    std::string serialized_start_key = "";
+    std::string serialized_end_key;
+
+    if (end_range != nullptr)
+    {
+      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+    }
+    else
+    {
+      serialized_end_key = std::string(8, '\xFF');
+    }
+
+    secondary_index_results_ = tx->get_matching_keys_in_range(
+        serialized_start_key, serialized_end_key);
+
+    if (secondary_index_results_.empty())
+    {
+      return HA_ERR_END_OF_FILE;
+    }
+
+    return fetch_and_set_current_result(buf, tx);
+  }
+
+  auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
+
+  // Exact match search
+  if (end_range == nullptr && !is_prefix_search && find_flag == HA_READ_KEY_EXACT)
+  {
+    auto result = tx->read(serialized_key);
+
+    if (result.first == nullptr || result.second == 0)
+    {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    if (set_fields_from_lineairdb(buf, result.first, result.second))
+    {
+      tx->set_status_to_abort();
+      return HA_ERR_OUT_OF_MEM;
+    }
+
+    secondary_index_results_.push_back(serialized_key);
+    current_position_in_index_ = 1;
+    last_fetched_primary_key_ = serialized_key;
+
+    return 0;
+  }
+
+  // PRIMARY KEY prefix/range search
+  std::string serialized_end_key;
+  std::string effective_start_key = serialized_key;
+
+  if (find_flag == HA_READ_AFTER_KEY)
+  {
+    // Exclude start key by appending a byte to search after it
+    effective_start_key.push_back('\x00');
+    if (end_range != nullptr)
+    {
+      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+      // Extend end key if it's a prefix (not all key parts specified)
+      uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
+      if (end_used_key_parts < key_info->user_defined_key_parts)
+      {
+        serialized_end_key = build_prefix_range_end(serialized_end_key);
+      }
+    }
+    else
+    {
+      serialized_end_key = std::string(effective_start_key.size() + 1, '\xFF');
+    }
+  }
+  else if (find_flag == HA_READ_KEY_OR_NEXT)
+  {
+    if (end_range != nullptr)
+    {
+      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+      // Extend end key if it's a prefix
+      uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
+      if (end_used_key_parts < key_info->user_defined_key_parts)
+      {
+        serialized_end_key = build_prefix_range_end(serialized_end_key);
+      }
+    }
+    else
+    {
+      serialized_end_key = std::string(serialized_key.size() + 1, '\xFF');
+    }
+  }
+  else if (end_range != nullptr)
+  {
+    serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+    // Check if end key needs prefix extension
+    uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
+
+    // Extend if either: start key is prefix (and same as end), or end key itself is prefix
+    if ((is_prefix_search && serialized_end_key == serialized_key) ||
+        end_used_key_parts < key_info->user_defined_key_parts)
+    {
+      serialized_end_key = build_prefix_range_end(serialized_end_key);
+    }
+  }
+  else
+  {
+    serialized_end_key = build_prefix_range_end(serialized_key);
+  }
+
+  if (serialized_end_key.size() < effective_start_key.size())
+  {
+    serialized_end_key = build_prefix_range_end(serialized_end_key);
+  }
+
+  secondary_index_results_ = tx->get_matching_keys_in_range(
+      effective_start_key, serialized_end_key);
+
+  if (secondary_index_results_.empty())
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  return fetch_and_set_current_result(buf, tx);
+}
+
+/**
+ * @brief Handle SECONDARY INDEX read operations
+ *
+ * This function handles all SECONDARY INDEX search operations including:
+ * - Full scan (key == nullptr)
+ * - Exact match search
+ * - Prefix/range search with various find_flag values
+ *
+ * Note: Unlike PRIMARY KEY, SECONDARY INDEX does not perform prefix extension
+ * checks on end_range.
+ *
+ * @param buf Buffer to store the result
+ * @param key Search key (nullptr for full scan)
+ * @param keypart_map Bitmap indicating which key parts are used
+ * @param find_flag Search mode (HA_READ_KEY_EXACT, HA_READ_AFTER_KEY, etc.)
+ * @param key_info KEY structure for the active index
+ * @param is_prefix_search True if not all key parts are specified
+ * @param tx Transaction object
+ * @return 0 on success, error code on failure
+ */
+int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_map keypart_map,
+                                       enum ha_rkey_function find_flag, KEY *key_info [[maybe_unused]],
+                                       bool is_prefix_search, LineairDBTransaction *tx)
+{
+  // Full scan: key == nullptr
+  if (key == nullptr)
+  {
+    std::string serialized_start_key = "";
+    std::string serialized_end_key;
+
+    if (end_range != nullptr)
+    {
+      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+    }
+    else
+    {
+      serialized_end_key = std::string(8, '\xFF');
+    }
+
+    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+        current_index_name, serialized_start_key, serialized_end_key);
+
+    if (secondary_index_results_.empty())
+    {
+      return HA_ERR_END_OF_FILE;
+    }
+
+    return fetch_and_set_current_result(buf, tx);
+  }
+
+  // Exact match search
+  if (end_range == nullptr && !is_prefix_search && find_flag == HA_READ_KEY_EXACT)
+  {
+    auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
+    auto index_results = tx->read_secondary_index(current_index_name, serialized_key);
+
+    for (auto &[ptr, size] : index_results)
+    {
+      std::string pk = std::string(reinterpret_cast<const char *>(ptr), size);
+      secondary_index_results_.push_back(pk);
+    }
+
+    if (secondary_index_results_.empty())
+    {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    return fetch_and_set_current_result(buf, tx);
+  }
+
+  // Range search (including prefix search)
+  auto serialized_start_key = convert_key_to_ldbformat(key, keypart_map);
+  std::string serialized_end_key;
+
+  if (find_flag == HA_READ_AFTER_KEY)
+  {
+    // Exclude start key by appending a byte to search after it
+    serialized_start_key.push_back('\x00');
+    if (end_range != nullptr)
+    {
+      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+    }
+    else
+    {
+      serialized_end_key = std::string(serialized_start_key.size() + 1, '\xFF');
+    }
+  }
+  else if (find_flag == HA_READ_KEY_OR_NEXT)
+  {
+    if (end_range != nullptr)
+    {
+      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+    }
+    else
+    {
+      serialized_end_key = std::string(serialized_start_key.size() + 1, '\xFF');
+    }
+  }
+  else if (end_range != nullptr)
+  {
+    serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+  }
+  else
+  {
+    // Prefix search: generate end key by appending maximum values
+    serialized_end_key = build_prefix_range_end(serialized_start_key);
+  }
+
+  if (serialized_end_key.size() < serialized_start_key.size())
+  {
+    serialized_end_key = build_prefix_range_end(serialized_end_key);
+  }
+
+  secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+      current_index_name, serialized_start_key, serialized_end_key);
+
+  if (secondary_index_results_.empty())
+  {
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  return fetch_and_set_current_result(buf, tx);
 }
 
 /**
@@ -1979,7 +2177,6 @@ std::string ha_lineairdb::encode_int_key(const uchar *data, size_t len)
 {
   uint64_t value = 0;
 
-  // Read little-endian integer (支持1/2/4/8字节)
   if (len == 1)
   {
     value = static_cast<uint8_t>(data[0]);

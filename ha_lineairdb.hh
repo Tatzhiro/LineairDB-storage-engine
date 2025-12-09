@@ -371,6 +371,16 @@ private:
                                        LineairDBFieldType type,
                                        const std::string &payload);
   static std::string build_prefix_range_end(const std::string &prefix);
+  static uint count_used_key_parts(const KEY *key_info, key_part_map keypart_map);
+  int fetch_and_set_current_result(uchar *buf, LineairDBTransaction *tx);
+
+  // index_read_map helper functions
+  int index_read_primary_key(uchar *buf, const uchar *key, key_part_map keypart_map,
+                             enum ha_rkey_function find_flag, KEY *key_info,
+                             bool is_prefix_search, LineairDBTransaction *tx);
+  int index_read_secondary(uchar *buf, const uchar *key, key_part_map keypart_map,
+                           enum ha_rkey_function find_flag, KEY *key_info,
+                           bool is_prefix_search, LineairDBTransaction *tx);
 
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);
