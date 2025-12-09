@@ -2135,10 +2135,11 @@ std::string ha_lineairdb::extract_key_from_mysql(const uchar *row_buffer)
 {
   std::string complete_key;
 
-  /*   if (!is_primary_key_exists())
-    {
-      return complete_key;
-    } */
+  // Guard: return empty if no explicit primary key exists
+  if (!is_primary_key_exists() || key_part == nullptr || num_key_parts == 0)
+  {
+    return complete_key;
+  }
 
   my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
   ptrdiff_t offset = row_buffer - table->record[0];
