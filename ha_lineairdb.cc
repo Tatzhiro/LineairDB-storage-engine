@@ -291,6 +291,7 @@ static PSI_memory_key csv_key_memory_blobroot;
 ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg),
       m_ds_mrr(this),
+      userThread(nullptr),
       current_position_(0),
       buffer_position_(0),
       last_batch_key_(),
@@ -432,11 +433,11 @@ int ha_lineairdb::write_row(uchar *buf)
   auto key = extract_key(buf);
   set_write_buffer(buf);
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
 
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -494,11 +495,11 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
 
   set_write_buffer(new_data);
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
 
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -533,7 +534,7 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
 
     if (tx->is_aborted())
     {
-      thd_mark_transaction_to_rollback(userThread, 1);
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
       return HA_ERR_LOCK_DEADLOCK;
     }
   }
@@ -559,11 +560,11 @@ int ha_lineairdb::delete_row(const uchar *buf)
 
   last_fetched_primary_key_ = key;
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
 
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -606,11 +607,11 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
   DBUG_TRACE;
 
   stats.records = 0;
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
 
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -654,12 +655,15 @@ int ha_lineairdb::index_next(uchar *buf)
     return HA_ERR_END_OF_FILE;
   }
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
+
+  tx->choose_table(db_table_name);
+
   std::string primary_key = secondary_index_results_[current_position_in_index_];
   auto result = tx->read(primary_key);
   if (set_fields_from_lineairdb(buf, result.first, result.second))
@@ -685,12 +689,15 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
     return HA_ERR_END_OF_FILE;
   }
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
+
+  tx->choose_table(db_table_name);
+
   std::string primary_key = secondary_index_results_[current_position_in_index_];
   auto result = tx->read(primary_key);
   if (set_fields_from_lineairdb(buf, result.first, result.second))
@@ -792,11 +799,11 @@ int ha_lineairdb::rnd_init(bool)
     active_index = MAX_KEY;
   }
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
 
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -821,7 +828,7 @@ bool ha_lineairdb::fetch_next_batch()
 {
   DBUG_ENTER("ha_lineairdb::fetch_next_batch");
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
   if (tx->is_aborted())
   {
     DBUG_RETURN(false);
@@ -908,14 +915,14 @@ int ha_lineairdb::rnd_next(uchar *buf)
   auto &key = scanned_keys_[buffer_position_];
   buffer_position_++;
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
-  assert(tx->get_selected_table_name() == db_table_name);
+  tx->choose_table(db_table_name);
   auto read_buffer = tx->read(key);
   int error = 0;
   if (read_buffer.first == nullptr)
@@ -992,11 +999,11 @@ int ha_lineairdb::rnd_pos(uchar *buf, uchar *pos)
     return HA_ERR_KEY_NOT_FOUND;
   }
 
-  auto tx = get_transaction(userThread);
+  auto tx = get_transaction(ha_thd());
 
   if (tx->is_aborted())
   {
-    thd_mark_transaction_to_rollback(userThread, 1);
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
 
@@ -1166,6 +1173,10 @@ LineairDBTransaction *&ha_lineairdb::get_transaction(THD *thd)
   if (tx == nullptr)
   {
     tx = new LineairDBTransaction(thd, get_db(), lineairdb_hton, FENCE);
+  }
+  if (tx->is_not_started())
+  {
+    tx->begin_transaction();
   }
   return tx;
 }
@@ -1563,6 +1574,9 @@ int ha_lineairdb::fetch_and_set_current_result(uchar *buf, LineairDBTransaction 
   }
 
   std::string primary_key = secondary_index_results_[current_position_in_index_];
+
+  tx->choose_table(db_table_name);
+
   auto result = tx->read(primary_key);
 
   if (result.first == nullptr || result.second == 0)
@@ -1824,6 +1838,7 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
   if (end_range == nullptr && !is_prefix_search && find_flag == HA_READ_KEY_EXACT)
   {
     auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
+
     auto index_results = tx->read_secondary_index(current_index_name, serialized_key);
 
     for (auto &[ptr, size] : index_results)

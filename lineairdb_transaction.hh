@@ -62,7 +62,8 @@ public:
   }
   inline bool is_aborted() const
   {
-    assert(tx != nullptr);
+    if (tx == nullptr)
+      return false;  
     return tx->IsAborted();
   }
   inline bool is_a_single_statement() const { return !isTransaction; }
