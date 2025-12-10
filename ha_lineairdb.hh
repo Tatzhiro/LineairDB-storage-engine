@@ -96,7 +96,8 @@ private:
   size_t num_key_parts;
   KEY_PART_INFO indexed_key_part;
 
-  THD *userThread;
+  // Note: Previously had THD *userThread; but it was replaced by ha_thd()
+  // which provides reliable access to the current thread handle.
   uint current_position_in_index_;
   std::vector<std::string> scanned_keys_;
   std::vector<std::string> secondary_index_results_;

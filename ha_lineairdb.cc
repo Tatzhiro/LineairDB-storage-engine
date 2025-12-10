@@ -291,7 +291,6 @@ static PSI_memory_key csv_key_memory_blobroot;
 ha_lineairdb::ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg),
       m_ds_mrr(this),
-      userThread(nullptr),
       current_position_(0),
       buffer_position_(0),
       last_batch_key_(),
@@ -922,6 +921,15 @@ int ha_lineairdb::rnd_next(uchar *buf)
     return HA_ERR_LOCK_DEADLOCK;
   }
 
+  // Re-select the table for this handler instance.
+  // This is necessary for JOIN operations where multiple handler instances
+  // share the same LineairDB transaction but operate on different tables.
+  // The previous assertion was:
+  //   assert(tx->get_selected_table_name() == db_table_name);
+  // However, this fails during JOINs when the inner table's handler switches
+  // the selected table, then control returns to the outer table's handler.
+  // By always calling choose_table(), each handler ensures it's operating
+  // on the correct table.
   tx->choose_table(db_table_name);
   auto read_buffer = tx->read(key);
   int error = 0;
@@ -1135,7 +1143,7 @@ int ha_lineairdb::external_lock(THD *thd, int lock_type)
 {
   DBUG_TRACE;
 
-  userThread = thd;
+  // get_transaction() will automatically start the transaction if needed
   LineairDBTransaction *&tx = get_transaction(thd);
 
   const bool tx_is_ready_to_commit = lock_type == F_UNLCK;
@@ -1149,10 +1157,9 @@ int ha_lineairdb::external_lock(THD *thd, int lock_type)
     return 0;
   }
 
-  if (tx->is_not_started())
-  {
-    tx->begin_transaction();
-  }
+  // Note: Transaction is already started in get_transaction()
+  // This is intentional to handle cases where MySQL optimizer
+  // calls index_read_map() before external_lock() (e.g., semi-join optimization)
 
   return 0;
 }
@@ -1165,6 +1172,19 @@ int ha_lineairdb::start_stmt(THD *thd, thr_lock_type lock_type)
 
 /**
  * @brief Gets transaction from MySQL allocated memory
+ *
+ * This function follows the InnoDB pattern of "lazy transaction start".
+ * The transaction is automatically started when first accessed, rather than
+ * relying solely on external_lock() to start it.
+ *
+ * This is necessary because MySQL's query optimizer may call handler methods
+ * (like index_read_map) before external_lock() in certain scenarios:
+ * - Semi-join optimization
+ * - Subquery materialization
+ * - Complex JOIN operations
+ *
+ * Without this lazy start, accessing a transaction before external_lock()
+ * would result in a nullptr dereference or assertion failure.
  */
 LineairDBTransaction *&ha_lineairdb::get_transaction(THD *thd)
 {
