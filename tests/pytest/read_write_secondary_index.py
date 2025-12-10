@@ -1069,6 +1069,154 @@ def test_composite_index_with_primary_key(db, cursor):
     print("\tPassed!")
     return 0
 
+def test_exclusive_range_boundary(db, cursor):
+    """Test exclusive range queries (< and >) to ensure end_range->flag is handled correctly."""
+    print("EXCLUSIVE RANGE BOUNDARY TEST")
+    
+    table_name = f"test_excl_range_{int(time.time() * 1000000)}"
+    
+    cursor.execute(f'''CREATE TABLE ha_lineairdb_test.{table_name} (
+        id INT NOT NULL,
+        value INT NOT NULL,
+        INDEX value_idx (value)
+    ) ENGINE = LineairDB''')
+    db.commit()
+    
+    # Insert values 1, 2, 3, 4, 5
+    for i in range(1, 6):
+        cursor.execute(f'INSERT INTO ha_lineairdb_test.{table_name} (id, value) VALUES ({i}, {i})')
+    db.commit()
+    
+    # Test: value < 3 should return values 1, 2 (NOT 3)
+    cursor.execute(f'SELECT value FROM ha_lineairdb_test.{table_name} WHERE value < 3 ORDER BY value')
+    rows_lt = cursor.fetchall()
+    values_lt = [row[0] for row in rows_lt]
+    
+    if values_lt != [1, 2]:
+        print(f"\tFailed: value < 3 should return [1, 2], got {values_lt}")
+        if 3 in values_lt:
+            print("\t*** BUG: end_range->flag (HA_READ_BEFORE_KEY) is not being honored! ***")
+        return 1
+    
+    # Test: value > 3 should return values 4, 5 (NOT 3)
+    cursor.execute(f'SELECT value FROM ha_lineairdb_test.{table_name} WHERE value > 3 ORDER BY value')
+    rows_gt = cursor.fetchall()
+    values_gt = [row[0] for row in rows_gt]
+    
+    if values_gt != [4, 5]:
+        print(f"\tFailed: value > 3 should return [4, 5], got {values_gt}")
+        if 3 in values_gt:
+            print("\t*** BUG: find_flag (HA_READ_AFTER_KEY) for start key is not working! ***")
+        return 1
+    
+    # Test: value <= 3 should return values 1, 2, 3
+    cursor.execute(f'SELECT value FROM ha_lineairdb_test.{table_name} WHERE value <= 3 ORDER BY value')
+    rows_lte = cursor.fetchall()
+    values_lte = [row[0] for row in rows_lte]
+    
+    if values_lte != [1, 2, 3]:
+        print(f"\tFailed: value <= 3 should return [1, 2, 3], got {values_lte}")
+        return 1
+    
+    # Test: value >= 3 should return values 3, 4, 5
+    cursor.execute(f'SELECT value FROM ha_lineairdb_test.{table_name} WHERE value >= 3 ORDER BY value')
+    rows_gte = cursor.fetchall()
+    values_gte = [row[0] for row in rows_gte]
+    
+    if values_gte != [3, 4, 5]:
+        print(f"\tFailed: value >= 3 should return [3, 4, 5], got {values_gte}")
+        return 1
+    
+    # Test combined: 2 < value < 4 should return only 3
+    cursor.execute(f'SELECT value FROM ha_lineairdb_test.{table_name} WHERE value > 2 AND value < 4 ORDER BY value')
+    rows_between = cursor.fetchall()
+    values_between = [row[0] for row in rows_between]
+    
+    if values_between != [3]:
+        print(f"\tFailed: 2 < value < 4 should return [3], got {values_between}")
+        return 1
+    
+    print("\tPassed!")
+    return 0
+
+def test_composite_index_exclusive_range(db, cursor):
+    """Test exclusive range (< and >) on composite secondary index."""
+    print("COMPOSITE INDEX EXCLUSIVE RANGE TEST")
+    
+    table_name = f"test_comp_excl_{int(time.time() * 1000000)}"
+    
+    cursor.execute(f'''CREATE TABLE ha_lineairdb_test.{table_name} (
+        id INT NOT NULL,
+        category VARCHAR(20) NOT NULL,
+        priority INT NOT NULL,
+        INDEX cat_pri_idx (category, priority)
+    ) ENGINE = LineairDB''')
+    db.commit()
+    
+    # Insert test data: category='bug' with priorities 1, 3, 5, 7, 9
+    test_data = [
+        (1, "bug", 1),
+        (2, "bug", 3),
+        (3, "bug", 5),
+        (4, "bug", 7),
+        (5, "bug", 9),
+    ]
+    for id_val, cat, pri in test_data:
+        cursor.execute(f'INSERT INTO ha_lineairdb_test.{table_name} VALUES ({id_val}, "{cat}", {pri})')
+    db.commit()
+    
+    # Test: category='bug' AND priority < 5 should return 1, 3 (NOT 5)
+    cursor.execute(f'SELECT priority FROM ha_lineairdb_test.{table_name} WHERE category = "bug" AND priority < 5 ORDER BY priority')
+    rows = cursor.fetchall()
+    priorities = [row[0] for row in rows]
+    
+    if priorities != [1, 3]:
+        print(f"\tFailed: category='bug' AND priority < 5 should return [1, 3], got {priorities}")
+        if 5 in priorities:
+            print("\t*** BUG: priority=5 should be excluded (< is exclusive)! ***")
+        return 1
+    
+    # Test: category='bug' AND priority > 5 should return 7, 9 (NOT 5)
+    cursor.execute(f'SELECT priority FROM ha_lineairdb_test.{table_name} WHERE category = "bug" AND priority > 5 ORDER BY priority')
+    rows = cursor.fetchall()
+    priorities = [row[0] for row in rows]
+    
+    if priorities != [7, 9]:
+        print(f"\tFailed: category='bug' AND priority > 5 should return [7, 9], got {priorities}")
+        if 5 in priorities:
+            print("\t*** BUG: priority=5 should be excluded (> is exclusive)! ***")
+        return 1
+    
+    # Test: category='bug' AND priority <= 5 should return 1, 3, 5
+    cursor.execute(f'SELECT priority FROM ha_lineairdb_test.{table_name} WHERE category = "bug" AND priority <= 5 ORDER BY priority')
+    rows = cursor.fetchall()
+    priorities = [row[0] for row in rows]
+    
+    if priorities != [1, 3, 5]:
+        print(f"\tFailed: category='bug' AND priority <= 5 should return [1, 3, 5], got {priorities}")
+        return 1
+    
+    # Test: category='bug' AND priority >= 5 should return 5, 7, 9
+    cursor.execute(f'SELECT priority FROM ha_lineairdb_test.{table_name} WHERE category = "bug" AND priority >= 5 ORDER BY priority')
+    rows = cursor.fetchall()
+    priorities = [row[0] for row in rows]
+    
+    if priorities != [5, 7, 9]:
+        print(f"\tFailed: category='bug' AND priority >= 5 should return [5, 7, 9], got {priorities}")
+        return 1
+    
+    # Test: category='bug' AND 3 < priority < 7 should return only 5
+    cursor.execute(f'SELECT priority FROM ha_lineairdb_test.{table_name} WHERE category = "bug" AND priority > 3 AND priority < 7 ORDER BY priority')
+    rows = cursor.fetchall()
+    priorities = [row[0] for row in rows]
+    
+    if priorities != [5]:
+        print(f"\tFailed: 3 < priority < 7 should return [5], got {priorities}")
+        return 1
+    
+    print("\tPassed!")
+    return 0
+
 def test_composite_index_string_collision(db, cursor):
     """Ensure composite index differentiates ('ab','c') and ('a','bc')."""
     print("COMPOSITE INDEX STRING COLLISION TEST")
@@ -1158,6 +1306,8 @@ def main():
     result |= test_datetime_range_query(db, cursor)
     result |= test_composite_index_int_string(db, cursor)
     result |= test_composite_index_string_datetime(db, cursor)
+    result |= test_exclusive_range_boundary(db, cursor)
+    result |= test_composite_index_exclusive_range(db, cursor)
     result |= test_composite_index_string_collision(db, cursor)
     result |= test_composite_index_int_int(db, cursor)
     result |= test_composite_index_skip_middle_key(db, cursor)

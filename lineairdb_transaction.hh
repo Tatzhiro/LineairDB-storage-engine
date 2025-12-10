@@ -27,7 +27,8 @@ public:
   const std::pair<const std::byte *const, const size_t> read(std::string key);
   std::vector<std::string> get_all_keys();
   std::vector<std::string> get_matching_keys(std::string key);
-  std::vector<std::string> get_matching_keys_in_range(std::string start_key, std::string end_key);
+  std::vector<std::string> get_matching_keys_in_range(std::string start_key, std::string end_key,
+                                                       const std::string &exclusive_end_key = "");
   const std::optional<size_t> Scan(
       std::string_view begin, std::optional<std::string_view> end,
       std::function<bool(std::string_view,
@@ -37,7 +38,8 @@ public:
   bool write_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
   std::vector<std::pair<const std::byte *const, const size_t>> read_secondary_index(std::string index_name, std::string secondary_key);
   std::vector<std::string> get_matching_primary_keys_in_range(
-      std::string index_name, std::string start_key, std::string end_key);
+      std::string index_name, std::string start_key, std::string end_key,
+      const std::string &exclusive_end_key = "");
   bool update_secondary_index(
       std::string index_name,
       std::string old_secondary_key,

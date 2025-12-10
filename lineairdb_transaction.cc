@@ -90,7 +90,8 @@ std::vector<std::string> LineairDBTransaction::get_all_keys()
 }
 
 std::vector<std::string> LineairDBTransaction::get_matching_primary_keys_in_range(
-    std::string index_name, std::string start_key, std::string end_key)
+    std::string index_name, std::string start_key, std::string end_key,
+    const std::string &exclusive_end_key)
 {
   if (table_is_not_chosen())
     return {};
@@ -101,8 +102,13 @@ std::vector<std::string> LineairDBTransaction::get_matching_primary_keys_in_rang
       index_name,
       start_key,
       end_key,
-      [&result](std::string_view secondary_key, const std::vector<std::string> &primary_keys)
+      [&result, &exclusive_end_key](std::string_view secondary_key, const std::vector<std::string> &primary_keys)
       {
+        // Skip if secondary_key matches exclusive end key (HA_READ_BEFORE_KEY)
+        if (!exclusive_end_key.empty() && secondary_key == exclusive_end_key)
+        {
+          return false;
+        }
         for (const auto &pk : primary_keys)
         {
           result.push_back(pk);
@@ -132,15 +138,21 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys(
 }
 
 std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
-    std::string start_key, std::string end_key)
+    std::string start_key, std::string end_key,
+    const std::string &exclusive_end_key)
 {
   if (table_is_not_chosen())
     return {};
 
   std::vector<std::string> keyList;
 
-  tx->Scan(start_key, end_key, [&](auto key, auto)
+  tx->Scan(start_key, end_key, [&keyList, &exclusive_end_key](auto key, auto)
            {
+    // Skip if key matches exclusive end key (HA_READ_BEFORE_KEY)
+    if (!exclusive_end_key.empty() && key == exclusive_end_key)
+    {
+      return false;
+    }
     keyList.push_back(std::string(key));
     return false; });
 

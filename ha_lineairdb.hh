@@ -101,6 +101,7 @@ private:
   std::vector<std::string> scanned_keys_;
   std::vector<std::string> secondary_index_results_;
   std::string last_fetched_primary_key_;
+  std::string end_range_exclusive_key_; // For HA_READ_BEFORE_KEY: exclude this key from results
   my_off_t
       current_position_; /* Current position in the file during a file scan */
   std::string write_buffer_;
@@ -164,7 +165,7 @@ public:
   ulong index_flags(uint inx [[maybe_unused]], uint part [[maybe_unused]],
                     bool all_parts [[maybe_unused]]) const override
   {
-    return 0;
+    return HA_READ_RANGE;
   }
 
   /** @brief
@@ -371,6 +372,16 @@ private:
                                        LineairDBFieldType type,
                                        const std::string &payload);
   static std::string build_prefix_range_end(const std::string &prefix);
+  static uint count_used_key_parts(const KEY *key_info, key_part_map keypart_map);
+  int fetch_and_set_current_result(uchar *buf, LineairDBTransaction *tx);
+
+  // index_read_map helper functions
+  int index_read_primary_key(uchar *buf, const uchar *key, key_part_map keypart_map,
+                             enum ha_rkey_function find_flag, KEY *key_info,
+                             bool is_prefix_search, LineairDBTransaction *tx);
+  int index_read_secondary(uchar *buf, const uchar *key, key_part_map keypart_map,
+                           enum ha_rkey_function find_flag, KEY *key_info,
+                           bool is_prefix_search, LineairDBTransaction *tx);
 
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);
