@@ -1674,14 +1674,17 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
       // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
       if (end_range->flag == HA_READ_BEFORE_KEY)
       {
+        // Exclusive end: do not extend prefix - scan ends before this key
         end_range_exclusive_key_ = serialized_end_key;
       }
-
-      // Extend end key if it's a prefix (not all key parts specified)
-      uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
-      if (end_used_key_parts < key_info->user_defined_key_parts)
+      else
       {
-        serialized_end_key = build_prefix_range_end(serialized_end_key);
+        // Inclusive end: extend prefix to include all keys with this prefix
+        uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
+        if (end_used_key_parts < key_info->user_defined_key_parts)
+        {
+          serialized_end_key = build_prefix_range_end(serialized_end_key);
+        }
       }
     }
     else
@@ -1698,14 +1701,17 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
       // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
       if (end_range->flag == HA_READ_BEFORE_KEY)
       {
+        // Exclusive end: do not extend prefix - scan ends before this key
         end_range_exclusive_key_ = serialized_end_key;
       }
-
-      // Extend end key if it's a prefix
-      uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
-      if (end_used_key_parts < key_info->user_defined_key_parts)
+      else
       {
-        serialized_end_key = build_prefix_range_end(serialized_end_key);
+        // Inclusive end: extend prefix to include all keys with this prefix
+        uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
+        if (end_used_key_parts < key_info->user_defined_key_parts)
+        {
+          serialized_end_key = build_prefix_range_end(serialized_end_key);
+        }
       }
     }
     else
@@ -1720,17 +1726,20 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
     if (end_range->flag == HA_READ_BEFORE_KEY)
     {
+      // Exclusive end: do not extend prefix - scan ends before this key
       end_range_exclusive_key_ = serialized_end_key;
     }
-
-    // Check if end key needs prefix extension
-    uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
-
-    // Extend if either: start key is prefix (and same as end), or end key itself is prefix
-    if ((is_prefix_search && serialized_end_key == serialized_key) ||
-        end_used_key_parts < key_info->user_defined_key_parts)
+    else
     {
-      serialized_end_key = build_prefix_range_end(serialized_end_key);
+      // Inclusive end: extend prefix to include all keys with this prefix
+      uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
+
+      // Extend if either: start key is prefix (and same as end), or end key itself is prefix
+      if ((is_prefix_search && serialized_end_key == serialized_key) ||
+          end_used_key_parts < key_info->user_defined_key_parts)
+      {
+        serialized_end_key = build_prefix_range_end(serialized_end_key);
+      }
     }
   }
   else
@@ -1738,7 +1747,8 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     serialized_end_key = build_prefix_range_end(serialized_key);
   }
 
-  if (serialized_end_key.size() < effective_start_key.size())
+  // Only extend if not exclusive end - exclusive end should use original key as boundary
+  if (serialized_end_key.size() < effective_start_key.size() && end_range_exclusive_key_.empty())
   {
     serialized_end_key = build_prefix_range_end(serialized_end_key);
   }
@@ -1886,7 +1896,8 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
     serialized_end_key = build_prefix_range_end(serialized_start_key);
   }
 
-  if (serialized_end_key.size() < serialized_start_key.size())
+  // Only extend if not exclusive end - exclusive end should use original key as boundary
+  if (serialized_end_key.size() < serialized_start_key.size() && end_range_exclusive_key_.empty())
   {
     serialized_end_key = build_prefix_range_end(serialized_end_key);
   }
