@@ -2,6 +2,8 @@
 
 set -xu
 
+export LD_PRELOAD=/lib/x86_64-linux-gnu/libjemalloc.so.2
+
 if [ $# -eq 0 ]; then
     echo "No arguments supplied."
     echo "This script needs the type of benchmark [ycsb|tpcc]."
@@ -63,6 +65,7 @@ cd $base_path/release
 cmake ../third_party/mysql-server -DCMAKE_EXPORT_COMPILE_COMMANDS=0 -DWITH_BUILD_ID=0 -DWITH_ASAN=0 -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=1 -DWITH_BOOST=./boost -DWITHOUT_EXAMPLE_STORAGE_ENGINE=1 -DWITHOUT_FEDERATED_STORAGE_ENGINE=1 -DWITHOUT_ARCHIVE_STORAGE_ENGINE=1 -DWITHOUT_BLACKHOLE_STORAGE_ENGINE=1 -DWITHOUT_NDB_STORAGE_ENGINE=1 -DWITHOUT_NDBCLUSTER_STORAGE_ENGINE=1 -DWITHOUT_PARTITION_STORAGE_ENGINE=1 -DWITH_BOOST=../boost -G Ninja
 ninja lineairdb_storage_engine -j `nproc`
 sudo cp plugin_output_directory/ha_lineairdb_storage_engine.so /usr/lib/mysql/plugin
+sudo systemctl restart mysql
 if [[ `sudo mysql -uroot -N -e "SHOW ENGINES;" | grep LINEAIRDB` != LINEAIRDB* ]] ; 
 then sudo mysql -uroot -N -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"; 
 fi

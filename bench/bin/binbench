@@ -2,6 +2,8 @@
 
 set -xu
 
+export LD_PRELOAD=/lib/x86_64-linux-gnu/libjemalloc.so.2
+
 if [ $# -eq 0 ]; then
     echo "No arguments supplied."
     echo "This script needs the type of benchmark [ycsb|tpcc]."
@@ -55,6 +57,15 @@ ninja lineairdb_storage_engine -j `nproc`
 cd $base_path/third_party/benchbase
 }
 
+function RESTART_MYSQL()
+{
+  MYSQL_UP=$(pgrep mysql | wc -l);
+  if [ "$MYSQL_UP" -ne 0 ]; then
+    kill -9 `pgrep mysqld`
+  fi
+  $base_path/$build_dir/bin/mysqld --defaults-file=$base_path/$cnf --daemonize
+}
+
 ### Benchmark
 message "Execute the benchmarking $benchmark"
 ex_file=benchbase-mysql/benchbase.jar
@@ -72,6 +83,7 @@ build_dir=build
 cnf=my.cnf
 
 sudo systemctl stop mysql.service
+$base_path/$build_dir/bin/mysqld --defaults-file=$base_path/$cnf --daemonize
 if [[ `$base_path/$build_dir/bin/mysql -uroot -N -e "SHOW ENGINES;" | grep LINEAIRDB` != LINEAIRDB* ]] ; 
 then $base_path/$build_dir/bin/mysql -uroot -N -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"; 
 fi
@@ -94,7 +106,6 @@ for bm_type in A B C E F write; do
     weight=0,0,0,100,0,0
   fi
 
-  MYSQL_UP=$(pgrep mysql | wc -l);
   rm -rf $base_path/bench/results/*
   sed -i "s/<weights>.*<\/weights>/<weights>$weight<\/weights>/" $base_path/bench/config/ycsb.xml
   EDIT_FENCE false
@@ -107,13 +118,11 @@ for bm_type in A B C E F write; do
         sed -i s/default_storage_engine.*/default_storage_engine=$engine/ $base_path/$cnf
       fi
 
-      if [ "$MYSQL_UP" -ne 0 ]; then
-      kill -9 `pgrep mysqld`
-      fi
-      $base_path/$build_dir/bin/mysqld --defaults-file=$base_path/$cnf --daemonize
       for num_thread in ${num_threads[@]}; do
         sed -i "s/innodb_thread_concurrency.*/innodb_thread_concurrency=$num_thread/" $base_path/$cnf
         sed -i "s/<terminals>.*<\/terminals>/<terminals>$num_thread<\/terminals>/" $base_path/bench/config/ycsb.xml
+
+        RESTART_MYSQL
         $base_path/$build_dir/bin/mysql -uroot < $base_path/bench/reset.sql
 
         java -jar $ex_file -b $benchmark -c $base_path/bench/config/$benchmark.xml --create=true --load=true --execute=true
