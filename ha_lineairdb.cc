@@ -450,20 +450,9 @@ int ha_lineairdb::write_row(uchar *buf)
     auto key_info = table->key_info[i];
     if (i != table->s->primary_key)
     {
-      my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
-
-      // Support composite indexes: process all key parts
-      std::string secondary_key;
-      for (uint part_idx = 0; part_idx < key_info.user_defined_key_parts; part_idx++)
-      {
-        auto key_part = key_info.key_part[part_idx];
-        Field *field = table->field[key_part.fieldnr - 1];
-
-        // Encode each key part and concatenate
-        secondary_key += serialize_key_from_field(field);
-      }
-
-      tmp_restore_column_map(table->read_set, org_bitmap);
+      // Use build_secondary_key_from_row to correctly read from buf instead of table->record[0]
+      // This ensures thread-safety in multi-threaded environments
+      std::string secondary_key = build_secondary_key_from_row(buf, key_info);
 
       bool is_successful = tx->write_secondary_index(key_info.name, secondary_key, key);
       if (!is_successful)
@@ -577,20 +566,9 @@ int ha_lineairdb::delete_row(const uchar *buf)
     auto key_info = table->key_info[i];
     if (i != table->s->primary_key)
     {
-      my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
-
-      // Support composite indexes: process all key parts
-      std::string secondary_key;
-      for (uint part_idx = 0; part_idx < key_info.user_defined_key_parts; part_idx++)
-      {
-        auto key_part = key_info.key_part[part_idx];
-        Field *field = table->field[key_part.fieldnr - 1];
-
-        // Encode each key part and concatenate
-        secondary_key += serialize_key_from_field(field);
-      }
-
-      tmp_restore_column_map(table->read_set, org_bitmap);
+      // Use build_secondary_key_from_row to correctly read from buf instead of table->record[0]
+      // This ensures thread-safety in multi-threaded environments
+      std::string secondary_key = build_secondary_key_from_row(buf, key_info);
 
       bool is_successful = tx->delete_secondary_index(key_info.name, secondary_key, key);
       if (!is_successful)
@@ -803,7 +781,7 @@ int ha_lineairdb::rnd_init(bool)
   if (tx->is_aborted())
   {
     thd_mark_transaction_to_rollback(ha_thd(), 1);
-    return HA_ERR_LOCK_DEADLOCK;
+    DBUG_RETURN(HA_ERR_LOCK_DEADLOCK);
   }
 
   tx->choose_table(db_table_name);
