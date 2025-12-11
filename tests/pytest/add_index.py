@@ -3,6 +3,7 @@ TDD: Test for CREATE INDEX statement (separate from CREATE TABLE)
 """
 import sys
 import mysql.connector
+from utils.connection import get_connection
 import argparse
 
 def reset(db, cursor):
@@ -48,7 +49,7 @@ def test_create_index_and_use(db, cursor):
     return 0
 
 def main():
-    db = mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db = get_connection(user=args.user, password=args.password)
     cursor = db.cursor()
     
     reset(db, cursor)

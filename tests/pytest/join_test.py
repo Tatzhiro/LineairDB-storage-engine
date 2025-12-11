@@ -14,6 +14,7 @@ Known issues being tested:
 
 import sys
 import mysql.connector
+from utils.connection import get_connection
 import argparse
 
 
@@ -289,10 +290,7 @@ def run_all_tests(db, cursor):
 
 
 def main():
-    db = mysql.connector.connect(
-        host="localhost",
-        user=args.user,
-        password=args.password,
+    db = get_connection(user=args.user, password=args.password,
         unix_socket=args.socket
     )
     cursor = db.cursor()

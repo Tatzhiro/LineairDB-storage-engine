@@ -1,5 +1,6 @@
 import sys
 import mysql.connector
+from utils.connection import get_connection
 from utils.reset import reset
 import argparse
 import time
@@ -123,7 +124,7 @@ def delete(db, cursor):
     return result
  
 def main():
-    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db=get_connection(user=args.user, password=args.password)
     cursor=db.cursor()
     
     sys.exit(delete(db, cursor))

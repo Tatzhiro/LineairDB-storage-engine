@@ -1,5 +1,6 @@
 import sys
 import mysql.connector
+from utils.connection import get_connection
 from utils.reset import reset
 import argparse
 import concurrent.futures
@@ -8,7 +9,7 @@ import threading
 hasThread2ExecutedQuery = threading.Event()
 
 def tx3_expect_row () :
-    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db=get_connection(user=args.user, password=args.password)
     cursor=db.cursor()
     print("\ttx3 BEGIN")
     cursor.execute('BEGIN')
@@ -23,7 +24,7 @@ def tx3_expect_row () :
     return rows
 
 def tx2_expect_no_row () :
-    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db=get_connection(user=args.user, password=args.password)
     cursor=db.cursor()
     print("\ttx2 BEGIN")
     cursor.execute('BEGIN')
@@ -109,7 +110,7 @@ def simple_for_update_test(db, cursor):
 
 def main():
     # test
-    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db=get_connection(user=args.user, password=args.password)
     cursor=db.cursor()
     
     reset(db, cursor)

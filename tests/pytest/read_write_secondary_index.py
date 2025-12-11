@@ -1,5 +1,6 @@
 import sys
 import mysql.connector
+from utils.connection import get_connection
 import argparse
 import time
 
@@ -1290,7 +1291,7 @@ def test_composite_index_string_collision(db, cursor):
 
 def main():
     # Connect to the database
-    db = mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db = get_connection(user=args.user, password=args.password)
     cursor = db.cursor()
     
     # Ensure the test database exists

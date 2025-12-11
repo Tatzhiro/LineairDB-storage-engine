@@ -1,6 +1,6 @@
 import sys
-import mysql.connector
 from utils.reset import reset
+from utils.connection import get_connection
 import argparse
 
 def select (db, cursor) :
@@ -40,7 +40,7 @@ def select (db, cursor) :
 
 def main():
     # test
-    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db = get_connection(user=args.user, password=args.password)
     cursor=db.cursor()
     
     sys.exit(select(db, cursor))
