@@ -290,9 +290,7 @@ def run_all_tests(db, cursor):
 
 
 def main():
-    db = get_connection(user=args.user, password=args.password,
-        unix_socket=args.socket
-    )
+    db = get_connection(user=args.user, password=args.password)
     cursor = db.cursor()
     
     result = run_all_tests(db, cursor)
@@ -311,9 +309,6 @@ if __name__ == "__main__":
     parser.add_argument('--password', metavar='pw', type=str,
                         help='Password for the user',
                         default="")
-    parser.add_argument('--socket', metavar='socket', type=str,
-                        help='Unix socket path',
-                        default="/tmp/mysql-test.sock")
     args = parser.parse_args()
     main()
 
