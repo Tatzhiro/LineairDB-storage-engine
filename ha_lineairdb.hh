@@ -347,7 +347,7 @@ public:
 
   ha_rows multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
                                       void *seq_init_param, uint n_ranges,
-                                      uint *bufsz, uint *flags,
+                                      uint *bufsz, uint *flags, bool *force_default_mrr,
                                       Cost_estimate *cost) override;
   int multi_range_read_init(RANGE_SEQ_IF *seq, void *seq_init_param,
                             uint n_ranges, uint mode,
