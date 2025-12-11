@@ -1,5 +1,6 @@
 import sys
 import mysql.connector
+from utils.connection import get_connection
 from utils.reset import reset
 import argparse
 
@@ -89,7 +90,7 @@ def commit_update_multiple_rows(db, cursor):
 
 
 def main():
-    db = mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db = get_connection(user=args.user, password=args.password)
     cursor = db.cursor()
 
     failed = 0

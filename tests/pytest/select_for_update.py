@@ -1,5 +1,6 @@
 import sys
 import mysql.connector
+from utils.connection import get_connection
 from utils.reset import reset
 import argparse
 import threading
@@ -7,7 +8,7 @@ import time
 
 def tx1_select_for_update(user, password):
     try:
-        conn = mysql.connector.connect(host="localhost", user=user, password=password)
+        conn = get_connection(user=user, password=password)
         cursor = conn.cursor()
         print("[T1] BEGIN")
         cursor.execute("BEGIN")
@@ -31,7 +32,7 @@ def tx2_update(user, password):
         # T1が確実にロックを取るまで少し待つ
         time.sleep(0.5)
         
-        conn = mysql.connector.connect(host="localhost", user=user, password=password)
+        conn = get_connection(user=user, password=password)
         cursor = conn.cursor()
         print("[T2] BEGIN")
         cursor.execute("BEGIN")
@@ -84,7 +85,7 @@ def main():
     parser.add_argument('--password', type=str, default="")
     args = parser.parse_args()
 
-    db = mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db = get_connection(user=args.user, password=args.password)
     cursor = db.cursor()
     
     sys.exit(test_for_update(db, cursor, args))

@@ -1,5 +1,6 @@
 import sys
 import mysql.connector
+from utils.connection import get_connection
 from utils.reset import reset
 import argparse
 import concurrent.futures
@@ -8,7 +9,7 @@ import threading
 isThread2Precommit = threading.Event()
 
 def tx2_expect_no_row () :
-    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db=get_connection(user=args.user, password=args.password)
     cursor=db.cursor()
     print("\ttx2 BEGIN")
     cursor.execute('BEGIN')
@@ -64,7 +65,7 @@ def transaction (db, cursor) :
 
 def main():
     # test
-    db=mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db=get_connection(user=args.user, password=args.password)
     cursor=db.cursor()
     
     sys.exit(transaction(db, cursor))

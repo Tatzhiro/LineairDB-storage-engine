@@ -28,7 +28,7 @@ public:
   std::vector<std::string> get_all_keys();
   std::vector<std::string> get_matching_keys(std::string key);
   std::vector<std::string> get_matching_keys_in_range(std::string start_key, std::string end_key,
-                                                       const std::string &exclusive_end_key = "");
+                                                      const std::string &exclusive_end_key = "");
   const std::optional<size_t> Scan(
       std::string_view begin, std::optional<std::string_view> end,
       std::function<bool(std::string_view,

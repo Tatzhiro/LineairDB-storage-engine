@@ -1,5 +1,6 @@
 import sys
 import mysql.connector
+from utils.connection import get_connection
 import argparse
 import time
 
@@ -68,7 +69,7 @@ def nullable_columns(db, cursor):
     return 0
 
 def main():
-    db = mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db = get_connection(user=args.user, password=args.password)
     cursor = db.cursor()
     reset(db, cursor)
     result = 0

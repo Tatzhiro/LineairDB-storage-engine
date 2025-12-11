@@ -1,0 +1,23 @@
+[mysqld]
+basedir=__BASEDIR__
+datadir=__DATADIR__
+
+socket=__SOCKET__
+
+plugin_dir=__PLUGIN_DIR__
+plugin-load-add=LINEAIRDB=ha_lineairdb_storage_engine.so
+innodb_thread_concurrency=24
+default_storage_engine=innodb
+general_log=1
+disable-log-bin
+log-error=__LOG_ERROR__
+
+# Crash recovery settings
+innodb_force_recovery=0
+
+[client]
+socket=__SOCKET__
+
+[mysql]
+socket=__SOCKET__
+

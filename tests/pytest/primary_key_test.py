@@ -1,5 +1,6 @@
 import sys
 import mysql.connector
+from utils.connection import get_connection
 import argparse
 
 
@@ -404,7 +405,7 @@ def test_primary_key_composite(db, cursor):
 
 
 def main():
-    db = mysql.connector.connect(host="localhost", user=args.user, password=args.password)
+    db = get_connection(user=args.user, password=args.password)
     cursor = db.cursor()
     
     result = 0

@@ -20,6 +20,8 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y curl bzip2 ninja-build libudev-dev libboost-dev libnuma-dev libtirpc-dev
+          # Install jemalloc (required by LineairDB plugin)
+          sudo apt install -y libjemalloc2 libjemalloc-dev
           sudo pip3 install -r tests/pytest/requirements.txt
 
       - name: Prepare Boost (1.77.0)
@@ -54,8 +56,37 @@ jobs:
             -DWITH_UNIT_TESTS=OFF \
             -DCMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:-} -include cstdint -Wno-error=missing-include-dirs -Wno-error=extra-semi -Wno-extra-semi" \
             -G Ninja
-          ninja mysqld ha_lineairdb_storage_engine.so -j `nproc`
+          ninja mysqld ha_lineairdb_storage_engine.so component_reference_cache.so -j `nproc`
+
+      - name: Verify build artifacts
+        run: |
+          set -eux
+          echo "=== Checking plugin directory ==="
+          ls -la build/plugin_output_directory/ | head -20 || echo "plugin_output_directory not found"
+          
+          echo "=== Checking ha_lineairdb_storage_engine.so ==="
+          file build/plugin_output_directory/ha_lineairdb_storage_engine.so || echo "ha_lineairdb_storage_engine.so not found"
+          ldd build/plugin_output_directory/ha_lineairdb_storage_engine.so || echo "ldd failed"
+          
+          echo "=== Checking component_reference_cache.so ==="
+          file build/plugin_output_directory/component_reference_cache.so || echo "component_reference_cache.so not found"
+          ldd build/plugin_output_directory/component_reference_cache.so || echo "ldd failed"
+          
+          echo "=== Checking jemalloc ==="
+          ls -la /lib/x86_64-linux-gnu/libjemalloc* || echo "jemalloc not found in /lib/x86_64-linux-gnu/"
+          ldconfig -p | grep jemalloc || echo "jemalloc not in ldconfig"
 
       - name: Run tests against built mysqld
         run: |
           python3 @github_workflows/ci_run_tests.py
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            build/mysqld-ci-*.err
+            build/my-ci-*.cnf
+            build/*.log
+          retention-days: 7
