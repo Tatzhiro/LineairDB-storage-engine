@@ -37,7 +37,9 @@ LineairDBTransaction::read(std::string key)
 {
   if (table_is_not_chosen())
     return std::pair<const std::byte *const, const size_t>{nullptr, 0};
-  return tx->Read(key);
+
+  auto result = tx->Read(key);
+  return result;
 }
 
 std::vector<std::pair<const std::byte *const, const size_t>>
@@ -45,6 +47,7 @@ LineairDBTransaction::read_secondary_index(std::string index_name, std::string s
 {
   if (table_is_not_chosen())
     return {};
+
   auto result = tx->ReadSecondaryIndex(index_name, secondary_key);
   return result;
 }
@@ -187,6 +190,7 @@ bool LineairDBTransaction::write_secondary_index(std::string index_name, std::st
 {
   if (table_is_not_chosen())
     return false;
+
   tx->WriteSecondaryIndex(index_name, secondary_key,
                           reinterpret_cast<const std::byte *>(value.c_str()), value.length());
   return true;
