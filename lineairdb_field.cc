@@ -14,7 +14,14 @@ char LineairDBField::convert_numeric_to_a_byte(const size_t num) const
 std::string LineairDBField::convert_numeric_to_bytes(const size_t num) const
 {
   size_t byteSizeOfNum = calculate_minimum_byte_size_required(num);
-  std::string byteSequence(&num, &num + byteSizeOfNum);
+  std::string byteSequence;
+  byteSequence.reserve(byteSizeOfNum);
+  // Encode in little-endian order to match convert_bytes_to_numeric().
+  for (size_t i = 0; i < byteSizeOfNum; i++)
+  {
+    byteSequence.push_back(
+        static_cast<char>((num >> (CHAR_BIT * i)) & 0xFF));
+  }
   return byteSequence;
 }
 
@@ -82,10 +89,13 @@ void LineairDBField::make_mysql_table_row(const std::byte *const ldbRawData,
                                           const size_t length)
 {
   row.clear();
+
   for (size_t offset = 0; offset < length;)
   {
     const auto ldbField = ldbRawData + offset;
-    byteSize = convert_bytes_to_numeric(ldbField, sizeof(byteSize));
+
+    byteSize = static_cast<char>(convert_bytes_to_numeric(ldbField, sizeof(byteSize)));
+
     if (byteSize == noValue)
     {
       if (offset == 0)
@@ -100,17 +110,20 @@ void LineairDBField::make_mysql_table_row(const std::byte *const ldbRawData,
       continue;
     }
 
+    size_t byteSizeForRead = static_cast<size_t>(static_cast<unsigned char>(byteSize));
+
     const size_t valueLength =
-        convert_bytes_to_numeric(ldbField + sizeof(byteSize), byteSize);
+        convert_bytes_to_numeric(ldbField + sizeof(byteSize), byteSizeForRead);
+
     assert(valueLength <= maxValueLength);
-    const auto valueData = ldbField + byteSize + sizeof(byteSize);
+    const auto valueData = ldbField + byteSizeForRead + sizeof(byteSize);
 
     value.assign(reinterpret_cast<const char *>(valueData), valueLength);
     if (offset == 0)
       nullFlag = value;
     else
       row.emplace_back(value);
-    offset += sizeof(byteSize) + byteSize + valueLength;
+    offset += sizeof(byteSize) + byteSizeForRead + valueLength;
   }
 }
 
