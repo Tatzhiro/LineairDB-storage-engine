@@ -115,7 +115,7 @@
 #include "lineairdb_field_types.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-#define FENCE true
+#define FENCE false
 
 namespace
 {
@@ -640,7 +640,6 @@ int ha_lineairdb::index_next(uchar *buf)
   }
 
   tx->choose_table(db_table_name);
-
   std::string primary_key = secondary_index_results_[current_position_in_index_];
   auto result = tx->read(primary_key);
   if (set_fields_from_lineairdb(buf, result.first, result.second))
@@ -674,7 +673,6 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
   }
 
   tx->choose_table(db_table_name);
-
   std::string primary_key = secondary_index_results_[current_position_in_index_];
   auto result = tx->read(primary_key);
   if (set_fields_from_lineairdb(buf, result.first, result.second))
@@ -899,15 +897,6 @@ int ha_lineairdb::rnd_next(uchar *buf)
     return HA_ERR_LOCK_DEADLOCK;
   }
 
-  // Re-select the table for this handler instance.
-  // This is necessary for JOIN operations where multiple handler instances
-  // share the same LineairDB transaction but operate on different tables.
-  // The previous assertion was:
-  //   assert(tx->get_selected_table_name() == db_table_name);
-  // However, this fails during JOINs when the inner table's handler switches
-  // the selected table, then control returns to the outer table's handler.
-  // By always calling choose_table(), each handler ensures it's operating
-  // on the correct table.
   tx->choose_table(db_table_name);
   auto read_buffer = tx->read(key);
   int error = 0;
@@ -2497,8 +2486,16 @@ void ha_lineairdb::set_write_buffer(uchar *buf)
   bool first = true;
   for (Field **field = table->field; *field; field++)
   {
-    (*field)->val_str(&attribute, &attribute);
-    ldbField.set_lineairdb_field(attribute.c_ptr(), attribute.length());
+    if ((*field)->is_nullable() && (*field)->is_null())
+    {
+      ldbField.set_lineairdb_field("", 0);
+    }
+    else
+    {
+      attribute.length(0);
+      (*field)->val_str(&attribute, &attribute);
+      ldbField.set_lineairdb_field(attribute.c_ptr(), attribute.length());
+    }
     write_buffer_ += ldbField.get_lineairdb_field();
 
     if (!first)
@@ -2567,10 +2564,17 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar *buf,
   for (Field **field = table->field; *field; field++)
   {
     const auto mysqlFieldValue = ldbField.get_column_of_row(columnIndex++);
-    (*field)->store(mysqlFieldValue.c_str(), mysqlFieldValue.length(),
-                    &my_charset_bin, CHECK_FIELD_WARN);
-    if (store_blob_to_field(field))
-      return HA_ERR_OUT_OF_MEM;
+    if ((*field)->is_nullable() && (*field)->is_null_in_record(buf))
+    {
+      (*field)->set_null();
+    }
+    else
+    {
+      (*field)->store(mysqlFieldValue.c_str(), mysqlFieldValue.length(),
+                      &my_charset_bin, CHECK_FIELD_WARN);
+      if (store_blob_to_field(field))
+        return HA_ERR_OUT_OF_MEM;
+    }
 
     if (!first)
     {
