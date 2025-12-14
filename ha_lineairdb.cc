@@ -115,7 +115,7 @@
 #include "lineairdb_field_types.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-#define FENCE false
+#define FENCE true
 
 namespace
 {
@@ -445,6 +445,12 @@ int ha_lineairdb::write_row(uchar *buf)
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
 
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
   for (uint i = 0; i < table->s->keys; i++)
   {
     auto key_info = table->key_info[i];
@@ -457,6 +463,12 @@ int ha_lineairdb::write_row(uchar *buf)
       bool is_successful = tx->write_secondary_index(key_info.name, secondary_key, key);
       if (!is_successful)
         return HA_ERR_LOCK_DEADLOCK;
+
+      if (tx->is_aborted())
+      {
+        thd_mark_transaction_to_rollback(ha_thd(), 1);
+        return HA_ERR_LOCK_DEADLOCK;
+      }
     }
   }
 
@@ -495,6 +507,12 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data)
   bool is_successful = tx->write(key, write_buffer_);
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
+
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
 
   for (uint i = 0; i < table->s->keys; i++)
   {
@@ -561,6 +579,12 @@ int ha_lineairdb::delete_row(const uchar *buf)
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
 
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
   for (uint i = 0; i < table->s->keys; i++)
   {
     auto key_info = table->key_info[i];
@@ -573,6 +597,12 @@ int ha_lineairdb::delete_row(const uchar *buf)
       bool is_successful = tx->delete_secondary_index(key_info.name, secondary_key, key);
       if (!is_successful)
         return HA_ERR_LOCK_DEADLOCK;
+
+      if (tx->is_aborted())
+      {
+        thd_mark_transaction_to_rollback(ha_thd(), 1);
+        return HA_ERR_LOCK_DEADLOCK;
+      }
     }
   }
   return 0;
@@ -842,6 +872,13 @@ bool ha_lineairdb::fetch_next_batch()
              return false;
            });
 
+  // Check if Scan was aborted due to conflict detection
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    DBUG_RETURN(false);
+  }
+
   if (scanned_keys_.empty())
   {
     DBUG_RETURN(false);
@@ -882,6 +919,11 @@ int ha_lineairdb::rnd_next(uchar *buf)
 
     if (!fetch_next_batch())
     {
+      auto tx = get_transaction(ha_thd());
+      if (tx->is_aborted())
+      {
+        DBUG_RETURN(HA_ERR_LOCK_DEADLOCK);
+      }
       scan_exhausted_ = true;
       DBUG_RETURN(HA_ERR_END_OF_FILE);
     }
@@ -1627,6 +1669,12 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     secondary_index_results_ = tx->get_matching_keys_in_range(
         serialized_start_key, serialized_end_key, end_range_exclusive_key_);
 
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+
     if (secondary_index_results_.empty())
     {
       return HA_ERR_END_OF_FILE;
@@ -1757,6 +1805,12 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
   secondary_index_results_ = tx->get_matching_keys_in_range(
       effective_start_key, serialized_end_key, end_range_exclusive_key_);
 
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
   if (secondary_index_results_.empty())
   {
     return HA_ERR_KEY_NOT_FOUND;
@@ -1812,6 +1866,12 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
 
     secondary_index_results_ = tx->get_matching_primary_keys_in_range(
         current_index_name, serialized_start_key, serialized_end_key, end_range_exclusive_key_);
+
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
 
     if (secondary_index_results_.empty())
     {
@@ -1906,6 +1966,12 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
 
   secondary_index_results_ = tx->get_matching_primary_keys_in_range(
       current_index_name, serialized_start_key, serialized_end_key, end_range_exclusive_key_);
+
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
 
   if (secondary_index_results_.empty())
   {
@@ -2144,44 +2210,6 @@ std::string ha_lineairdb::generate_hidden_primary_key()
   uint64_t row_id = share->next_hidden_pk.fetch_add(1, std::memory_order_relaxed);
   std::string key = serialize_hidden_primary_key(row_id);
   return key;
-}
-
-std::string ha_lineairdb::format_row_debug(const uchar *row_buffer) const
-{
-  if (row_buffer == nullptr || table == nullptr)
-  {
-    return "{}";
-  }
-
-  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
-  ptrdiff_t offset = row_buffer - table->record[0];
-
-  std::ostringstream row_values;
-  row_values << "{";
-  bool first = true;
-
-  char attribute_buffer[1024];
-  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
-
-  for (Field **field = table->field; *field; field++)
-  {
-    (*field)->move_field_offset(offset);
-    attribute.length(0);
-    (*field)->val_str(&attribute, &attribute);
-    (*field)->move_field_offset(-offset);
-
-    if (!first)
-    {
-      row_values << ", ";
-    }
-    first = false;
-    row_values << (*field)->field_name << "='" << attribute.c_ptr() << "'";
-  }
-
-  tmp_restore_column_map(table->read_set, org_bitmap);
-
-  row_values << "}";
-  return row_values.str();
 }
 
 std::string ha_lineairdb::extract_key(const uchar *buf)
@@ -2481,9 +2509,6 @@ void ha_lineairdb::set_write_buffer(uchar *buf)
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
   my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
-  std::ostringstream row_values;
-  row_values << "{";
-  bool first = true;
   for (Field **field = table->field; *field; field++)
   {
     if ((*field)->is_nullable() && (*field)->is_null())
@@ -2497,13 +2522,6 @@ void ha_lineairdb::set_write_buffer(uchar *buf)
       ldbField.set_lineairdb_field(attribute.c_ptr(), attribute.length());
     }
     write_buffer_ += ldbField.get_lineairdb_field();
-
-    if (!first)
-    {
-      row_values << ", ";
-    }
-    first = false;
-    row_values << (*field)->field_name << "='" << attribute.c_ptr() << "'";
   }
   tmp_restore_column_map(table->read_set, org_bitmap);
 }
@@ -2558,9 +2576,6 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar *buf,
    * store each column value to corresponding field
    */
   size_t columnIndex = 0;
-  std::ostringstream row_values;
-  row_values << "{";
-  bool first = true;
   for (Field **field = table->field; *field; field++)
   {
     const auto mysqlFieldValue = ldbField.get_column_of_row(columnIndex++);
@@ -2575,13 +2590,6 @@ int ha_lineairdb::set_fields_from_lineairdb(uchar *buf,
       if (store_blob_to_field(field))
         return HA_ERR_OUT_OF_MEM;
     }
-
-    if (!first)
-    {
-      row_values << ", ";
-    }
-    first = false;
-    row_values << (*field)->field_name << "='" << mysqlFieldValue << "'";
   }
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
   return 0;

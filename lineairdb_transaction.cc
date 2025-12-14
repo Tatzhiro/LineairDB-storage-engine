@@ -200,7 +200,7 @@ bool LineairDBTransaction::delete_value(std::string key)
 {
   if (table_is_not_chosen())
     return false;
-  tx->Write(key, nullptr, 0);
+  tx->Delete(key);
   return true;
 }
 

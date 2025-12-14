@@ -120,7 +120,6 @@ private:
   bool uses_hidden_primary_key() const;
   std::string generate_hidden_primary_key();
   std::string serialize_hidden_primary_key(uint64_t row_id) const;
-  std::string format_row_debug(const uchar *row_buffer) const;
   bool fetch_next_batch();
 
 public:
