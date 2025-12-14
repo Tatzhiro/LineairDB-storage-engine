@@ -115,6 +115,16 @@ private:
   std::string last_batch_key_;
   bool scan_exhausted_{false};
 
+  // カーソルベースのプレフィックス検索の状態
+  struct PrefixScanCursor {
+    bool is_active = false;
+    std::string prefix_key;          // 検索プレフィックス
+    std::string prefix_end_key;      // プレフィックス範囲の終端
+    std::string last_fetched_key;    // 最後に取得したキー（次回の開始点）
+    bool scan_exhausted = false;     // スキャン完了フラグ
+  };
+  PrefixScanCursor prefix_cursor_;
+
   void store_primary_key_in_ref(const std::string &primary_key);
   std::string extract_primary_key_from_ref(const uchar *pos) const;
   bool uses_hidden_primary_key() const;

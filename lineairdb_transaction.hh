@@ -40,6 +40,12 @@ public:
   std::vector<std::string> get_matching_primary_keys_in_range(
       std::string index_name, std::string start_key, std::string end_key,
       const std::string &exclusive_end_key = "");
+
+  // Cursor-based prefix search methods
+  std::optional<std::string> fetch_first_key_with_prefix(
+      const std::string& prefix, const std::string& prefix_end);
+  std::optional<std::string> fetch_next_key_with_prefix(
+      const std::string& last_key, const std::string& prefix_end);
   bool update_secondary_index(
       std::string index_name,
       std::string old_secondary_key,
@@ -79,7 +85,6 @@ private:
   bool isTransaction;
   handlerton *hton;
   bool isFence;
-
   bool key_prefix_is_matching(std::string target_key, std::string key);
   bool thd_is_transaction() const;
   void register_transaction_to_mysql();

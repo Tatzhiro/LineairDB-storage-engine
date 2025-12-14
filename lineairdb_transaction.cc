@@ -177,6 +177,49 @@ LineairDBTransaction::Scan(std::string_view begin,
   return tx->Scan(begin, end, std::move(operation));
 }
 
+std::optional<std::string> LineairDBTransaction::fetch_first_key_with_prefix(
+    const std::string& prefix, const std::string& prefix_end)
+{
+  if (table_is_not_chosen())
+    return std::nullopt;
+
+  std::optional<std::string> result;
+  tx->Scan(prefix, prefix_end, [&result](auto key, auto value) {
+    // Skip tombstones
+    if (value.first == nullptr || value.second == 0) {
+      return false;  // Continue scanning
+    }
+    result = std::string(key);
+    return true;  // Stop after first valid key
+  });
+  return result;
+}
+
+std::optional<std::string> LineairDBTransaction::fetch_next_key_with_prefix(
+    const std::string& last_key, const std::string& prefix_end)
+{
+  if (table_is_not_chosen())
+    return std::nullopt;
+
+  std::optional<std::string> result;
+  bool skip_first = true;
+
+  tx->Scan(last_key, prefix_end, [&result, &skip_first, &last_key](auto key, auto value) {
+    // Skip the last_key itself (we want the next one)
+    if (skip_first && key == last_key) {
+      skip_first = false;
+      return false;  // Continue scanning
+    }
+    // Skip tombstones
+    if (value.first == nullptr || value.second == 0) {
+      return false;  // Continue scanning
+    }
+    result = std::string(key);
+    return true;  // Stop after first valid key
+  });
+  return result;
+}
+
 bool LineairDBTransaction::write(std::string key, const std::string value)
 {
   if (table_is_not_chosen())

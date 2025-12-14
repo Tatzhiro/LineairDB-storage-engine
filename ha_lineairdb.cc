@@ -116,7 +116,7 @@
 #include "tpcc_stats.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-#define FENCE true
+#define FENCE false
 
 namespace
 {
@@ -408,6 +408,7 @@ int ha_lineairdb::index_init(uint idx, bool sorted [[maybe_unused]])
   DBUG_TRACE;
   current_position_in_index_ = 0;
   last_fetched_primary_key_.clear();
+  prefix_cursor_.is_active = false;
   return change_active_index(idx);
 }
 
@@ -415,6 +416,7 @@ int ha_lineairdb::index_end()
 {
   DBUG_TRACE;
   active_index = MAX_KEY;
+  prefix_cursor_.is_active = false;
   return 0;
 }
 
@@ -690,6 +692,58 @@ int ha_lineairdb::index_next(uchar *buf)
 int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
 {
   DBUG_TRACE;
+
+  // Cursor-based prefix search handling
+  if (prefix_cursor_.is_active)
+  {
+    if (prefix_cursor_.scan_exhausted) {
+      return HA_ERR_END_OF_FILE;
+    }
+
+    auto tx = get_transaction(ha_thd());
+    if (tx->is_aborted()) {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+
+    tx->choose_table(db_table_name);
+
+    auto next_key = tx->fetch_next_key_with_prefix(
+        prefix_cursor_.last_fetched_key, prefix_cursor_.prefix_end_key);
+    
+    if(tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+
+    if (!next_key.has_value()) {
+      prefix_cursor_.scan_exhausted = true;
+      return HA_ERR_END_OF_FILE;
+    }
+
+    prefix_cursor_.last_fetched_key = next_key.value();
+
+    auto result = tx->read(next_key.value());
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+    if (result.first == nullptr || result.second == 0) {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    if (set_fields_from_lineairdb(buf, result.first, result.second)) {
+      tx->set_status_to_abort();
+      return HA_ERR_OUT_OF_MEM;
+    }
+
+    last_fetched_primary_key_ = next_key.value();
+    return 0;
+  }
+
+  // Original secondary_index_results_ based handling
   if (secondary_index_results_.size() == 0)
   {
     return HA_ERR_END_OF_FILE;
@@ -2023,6 +2077,54 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     current_position_in_index_ = 1;
     last_fetched_primary_key_ = serialized_key;
 
+    return 0;
+  }
+
+  // Cursor-based prefix search (for LIMIT optimization)
+  // This handles: end_range == nullptr && is_prefix_search && find_flag == HA_READ_KEY_EXACT
+  if (end_range == nullptr && is_prefix_search && find_flag == HA_READ_KEY_EXACT)
+  {
+    // Initialize cursor state
+    prefix_cursor_.is_active = true;
+    prefix_cursor_.prefix_key = serialized_key;
+    prefix_cursor_.prefix_end_key = build_prefix_range_end(serialized_key);
+    prefix_cursor_.scan_exhausted = false;
+
+    // Fetch the first matching key
+    auto first_key = tx->fetch_first_key_with_prefix(
+        prefix_cursor_.prefix_key, prefix_cursor_.prefix_end_key);
+      
+    if(tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+
+    if (!first_key.has_value()) {
+      prefix_cursor_.is_active = false;
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    prefix_cursor_.last_fetched_key = first_key.value();
+
+    // Read the row data
+    auto result = tx->read(first_key.value());
+    if(tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+    if (result.first == nullptr || result.second == 0) {
+      prefix_cursor_.is_active = false;
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    if (set_fields_from_lineairdb(buf, result.first, result.second)) {
+      tx->set_status_to_abort();
+      return HA_ERR_OUT_OF_MEM;
+    }
+
+    last_fetched_primary_key_ = first_key.value();
     return 0;
   }
 
