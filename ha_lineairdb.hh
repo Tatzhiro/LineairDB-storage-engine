@@ -165,7 +165,7 @@ public:
   ulong index_flags(uint inx [[maybe_unused]], uint part [[maybe_unused]],
                     bool all_parts [[maybe_unused]]) const override
   {
-    return HA_READ_RANGE | HA_READ_NEXT;
+    return HA_READ_RANGE | HA_READ_NEXT | HA_READ_ORDER;
   }
 
   /** @brief
@@ -317,7 +317,7 @@ public:
   int rnd_next(uchar *buf) override;            ///< required
   int rnd_pos(uchar *buf, uchar *pos) override; ///< required
   void position(const uchar *record) override;  ///< required
-  int info(uint) override;                      ///< required
+  int info(uint flag) override;                 ///< required
   int extra(enum ha_extra_function operation) override;
   int external_lock(THD *thd, int lock_type) override; ///< required
   int start_stmt(THD *thd, thr_lock_type lock_type) override;
@@ -398,6 +398,24 @@ private:
   bool store_blob_to_field(Field **field);
   int set_fields_from_lineairdb(uchar *buf, const std::byte *const read_buf,
                                 const size_t read_buf_size);
+
+  // TPC-C statistics helpers
+  void set_tpcc_rec_per_key(const char *table_name);
+  void set_customer_rec_per_key(KEY *key, const char *key_name,
+                                uint key_parts, bool is_primary);
+  void set_orders_rec_per_key(KEY *key, const char *key_name,
+                              uint key_parts, bool is_primary);
+  void set_new_orders_rec_per_key(KEY *key, uint key_parts);
+  void set_stock_rec_per_key(KEY *key, uint key_parts);
+  void set_order_line_rec_per_key(KEY *key, uint key_parts);
+  void set_generic_rec_per_key(KEY *key, uint key_parts, bool is_primary);
+
+  // records_in_range helpers
+  uint calculate_key_parts_from_length(KEY *key, uint key_length);
+  ha_rows estimate_tpcc_records_in_range(const char *table_name,
+                                         const char *index_name,
+                                         uint key_parts_used,
+                                         bool is_primary);
 };
 
 #endif /* HA_LINEAIRDB_H */

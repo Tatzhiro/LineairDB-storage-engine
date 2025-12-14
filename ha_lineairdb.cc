@@ -113,6 +113,7 @@
 #include "typelib.h"
 #include "storage/innobase/include/dict0mem.h"
 #include "lineairdb_field_types.h"
+#include "tpcc_stats.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE true
@@ -140,6 +141,10 @@ static MYSQL_THDVAR_STR(last_create_thdvar, PLUGIN_VAR_MEMALLOC, nullptr,
 
 static MYSQL_THDVAR_UINT(create_count_thdvar, 0, nullptr, nullptr, nullptr, 0,
                          0, 1000, 0);
+
+// TPC-C mode variables (declared here for use in info() and records_in_range())
+static bool srv_tpcc_mode = false;
+static ulong srv_tpcc_warehouses = 1;
 
 /*
   List of all system tables specific to the SE.
@@ -1081,13 +1086,217 @@ int ha_lineairdb::rnd_pos(uchar *buf, uchar *pos)
   sql_select.cc, sql_select.cc, sql_show.cc, sql_show.cc, sql_show.cc,
   sql_show.cc, sql_table.cc, sql_union.cc and sql_update.cc
 */
-int ha_lineairdb::info(uint)
+int ha_lineairdb::info(uint flag)
 {
   DBUG_TRACE;
-  /* This is a lie, but you don't want the optimizer to see zero or 1 */
-  if (stats.records < 2)
-    stats.records = 2;
+
+  // TPC-C mode: Use hardcoded statistics for optimizer
+  if (srv_tpcc_mode && table != nullptr && table->s != nullptr)
+  {
+    const char *tbl_name = table->s->table_name.str;
+
+    // HA_STATUS_VARIABLE: Set row count
+    if (flag & HA_STATUS_VARIABLE)
+    {
+      uint64_t row_count = tpcc_stats::get_table_row_count(tbl_name, srv_tpcc_warehouses);
+      if (row_count > 0)
+      {
+        stats.records = static_cast<ha_rows>(row_count);
+      }
+      else
+      {
+        // Unknown table, use default
+        if (stats.records < 2)
+          stats.records = 2;
+      }
+
+      // Estimate data file length
+      stats.mean_rec_length = table->s->reclength > 0 ? table->s->reclength : 100;
+      stats.data_file_length = stats.records * stats.mean_rec_length;
+      stats.index_file_length = stats.data_file_length / 2;
+    }
+
+    // HA_STATUS_CONST: Set rec_per_key for each index
+    if (flag & HA_STATUS_CONST)
+    {
+      set_tpcc_rec_per_key(tbl_name);
+    }
+  }
+  else
+  {
+    // Default behavior for non-TPC-C mode
+    if (stats.records < 2)
+      stats.records = 2;
+  }
+
   return 0;
+}
+
+/**
+ * Set rec_per_key for TPC-C tables based on known data distribution
+ * This helps the optimizer choose the correct index for TPC-C queries
+ */
+void ha_lineairdb::set_tpcc_rec_per_key(const char *table_name)
+{
+  if (table == nullptr || table->s == nullptr || table_name == nullptr)
+    return;
+
+  // Only process known TPC-C tables
+  if (!tpcc_stats::is_tpcc_table(table_name))
+    return;
+
+  for (uint i = 0; i < table->s->keys; i++)
+  {
+    KEY *key = table->key_info + i;
+    if (key == nullptr)
+      continue;
+
+    const char *key_name = key->name;
+    uint key_parts = key->user_defined_key_parts;
+
+    // Set rec_per_key based on table and index
+    if (strcasecmp(table_name, "customer") == 0)
+    {
+      set_customer_rec_per_key(key, key_name, key_parts, i == table->s->primary_key);
+    }
+    else if (strcasecmp(table_name, "orders") == 0 ||
+             strcasecmp(table_name, "oorder") == 0)
+    {
+      set_orders_rec_per_key(key, key_name, key_parts, i == table->s->primary_key);
+    }
+    else if (strcasecmp(table_name, "new_orders") == 0 ||
+             strcasecmp(table_name, "new_order") == 0)
+    {
+      set_new_orders_rec_per_key(key, key_parts);
+    }
+    else if (strcasecmp(table_name, "stock") == 0)
+    {
+      set_stock_rec_per_key(key, key_parts);
+    }
+    else if (strcasecmp(table_name, "order_line") == 0)
+    {
+      set_order_line_rec_per_key(key, key_parts);
+    }
+    else
+    {
+      // Other tables: use generic heuristics
+      set_generic_rec_per_key(key, key_parts, i == table->s->primary_key);
+    }
+  }
+}
+
+void ha_lineairdb::set_customer_rec_per_key(KEY *key, const char *key_name,
+                                            uint key_parts, bool is_primary)
+{
+  // Check if this is the name index
+  bool is_name_index = (key_name != nullptr &&
+                        (strcasestr(key_name, "name") != nullptr ||
+                         strcasestr(key_name, "idx_customer") != nullptr));
+
+  if (is_primary || !is_name_index)
+  {
+    // PRIMARY KEY (c_w_id, c_d_id, c_id)
+    ulong rpk[] = {30000, 3000, 1};
+    for (uint j = 0; j < key_parts && j < 3; j++)
+    {
+      key->rec_per_key[j] = rpk[j];
+      key->set_records_per_key(j, static_cast<rec_per_key_t>(rpk[j]));
+    }
+  }
+  else
+  {
+    // idx_customer_name (c_w_id, c_d_id, c_last, c_first)
+    // KEY POINT: c_last has much lower cardinality than PK!
+    ulong rpk[] = {30000, 3000, 10, 1};
+    for (uint j = 0; j < key_parts && j < 4; j++)
+    {
+      key->rec_per_key[j] = rpk[j];
+      key->set_records_per_key(j, static_cast<rec_per_key_t>(rpk[j]));
+    }
+  }
+}
+
+void ha_lineairdb::set_orders_rec_per_key(KEY *key, const char *key_name,
+                                          uint key_parts, bool is_primary)
+{
+  bool is_cid_index = (key_name != nullptr &&
+                       (strcasestr(key_name, "c_id") != nullptr ||
+                        strcasestr(key_name, "idx_orders") != nullptr));
+
+  if (is_primary || !is_cid_index)
+  {
+    // PRIMARY KEY (o_w_id, o_d_id, o_id)
+    ulong rpk[] = {30000, 3000, 1};
+    for (uint j = 0; j < key_parts && j < 3; j++)
+    {
+      key->rec_per_key[j] = rpk[j];
+      key->set_records_per_key(j, static_cast<rec_per_key_t>(rpk[j]));
+    }
+  }
+  else
+  {
+    // Secondary index on customer ID
+    ulong rpk[] = {30000, 3000, 10, 1};
+    for (uint j = 0; j < key_parts && j < 4; j++)
+    {
+      key->rec_per_key[j] = rpk[j];
+      key->set_records_per_key(j, static_cast<rec_per_key_t>(rpk[j]));
+    }
+  }
+}
+
+void ha_lineairdb::set_new_orders_rec_per_key(KEY *key, uint key_parts)
+{
+  // PRIMARY KEY (no_w_id, no_d_id, no_o_id)
+  ulong rpk[] = {9000, 900, 1};
+  for (uint j = 0; j < key_parts && j < 3; j++)
+  {
+    key->rec_per_key[j] = rpk[j];
+    key->set_records_per_key(j, static_cast<rec_per_key_t>(rpk[j]));
+  }
+}
+
+void ha_lineairdb::set_stock_rec_per_key(KEY *key, uint key_parts)
+{
+  // PRIMARY KEY (s_w_id, s_i_id)
+  ulong rpk[] = {100000, 1};
+  for (uint j = 0; j < key_parts && j < 2; j++)
+  {
+    key->rec_per_key[j] = rpk[j];
+    key->set_records_per_key(j, static_cast<rec_per_key_t>(rpk[j]));
+  }
+}
+
+void ha_lineairdb::set_order_line_rec_per_key(KEY *key, uint key_parts)
+{
+  // PRIMARY KEY (ol_w_id, ol_d_id, ol_o_id, ol_number)
+  ulong rpk[] = {300000, 30000, 10, 1};
+  for (uint j = 0; j < key_parts && j < 4; j++)
+  {
+    key->rec_per_key[j] = rpk[j];
+    key->set_records_per_key(j, static_cast<rec_per_key_t>(rpk[j]));
+  }
+}
+
+void ha_lineairdb::set_generic_rec_per_key(KEY *key, uint key_parts, bool is_primary)
+{
+  // Generic heuristic for unknown indexes
+  for (uint j = 0; j < key_parts; j++)
+  {
+    ulong rpk;
+    if (is_primary && j == key_parts - 1)
+    {
+      rpk = 1; // Last part of primary key is unique
+    }
+    else
+    {
+      // Decrease by factor of 10 for each key part
+      rpk = static_cast<ulong>(std::max(static_cast<ha_rows>(1),
+                                        stats.records / ((j + 1) * 10)));
+    }
+    key->rec_per_key[j] = rpk;
+    key->set_records_per_key(j, static_cast<rec_per_key_t>(rpk));
+  }
 }
 
 /**
@@ -1359,10 +1568,119 @@ int ha_lineairdb::rename_table(const char *, const char *, const dd::Table *,
   @see
   check_quick_keys() in opt_range.cc
 */
-ha_rows ha_lineairdb::records_in_range(uint, key_range *, key_range *)
+ha_rows ha_lineairdb::records_in_range(uint inx, key_range *min_key,
+                                       key_range *max_key)
 {
   DBUG_TRACE;
-  return 10; // low number to force index usage
+
+  // TPC-C mode: Return optimized estimates for TPC-C tables
+  if (srv_tpcc_mode && table != nullptr && table->s != nullptr)
+  {
+    const char *tbl_name = table->s->table_name.str;
+
+    // Only handle known TPC-C tables
+    if (tpcc_stats::is_tpcc_table(tbl_name))
+    {
+      KEY *key = table->key_info + inx;
+      const char *key_name = key ? key->name : nullptr;
+      bool is_primary = (inx == table->s->primary_key);
+
+      // Calculate how many key parts are used in the range
+      uint key_parts_used = 0;
+      if (min_key != nullptr && key != nullptr)
+      {
+        key_parts_used = calculate_key_parts_from_length(key, min_key->length);
+      }
+
+      // Return TPC-C specific estimates
+      return estimate_tpcc_records_in_range(tbl_name, key_name,
+                                            key_parts_used, is_primary);
+    }
+  }
+
+  // Default behavior for non-TPC-C mode
+  return 10;
+}
+
+/**
+ * Calculate how many key parts are covered by the given key length
+ * This is an approximation based on key part sizes
+ */
+uint ha_lineairdb::calculate_key_parts_from_length(KEY *key, uint key_length)
+{
+  if (key == nullptr || key_length == 0)
+    return 0;
+
+  uint parts = 0;
+  uint accumulated_length = 0;
+
+  for (uint i = 0; i < key->user_defined_key_parts; i++)
+  {
+    KEY_PART_INFO *part = &key->key_part[i];
+
+    // Add length for this key part (including null byte if nullable)
+    uint part_length = part->store_length;
+    accumulated_length += part_length;
+
+    if (accumulated_length <= key_length)
+    {
+      parts++;
+    }
+    else
+    {
+      break;
+    }
+  }
+
+  return parts;
+}
+
+/**
+ * Estimate records in range for TPC-C tables
+ * Returns appropriate estimates to favor secondary indexes when appropriate
+ */
+ha_rows ha_lineairdb::estimate_tpcc_records_in_range(const char *table_name,
+                                                     const char *index_name,
+                                                     uint key_parts_used,
+                                                     bool is_primary)
+{
+  if (table_name == nullptr)
+    return 10;
+
+  // Customer table - most important for TPC-C optimization
+  if (strcasecmp(table_name, "customer") == 0)
+  {
+    return tpcc_stats::estimate_customer_records_in_range(index_name, key_parts_used);
+  }
+
+  // Orders table
+  if (strcasecmp(table_name, "orders") == 0 ||
+      strcasecmp(table_name, "oorder") == 0)
+  {
+    return tpcc_stats::estimate_orders_records_in_range(index_name, key_parts_used);
+  }
+
+  // New orders table
+  if (strcasecmp(table_name, "new_orders") == 0 ||
+      strcasecmp(table_name, "new_order") == 0)
+  {
+    return tpcc_stats::estimate_new_orders_records_in_range(key_parts_used);
+  }
+
+  // Stock table
+  if (strcasecmp(table_name, "stock") == 0)
+  {
+    return tpcc_stats::estimate_stock_records_in_range(key_parts_used);
+  }
+
+  // Order line table
+  if (strcasecmp(table_name, "order_line") == 0)
+  {
+    return tpcc_stats::estimate_order_line_records_in_range(key_parts_used);
+  }
+
+  // Other tables: use default
+  return 10;
 }
 
 /**
@@ -2655,6 +2973,23 @@ static MYSQL_THDVAR_LONGLONG(signed_longlong_thdvar, PLUGIN_VAR_RQCMDARG,
                              "LLONG_MIN..LLONG_MAX", nullptr, nullptr, -10,
                              LLONG_MIN, LLONG_MAX, 0);
 
+// TPC-C mode: Enable hardcoded statistics for TPC-C benchmark optimization
+// (srv_tpcc_mode is declared near the top of this file)
+static MYSQL_SYSVAR_BOOL(tpcc_mode, srv_tpcc_mode,
+                         PLUGIN_VAR_RQCMDARG,
+                         "Enable TPC-C benchmark mode with hardcoded statistics. "
+                         "When ON, optimizer statistics are tuned for TPC-C tables. "
+                         "Default: OFF",
+                         nullptr, nullptr, false);
+
+// TPC-C warehouses: Number of warehouses for row count estimation
+// (srv_tpcc_warehouses is declared near the top of this file)
+static MYSQL_SYSVAR_ULONG(tpcc_warehouses, srv_tpcc_warehouses,
+                          PLUGIN_VAR_RQCMDARG,
+                          "Number of TPC-C warehouses for statistics estimation. "
+                          "Used to calculate expected row counts. Default: 1",
+                          nullptr, nullptr, 1, 1, 10000, 0);
+
 static SYS_VAR *lineairdb_system_variables[] = {
     MYSQL_SYSVAR(enum_var),
     MYSQL_SYSVAR(ulong_var),
@@ -2668,6 +3003,8 @@ static SYS_VAR *lineairdb_system_variables[] = {
     MYSQL_SYSVAR(signed_long_thdvar),
     MYSQL_SYSVAR(signed_longlong_var),
     MYSQL_SYSVAR(signed_longlong_thdvar),
+    MYSQL_SYSVAR(tpcc_mode),
+    MYSQL_SYSVAR(tpcc_warehouses),
     nullptr};
 
 // this is an lineairdb of SHOW_FUNC

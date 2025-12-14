@@ -235,9 +235,13 @@ void LineairDBTransaction::end_transaction()
   // tx may be nullptr for DDL operations like CREATE INDEX
   if (tx != nullptr)
   {
+    bool was_aborted = tx->IsAborted();
     db->EndTransaction(*tx, [&](auto) {});
-    if (isFence)
+    // Skip fence() if transaction was aborted to avoid deadlock
+    if (isFence && !was_aborted)
+    {
       fence();
+    }
   }
   delete this;
 }
