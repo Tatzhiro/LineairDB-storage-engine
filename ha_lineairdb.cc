@@ -633,6 +633,7 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
   secondary_index_results_.clear();
   current_position_in_index_ = 0;
   end_range_exclusive_key_.clear();
+  prefix_cursor_.is_active = false;
 
   // Check if this is a prefix search (not all key parts are specified)
   KEY *key_info = &table->key_info[active_index];
@@ -696,12 +697,14 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
   // Cursor-based prefix search handling
   if (prefix_cursor_.is_active)
   {
-    if (prefix_cursor_.scan_exhausted) {
+    if (prefix_cursor_.scan_exhausted)
+    {
       return HA_ERR_END_OF_FILE;
     }
 
     auto tx = get_transaction(ha_thd());
-    if (tx->is_aborted()) {
+    if (tx->is_aborted())
+    {
       thd_mark_transaction_to_rollback(ha_thd(), 1);
       return HA_ERR_LOCK_DEADLOCK;
     }
@@ -710,14 +713,15 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
 
     auto next_key = tx->fetch_next_key_with_prefix(
         prefix_cursor_.last_fetched_key, prefix_cursor_.prefix_end_key);
-    
-    if(tx->is_aborted())
+
+    if (tx->is_aborted())
     {
       thd_mark_transaction_to_rollback(ha_thd(), 1);
       return HA_ERR_LOCK_DEADLOCK;
     }
 
-    if (!next_key.has_value()) {
+    if (!next_key.has_value())
+    {
       prefix_cursor_.scan_exhausted = true;
       return HA_ERR_END_OF_FILE;
     }
@@ -730,11 +734,13 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
       thd_mark_transaction_to_rollback(ha_thd(), 1);
       return HA_ERR_LOCK_DEADLOCK;
     }
-    if (result.first == nullptr || result.second == 0) {
+    if (result.first == nullptr || result.second == 0)
+    {
       return HA_ERR_KEY_NOT_FOUND;
     }
 
-    if (set_fields_from_lineairdb(buf, result.first, result.second)) {
+    if (set_fields_from_lineairdb(buf, result.first, result.second))
+    {
       tx->set_status_to_abort();
       return HA_ERR_OUT_OF_MEM;
     }
@@ -1163,10 +1169,21 @@ int ha_lineairdb::info(uint flag)
         if (stats.records < 2)
           stats.records = 2;
       }
+      /*        Along with records a few more variables you may wish to set are:
+      　　　　　　　　　　　試しにrecordsに入れてみる
+            records
+            deleted
+            data_file_length
+            index_file_length
+            delete_length
+            check_time
+          Take a look at the public variables in handler.h for more information. */
 
       // Estimate data file length
       stats.mean_rec_length = table->s->reclength > 0 ? table->s->reclength : 100;
+      // 0にしてみる
       stats.data_file_length = stats.records * stats.mean_rec_length;
+      // 0にしてみる
       stats.index_file_length = stats.data_file_length / 2;
     }
 
@@ -2093,14 +2110,15 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
     // Fetch the first matching key
     auto first_key = tx->fetch_first_key_with_prefix(
         prefix_cursor_.prefix_key, prefix_cursor_.prefix_end_key);
-      
-    if(tx->is_aborted())
+
+    if (tx->is_aborted())
     {
       thd_mark_transaction_to_rollback(ha_thd(), 1);
       return HA_ERR_LOCK_DEADLOCK;
     }
 
-    if (!first_key.has_value()) {
+    if (!first_key.has_value())
+    {
       prefix_cursor_.is_active = false;
       return HA_ERR_KEY_NOT_FOUND;
     }
@@ -2109,17 +2127,19 @@ int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_
 
     // Read the row data
     auto result = tx->read(first_key.value());
-    if(tx->is_aborted())
+    if (tx->is_aborted())
     {
       thd_mark_transaction_to_rollback(ha_thd(), 1);
       return HA_ERR_LOCK_DEADLOCK;
     }
-    if (result.first == nullptr || result.second == 0) {
+    if (result.first == nullptr || result.second == 0)
+    {
       prefix_cursor_.is_active = false;
       return HA_ERR_KEY_NOT_FOUND;
     }
 
-    if (set_fields_from_lineairdb(buf, result.first, result.second)) {
+    if (set_fields_from_lineairdb(buf, result.first, result.second))
+    {
       tx->set_status_to_abort();
       return HA_ERR_OUT_OF_MEM;
     }
@@ -2370,6 +2390,15 @@ int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_ma
     if (end_range->flag == HA_READ_BEFORE_KEY)
     {
       end_range_exclusive_key_ = serialized_end_key;
+    }
+    else
+    {
+      // Inclusive end: extend prefix to include all keys with this prefix
+      uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
+      if (end_used_key_parts < key_info->user_defined_key_parts)
+      {
+        serialized_end_key = build_prefix_range_end(serialized_end_key);
+      }
     }
   }
   else
