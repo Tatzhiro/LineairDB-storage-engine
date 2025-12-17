@@ -116,7 +116,7 @@
 #include "tpcc_stats.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-#define FENCE false
+#define FENCE true
 
 namespace
 {
@@ -854,20 +854,15 @@ int ha_lineairdb::rnd_init(bool)
 {
   DBUG_ENTER("ha_lineairdb::rnd_init");
   scanned_keys_.clear();
+  scanned_values_.clear();
   buffer_position_ = 0;
   last_batch_key_.clear();
   scan_exhausted_ = false;
   last_fetched_primary_key_.clear();
   current_position_ = 0;
   stats.records = 0;
-  if (table->s->primary_key != MAX_KEY)
-  {
-    change_active_index(table->s->primary_key);
-  }
-  else
-  {
-    active_index = MAX_KEY;
-  }
+
+  change_active_index(table->s->primary_key);
 
   auto tx = get_transaction(ha_thd());
 
@@ -887,6 +882,8 @@ int ha_lineairdb::rnd_end()
   DBUG_TRACE;
   scanned_keys_.clear();
   scanned_keys_.shrink_to_fit();
+  scanned_values_.clear();
+  scanned_values_.shrink_to_fit();
   buffer_position_ = 0;
   last_batch_key_.clear();
   scan_exhausted_ = false;
@@ -905,8 +902,10 @@ bool ha_lineairdb::fetch_next_batch()
   }
 
   scanned_keys_.clear();
+  scanned_values_.clear();
   buffer_position_ = 0;
   scanned_keys_.reserve(SCAN_BATCH_SIZE);
+  scanned_values_.reserve(SCAN_BATCH_SIZE);
 
   std::string begin = last_batch_key_;
   bool skip_first = !last_batch_key_.empty();
@@ -930,6 +929,8 @@ bool ha_lineairdb::fetch_next_batch()
              }
 
              scanned_keys_.emplace_back(key);
+             const std::byte *value_ptr = static_cast<const std::byte *>(value.first);
+             scanned_values_.emplace_back(value_ptr, value_ptr + value.second);
              if (scanned_keys_.size() >= SCAN_BATCH_SIZE)
              {
                return true; // stop scan
@@ -995,29 +996,13 @@ int ha_lineairdb::rnd_next(uchar *buf)
   }
 
   auto &key = scanned_keys_[buffer_position_];
+  auto &value = scanned_values_[buffer_position_];
   buffer_position_++;
 
-  auto tx = get_transaction(ha_thd());
-  if (tx->is_aborted())
+  int error = set_fields_from_lineairdb(buf, value.data(), value.size());
+  if (error == 0)
   {
-    thd_mark_transaction_to_rollback(ha_thd(), 1);
-    return HA_ERR_LOCK_DEADLOCK;
-  }
-
-  tx->choose_table(db_table_name);
-  auto read_buffer = tx->read(key);
-  int error = 0;
-  if (read_buffer.first == nullptr)
-  {
-    error = HA_ERR_KEY_NOT_FOUND;
-  }
-  else
-  {
-    error = set_fields_from_lineairdb(buf, read_buffer.first, read_buffer.second);
-    if (error == 0)
-    {
-      last_fetched_primary_key_ = key;
-    }
+    last_fetched_primary_key_ = key;
   }
   current_position_++;
   DBUG_RETURN(error);

@@ -100,6 +100,7 @@ private:
   // which provides reliable access to the current thread handle.
   uint current_position_in_index_;
   std::vector<std::string> scanned_keys_;
+  std::vector<std::vector<std::byte>> scanned_values_;
   std::vector<std::string> secondary_index_results_;
   std::string last_fetched_primary_key_;
   std::string end_range_exclusive_key_; // For HA_READ_BEFORE_KEY: exclude this key from results
@@ -116,12 +117,13 @@ private:
   bool scan_exhausted_{false};
 
   // カーソルベースのプレフィックス検索の状態
-  struct PrefixScanCursor {
+  struct PrefixScanCursor
+  {
     bool is_active = false;
-    std::string prefix_key;          // 検索プレフィックス
-    std::string prefix_end_key;      // プレフィックス範囲の終端
-    std::string last_fetched_key;    // 最後に取得したキー（次回の開始点）
-    bool scan_exhausted = false;     // スキャン完了フラグ
+    std::string prefix_key;       // 検索プレフィックス
+    std::string prefix_end_key;   // プレフィックス範囲の終端
+    std::string last_fetched_key; // 最後に取得したキー（次回の開始点）
+    bool scan_exhausted = false;  // スキャン完了フラグ
   };
   PrefixScanCursor prefix_cursor_;
 
