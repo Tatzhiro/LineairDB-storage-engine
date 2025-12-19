@@ -51,6 +51,7 @@
 #include "lineairdb_field_types.h"
 #include "lineairdb_field.hh"
 #include "lineairdb_transaction.hh"
+#include "index_search_plan.hh"
 #include "my_base.h" /* ha_rows */
 #include "my_compiler.h"
 #include "my_inttypes.h"
@@ -126,6 +127,9 @@ private:
     bool scan_exhausted = false;  // スキャン完了フラグ
   };
   PrefixScanCursor prefix_cursor_;
+
+  // 検索計画（Phase 1: index_refactor_implementation_plan.md）
+  IndexSearchPlan current_plan_;
 
   void store_primary_key_in_ref(const std::string &primary_key);
   std::string extract_primary_key_from_ref(const uchar *pos) const;
@@ -387,13 +391,17 @@ private:
   static uint count_used_key_parts(const KEY *key_info, key_part_map keypart_map);
   int fetch_and_set_current_result(uchar *buf, LineairDBTransaction *tx);
 
-  // index_read_map helper functions
-  int index_read_primary_key(uchar *buf, const uchar *key, key_part_map keypart_map,
-                             enum ha_rkey_function find_flag, KEY *key_info,
-                             bool is_prefix_search, LineairDBTransaction *tx);
-  int index_read_secondary(uchar *buf, const uchar *key, key_part_map keypart_map,
-                           enum ha_rkey_function find_flag, KEY *key_info,
-                           bool is_prefix_search, LineairDBTransaction *tx);
+  // Phase 2: 検索計画の構築 (index_refactor_implementation_plan.md)
+  void build_search_plan(const uchar *key, key_part_map keypart_map,
+                         enum ha_rkey_function find_flag, KEY *key_info);
+
+  // Phase 3: 検索計画の実行 (index_refactor_implementation_plan.md)
+  int execute_plan(uchar *buf, LineairDBTransaction *tx);
+  int execute_index_first(uchar *buf, LineairDBTransaction *tx);
+  int execute_unique_point(uchar *buf, LineairDBTransaction *tx);
+  int execute_same_key_cursor(uchar *buf, LineairDBTransaction *tx);
+  int execute_range_materialize(uchar *buf, LineairDBTransaction *tx);
+  int execute_prefix_last(uchar *buf, LineairDBTransaction *tx);
 
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);

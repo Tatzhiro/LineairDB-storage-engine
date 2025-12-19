@@ -99,6 +99,7 @@
 #include <fstream>
 #include <iomanip>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -409,6 +410,7 @@ int ha_lineairdb::index_init(uint idx, bool sorted [[maybe_unused]])
   current_position_in_index_ = 0;
   last_fetched_primary_key_.clear();
   prefix_cursor_.is_active = false;
+
   return change_active_index(idx);
 }
 
@@ -630,45 +632,23 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
   }
 
   tx->choose_table(db_table_name);
-  secondary_index_results_.clear();
-  current_position_in_index_ = 0;
-  end_range_exclusive_key_.clear();
-  prefix_cursor_.is_active = false;
 
-  // Check if this is a prefix search (not all key parts are specified)
   KEY *key_info = &table->key_info[active_index];
-  uint used_key_parts = count_used_key_parts(key_info, keypart_map);
-  bool is_prefix_search = (used_key_parts < key_info->user_defined_key_parts);
 
-  if (active_index == table->s->primary_key)
-  {
-    return index_read_primary_key(buf, key, keypart_map, find_flag,
-                                  key_info, is_prefix_search, tx);
-  }
-  else
-  {
-    return index_read_secondary(buf, key, keypart_map, find_flag,
-                                key_info, is_prefix_search, tx);
-  }
+  // Phase 4: Plan/Execute分離 (index_refactor_implementation_plan.md)
+  build_search_plan(key, keypart_map, find_flag, key_info);
+  current_plan_.executed = true;
+
+  return execute_plan(buf, tx);
 }
 
 /**
-  @brief
-  Used to read forward through the index.
-*/
-
+ * @brief index_next: 現在カーソルの次行
+ * @see index_refactor_implementation_plan.md §5 Phase 5
+ */
 int ha_lineairdb::index_next(uchar *buf)
 {
   DBUG_TRACE;
-  if (secondary_index_results_.size() == 0)
-  {
-    return HA_ERR_END_OF_FILE;
-  }
-
-  if (current_position_in_index_ >= secondary_index_results_.size())
-  {
-    return HA_ERR_END_OF_FILE;
-  }
 
   auto tx = get_transaction(ha_thd());
   if (tx->is_aborted())
@@ -676,40 +656,15 @@ int ha_lineairdb::index_next(uchar *buf)
     thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
-
   tx->choose_table(db_table_name);
-  std::string primary_key = secondary_index_results_[current_position_in_index_];
-  auto result = tx->read(primary_key);
-  if (set_fields_from_lineairdb(buf, result.first, result.second))
-  {
-    tx->set_status_to_abort();
-    return HA_ERR_OUT_OF_MEM;
-  }
-  current_position_in_index_++;
-  last_fetched_primary_key_ = primary_key;
-  return 0;
-}
 
-int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
-{
-  DBUG_TRACE;
-
-  // Cursor-based prefix search handling
+  // カーソルモード（kSameKeyCursor でPK検索時）
   if (prefix_cursor_.is_active)
   {
     if (prefix_cursor_.scan_exhausted)
     {
       return HA_ERR_END_OF_FILE;
     }
-
-    auto tx = get_transaction(ha_thd());
-    if (tx->is_aborted())
-    {
-      thd_mark_transaction_to_rollback(ha_thd(), 1);
-      return HA_ERR_LOCK_DEADLOCK;
-    }
-
-    tx->choose_table(db_table_name);
 
     auto next_key = tx->fetch_next_key_with_prefix(
         prefix_cursor_.last_fetched_key, prefix_cursor_.prefix_end_key);
@@ -729,11 +684,6 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
     prefix_cursor_.last_fetched_key = next_key.value();
 
     auto result = tx->read(next_key.value());
-    if (tx->is_aborted())
-    {
-      thd_mark_transaction_to_rollback(ha_thd(), 1);
-      return HA_ERR_LOCK_DEADLOCK;
-    }
     if (result.first == nullptr || result.second == 0)
     {
       return HA_ERR_KEY_NOT_FOUND;
@@ -749,16 +699,35 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
     return 0;
   }
 
-  // Original secondary_index_results_ based handling
-  if (secondary_index_results_.size() == 0)
+  // materializeモード
+  if (secondary_index_results_.empty() ||
+      current_position_in_index_ >= secondary_index_results_.size())
   {
     return HA_ERR_END_OF_FILE;
   }
 
-  if (current_position_in_index_ >= secondary_index_results_.size())
+  std::string primary_key = secondary_index_results_[current_position_in_index_];
+  auto result = tx->read(primary_key);
+
+  if (set_fields_from_lineairdb(buf, result.first, result.second))
   {
-    return HA_ERR_END_OF_FILE;
+    tx->set_status_to_abort();
+    return HA_ERR_OUT_OF_MEM;
   }
+
+  current_position_in_index_++;
+  last_fetched_primary_key_ = primary_key;
+  return 0;
+}
+
+/**
+ * @brief index_next_same: 同一プレフィックスグループ内の次行
+ * @see index_refactor_implementation_plan.md §5 Phase 5
+ * @note sameグループ外に出たら HA_ERR_END_OF_FILE を返す
+ */
+int ha_lineairdb::index_next_same(uchar *buf, const uchar *key [[maybe_unused]], uint key_len [[maybe_unused]])
+{
+  DBUG_TRACE;
 
   auto tx = get_transaction(ha_thd());
   if (tx->is_aborted())
@@ -766,15 +735,76 @@ int ha_lineairdb::index_next_same(uchar *buf, const uchar *key, uint key_len)
     thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
   }
-
   tx->choose_table(db_table_name);
+
+  // カーソルモード
+  if (prefix_cursor_.is_active)
+  {
+    if (prefix_cursor_.scan_exhausted)
+    {
+      return HA_ERR_END_OF_FILE;
+    }
+
+    auto next_key = tx->fetch_next_key_with_prefix(
+        prefix_cursor_.last_fetched_key, prefix_cursor_.prefix_end_key);
+
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+
+    if (!next_key.has_value())
+    {
+      prefix_cursor_.scan_exhausted = true;
+      return HA_ERR_END_OF_FILE;
+    }
+
+    // same グループ境界チェック（current_plan_ の境界を使用）
+    if (!current_plan_.same_group_prefix_serialized.empty())
+    {
+      // next_key が same_group_end を超えていないかチェック
+      if (next_key.value() >= current_plan_.same_group_end_serialized)
+      {
+        prefix_cursor_.scan_exhausted = true;
+        return HA_ERR_END_OF_FILE;
+      }
+    }
+
+    prefix_cursor_.last_fetched_key = next_key.value();
+
+    auto result = tx->read(next_key.value());
+    if (result.first == nullptr || result.second == 0)
+    {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    if (set_fields_from_lineairdb(buf, result.first, result.second))
+    {
+      tx->set_status_to_abort();
+      return HA_ERR_OUT_OF_MEM;
+    }
+
+    last_fetched_primary_key_ = next_key.value();
+    return 0;
+  }
+
+  // materializeモード
+  if (secondary_index_results_.empty() ||
+      current_position_in_index_ >= secondary_index_results_.size())
+  {
+    return HA_ERR_END_OF_FILE;
+  }
+
   std::string primary_key = secondary_index_results_[current_position_in_index_];
+
   auto result = tx->read(primary_key);
   if (set_fields_from_lineairdb(buf, result.first, result.second))
   {
     tx->set_status_to_abort();
     return HA_ERR_OUT_OF_MEM;
   }
+
   current_position_in_index_++;
   last_fetched_primary_key_ = primary_key;
   return 0;
@@ -1932,11 +1962,33 @@ void ha_lineairdb::append_key_part_encoding(std::string &out, bool is_null,
   }
 }
 
+/**
+ * @brief プレフィックス範囲の終端キー（次の辞書順キー）を生成
+ * @see index_refactor_implementation_plan.md §7
+ *
+ * 次の辞書順キーを返すことで、prefix で始まる全てのキーを
+ * [prefix, end) の形で正確にカバーする。
+ *
+ * 例:
+ *   prefix = 01 02 FF -> end = 01 03
+ *
+ * 全バイトが 0xFF の場合は「上限なし」を意味する空文字を返す。
+ */
 std::string ha_lineairdb::build_prefix_range_end(const std::string &prefix)
 {
   std::string end = prefix;
-  end.push_back(static_cast<char>(0xFF));
-  return end;
+  for (size_t i = end.size(); i-- > 0;)
+  {
+    unsigned char byte = static_cast<unsigned char>(end[i]);
+    if (byte != 0xFF)
+    {
+      end[i] = static_cast<char>(byte + 1);
+      end.resize(i + 1);
+      return end;
+    }
+  }
+  // 上限なし
+  return std::string();
 }
 
 /**
@@ -1957,6 +2009,414 @@ uint ha_lineairdb::count_used_key_parts(const KEY *key_info, key_part_map keypar
       break;
   }
   return count;
+}
+
+/**
+ * @brief 検索計画を構築
+ * @see index_refactor_implementation_plan.md §2
+ *
+ * 判定手順:
+ * 1. 状態リセット
+ * 2. 基本情報抽出 (used_key_parts, is_unique, has_nullable)
+ * 3. op決定
+ * 4. 境界シリアライズ
+ */
+void ha_lineairdb::build_search_plan(
+    const uchar *key,
+    key_part_map keypart_map,
+    enum ha_rkey_function find_flag,
+    KEY *key_info)
+{
+  // 1. 状態リセット
+  current_plan_.reset();
+  secondary_index_results_.clear();
+  current_position_in_index_ = 0;
+  end_range_exclusive_key_.clear();
+  prefix_cursor_.is_active = false;
+
+  // 2. 基本情報抽出
+  current_plan_.is_primary = (active_index == table->s->primary_key);
+  current_plan_.find_flag = find_flag;
+
+  // HA_WHOLE_KEY対応 (方針書 §1.2)
+  if (keypart_map == HA_WHOLE_KEY)
+  {
+    current_plan_.used_key_parts = key_info->user_defined_key_parts;
+    current_plan_.all_parts_specified = true;
+  }
+  else
+  {
+    current_plan_.used_key_parts = count_used_key_parts(key_info, keypart_map);
+    current_plan_.all_parts_specified =
+        (current_plan_.used_key_parts == key_info->user_defined_key_parts);
+  }
+
+  // ユニーク判定 (方針書 §1.3)
+  current_plan_.is_unique_index = (key_info->flags & HA_NOSAME) != 0;
+  current_plan_.has_nullable_parts = (key_info->flags & HA_NULL_PART_KEY) != 0;
+
+
+  // 3. op決定 (方針書 §4.2.3)
+  if (key == nullptr)
+  {
+    current_plan_.op = IndexSearchOp::kIndexFirst;
+  }
+  else if (find_flag == HA_READ_KEY_EXACT &&
+           current_plan_.all_parts_specified &&
+           current_plan_.is_unique_index &&
+           !current_plan_.has_nullable_parts)
+  {
+    current_plan_.op = IndexSearchOp::kUniquePoint;
+  }
+  else if (find_flag == HA_READ_KEY_EXACT)
+  {
+    current_plan_.op = IndexSearchOp::kSameKeyCursor;
+  }
+  else if (find_flag == HA_READ_PREFIX_LAST ||
+           find_flag == HA_READ_PREFIX_LAST_OR_PREV)
+  {
+    current_plan_.op = IndexSearchOp::kPrefixLast;
+  }
+  else
+  {
+    current_plan_.op = IndexSearchOp::kRangeMaterialize;
+  }
+
+
+  // 4. 境界シリアライズ
+  if (key != nullptr)
+  {
+    current_plan_.start_key_serialized = convert_key_to_ldbformat(key, keypart_map);
+
+    // same グループ境界（kSameKeyCursor用）
+    if (current_plan_.op == IndexSearchOp::kSameKeyCursor ||
+        current_plan_.op == IndexSearchOp::kPrefixLast)
+    {
+      current_plan_.same_group_prefix_serialized = current_plan_.start_key_serialized;
+      current_plan_.same_group_end_serialized =
+          build_prefix_range_end(current_plan_.start_key_serialized);
+    }
+  }
+
+  // end_range処理
+  if (end_range != nullptr)
+  {
+    current_plan_.end_key_serialized =
+        convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
+
+    if (end_range->flag == HA_READ_BEFORE_KEY)
+    {
+      // exclusive end (方針書 §9.1 注意: Scanはinclusive)
+      current_plan_.exclusive_end_key_serialized = current_plan_.end_key_serialized;
+    }
+    else
+    {
+      // inclusive end: prefix拡張が必要か判定
+      uint end_used_parts = count_used_key_parts(key_info, end_range->keypart_map);
+      if (end_used_parts < key_info->user_defined_key_parts)
+      {
+        current_plan_.end_key_serialized =
+            build_prefix_range_end(current_plan_.end_key_serialized);
+        if (!current_plan_.end_key_serialized.empty())
+        {
+          // prefix範囲の排他上限として扱う
+          current_plan_.exclusive_end_key_serialized = current_plan_.end_key_serialized;
+        }
+      }
+    }
+  }
+
+}
+
+/**
+ * @brief 検索計画を実行
+ * @see index_refactor_implementation_plan.md §3
+ * @return 0: 成功, HA_ERR_*: エラー
+ */
+int ha_lineairdb::execute_plan(uchar *buf, LineairDBTransaction *tx)
+{
+  switch (current_plan_.op)
+  {
+  case IndexSearchOp::kIndexFirst:
+    return execute_index_first(buf, tx);
+  case IndexSearchOp::kUniquePoint:
+    return execute_unique_point(buf, tx);
+  case IndexSearchOp::kSameKeyCursor:
+    return execute_same_key_cursor(buf, tx);
+  case IndexSearchOp::kRangeMaterialize:
+    return execute_range_materialize(buf, tx);
+  case IndexSearchOp::kPrefixLast:
+    return execute_prefix_last(buf, tx);
+  default:
+    return HA_ERR_WRONG_COMMAND;
+  }
+}
+
+/**
+ * @brief kIndexFirst: key==nullptr のフルスキャン
+ * @see 方針書 §5.1
+ */
+int ha_lineairdb::execute_index_first(uchar *buf, LineairDBTransaction *tx)
+{
+  std::string start_key = "";
+  std::string end_key = current_plan_.end_key_serialized.empty()
+                            ? std::string(8, '\xFF')
+                            : current_plan_.end_key_serialized;
+
+  if (current_plan_.is_primary)
+  {
+    secondary_index_results_ = tx->get_matching_keys_in_range(
+        start_key, end_key, current_plan_.exclusive_end_key_serialized);
+  }
+  else
+  {
+    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+        current_index_name, start_key, end_key,
+        current_plan_.exclusive_end_key_serialized);
+  }
+
+  // phantom検出チェック (方針書 §9.2)
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  if (secondary_index_results_.empty())
+  {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  return fetch_and_set_current_result(buf, tx);
+}
+
+/**
+ * @brief kUniquePoint: ユニークインデックスの完全一致
+ * @see 方針書 §5.2
+ * @return HA_ERR_KEY_NOT_FOUND (一致なし), 0 (成功)
+ */
+int ha_lineairdb::execute_unique_point(uchar *buf, LineairDBTransaction *tx)
+{
+  // DEBUG: 確実に通る経路
+  fprintf(stderr, "[execute_unique_point] is_primary=%d\n", current_plan_.is_primary ? 1 : 0);
+
+  if (current_plan_.is_primary)
+  {
+    auto result = tx->read(current_plan_.start_key_serialized);
+
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+
+    if (result.first == nullptr || result.second == 0)
+    {
+      return HA_ERR_KEY_NOT_FOUND; // 方針書 §5.2: "一致無し"
+    }
+
+    if (set_fields_from_lineairdb(buf, result.first, result.second))
+    {
+      tx->set_status_to_abort();
+      return HA_ERR_OUT_OF_MEM;
+    }
+
+    // index_next で EOF を返すための状態設定
+    secondary_index_results_.push_back(current_plan_.start_key_serialized);
+    current_position_in_index_ = 1;
+    last_fetched_primary_key_ = current_plan_.start_key_serialized;
+    return 0;
+  }
+  else
+  {
+    // Secondary UNIQUE: read_secondary_index → PK読み
+    auto index_results = tx->read_secondary_index(
+        current_index_name, current_plan_.start_key_serialized);
+
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+
+    for (auto &[ptr, size] : index_results)
+    {
+      std::string pk(reinterpret_cast<const char *>(ptr), size);
+      secondary_index_results_.push_back(pk);
+    }
+
+    if (secondary_index_results_.empty())
+    {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    return fetch_and_set_current_result(buf, tx);
+  }
+}
+
+/**
+ * @brief kSameKeyCursor: EXACT検索（prefix一致, 非unique, nullable unique含む）
+ * @see 方針書 §5.3
+ */
+int ha_lineairdb::execute_same_key_cursor(uchar *buf, LineairDBTransaction *tx)
+{
+  // カーソルモード初期化
+  prefix_cursor_.is_active = true;
+  prefix_cursor_.prefix_key = current_plan_.same_group_prefix_serialized;
+  prefix_cursor_.prefix_end_key = current_plan_.same_group_end_serialized;
+  prefix_cursor_.scan_exhausted = false;
+
+  // 最初のキー取得
+  std::optional<std::string> first_key;
+
+  if (current_plan_.is_primary)
+  {
+    first_key = tx->fetch_first_key_with_prefix(
+        prefix_cursor_.prefix_key, prefix_cursor_.prefix_end_key);
+  }
+  else
+  {
+    // セカンダリインデックス: materialize方式（当面は正しさ優先）
+    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+        current_index_name,
+        prefix_cursor_.prefix_key,
+        prefix_cursor_.prefix_end_key,
+        prefix_cursor_.prefix_end_key);
+
+    prefix_cursor_.is_active = false; // materialize方式に切り替え
+
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+
+    if (secondary_index_results_.empty())
+    {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+
+    return fetch_and_set_current_result(buf, tx);
+  }
+
+  // phantom検出チェック
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  if (!first_key.has_value())
+  {
+    prefix_cursor_.is_active = false;
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  prefix_cursor_.last_fetched_key = first_key.value();
+
+  auto result = tx->read(first_key.value());
+  if (result.first == nullptr || result.second == 0)
+  {
+    prefix_cursor_.is_active = false;
+    return HA_ERR_KEY_NOT_FOUND;
+  }
+
+  if (set_fields_from_lineairdb(buf, result.first, result.second))
+  {
+    tx->set_status_to_abort();
+    return HA_ERR_OUT_OF_MEM;
+  }
+
+  last_fetched_primary_key_ = first_key.value();
+  return 0;
+}
+
+/**
+ * @brief kRangeMaterialize: 範囲検索（AFTER_KEY, KEY_OR_NEXT等）
+ * @see 方針書 §5.4
+ */
+int ha_lineairdb::execute_range_materialize(uchar *buf, LineairDBTransaction *tx)
+{
+  std::string effective_start = current_plan_.start_key_serialized;
+  std::string effective_end = current_plan_.end_key_serialized;
+
+  // find_flag による開始キー調整
+  if (current_plan_.find_flag == HA_READ_AFTER_KEY)
+  {
+    effective_start.push_back('\x00'); // 開始キーを排除
+  }
+
+  // 終端キー調整
+  // 空文字は「上限なし」を意味する（Scanでstd::nulloptに変換）
+
+  // Scan実行
+  if (current_plan_.is_primary)
+  {
+    secondary_index_results_ = tx->get_matching_keys_in_range(
+        effective_start, effective_end,
+        current_plan_.exclusive_end_key_serialized);
+  }
+  else
+  {
+    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+        current_index_name, effective_start, effective_end,
+        current_plan_.exclusive_end_key_serialized);
+  }
+
+  // phantom検出チェック
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  if (secondary_index_results_.empty())
+  {
+    // 方針書 §5.4: 0件なら原則 HA_ERR_END_OF_FILE
+    return HA_ERR_END_OF_FILE;
+  }
+
+  return fetch_and_set_current_result(buf, tx);
+}
+
+/**
+ * @brief kPrefixLast: プレフィックス範囲の最後の行
+ * @see 方針書 §5.5
+ * @note 当面は materialize して最後を返す（遅いが正しい）
+ */
+int ha_lineairdb::execute_prefix_last(uchar *buf, LineairDBTransaction *tx)
+{
+  // materialize方式
+  if (current_plan_.is_primary)
+  {
+    secondary_index_results_ = tx->get_matching_keys_in_range(
+        current_plan_.same_group_prefix_serialized,
+        current_plan_.same_group_end_serialized,
+        current_plan_.same_group_end_serialized);
+  }
+  else
+  {
+    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+        current_index_name,
+        current_plan_.same_group_prefix_serialized,
+        current_plan_.same_group_end_serialized,
+        current_plan_.same_group_end_serialized);
+  }
+
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  if (secondary_index_results_.empty())
+  {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  // 最後の要素を取得
+  current_position_in_index_ = secondary_index_results_.size() - 1;
+  return fetch_and_set_current_result(buf, tx);
 }
 
 /**
@@ -1998,422 +2458,9 @@ int ha_lineairdb::fetch_and_set_current_result(uchar *buf, LineairDBTransaction 
   return 0;
 }
 
-/**
- * @brief Handle PRIMARY KEY index read operations
- *
- * This function handles all PRIMARY KEY search operations including:
- * - Full scan (key == nullptr)
- * - Exact match search
- * - Prefix/range search with various find_flag values
- *
- * @param buf Buffer to store the result
- * @param key Search key (nullptr for full scan)
- * @param keypart_map Bitmap indicating which key parts are used
- * @param find_flag Search mode (HA_READ_KEY_EXACT, HA_READ_AFTER_KEY, etc.)
- * @param key_info KEY structure for the active index
- * @param is_prefix_search True if not all key parts are specified
- * @param tx Transaction object
- * @return 0 on success, error code on failure
- */
-int ha_lineairdb::index_read_primary_key(uchar *buf, const uchar *key, key_part_map keypart_map,
-                                         enum ha_rkey_function find_flag, KEY *key_info,
-                                         bool is_prefix_search, LineairDBTransaction *tx)
-{
-  // Full scan: key == nullptr
-  if (key == nullptr)
-  {
-    std::string serialized_start_key = "";
-    std::string serialized_end_key;
-
-    if (end_range != nullptr)
-    {
-      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
-
-      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
-      if (end_range->flag == HA_READ_BEFORE_KEY)
-      {
-        end_range_exclusive_key_ = serialized_end_key;
-      }
-    }
-    else
-    {
-      serialized_end_key = std::string(8, '\xFF');
-    }
-
-    secondary_index_results_ = tx->get_matching_keys_in_range(
-        serialized_start_key, serialized_end_key, end_range_exclusive_key_);
-
-    if (tx->is_aborted())
-    {
-      thd_mark_transaction_to_rollback(ha_thd(), 1);
-      return HA_ERR_LOCK_DEADLOCK;
-    }
-
-    if (secondary_index_results_.empty())
-    {
-      return HA_ERR_END_OF_FILE;
-    }
-
-    return fetch_and_set_current_result(buf, tx);
-  }
-
-  auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
-
-  // Exact match search
-  if (end_range == nullptr && !is_prefix_search && find_flag == HA_READ_KEY_EXACT)
-  {
-    auto result = tx->read(serialized_key);
-
-    if (result.first == nullptr || result.second == 0)
-    {
-      return HA_ERR_KEY_NOT_FOUND;
-    }
-
-    if (set_fields_from_lineairdb(buf, result.first, result.second))
-    {
-      tx->set_status_to_abort();
-      return HA_ERR_OUT_OF_MEM;
-    }
-
-    secondary_index_results_.push_back(serialized_key);
-    current_position_in_index_ = 1;
-    last_fetched_primary_key_ = serialized_key;
-
-    return 0;
-  }
-
-  // Cursor-based prefix search (for LIMIT optimization)
-  // This handles: end_range == nullptr && is_prefix_search && find_flag == HA_READ_KEY_EXACT
-  if (end_range == nullptr && is_prefix_search && find_flag == HA_READ_KEY_EXACT)
-  {
-    // Initialize cursor state
-    prefix_cursor_.is_active = true;
-    prefix_cursor_.prefix_key = serialized_key;
-    prefix_cursor_.prefix_end_key = build_prefix_range_end(serialized_key);
-    prefix_cursor_.scan_exhausted = false;
-
-    // Fetch the first matching key
-    auto first_key = tx->fetch_first_key_with_prefix(
-        prefix_cursor_.prefix_key, prefix_cursor_.prefix_end_key);
-
-    if (tx->is_aborted())
-    {
-      thd_mark_transaction_to_rollback(ha_thd(), 1);
-      return HA_ERR_LOCK_DEADLOCK;
-    }
-
-    if (!first_key.has_value())
-    {
-      prefix_cursor_.is_active = false;
-      return HA_ERR_KEY_NOT_FOUND;
-    }
-
-    prefix_cursor_.last_fetched_key = first_key.value();
-
-    // Read the row data
-    auto result = tx->read(first_key.value());
-    if (tx->is_aborted())
-    {
-      thd_mark_transaction_to_rollback(ha_thd(), 1);
-      return HA_ERR_LOCK_DEADLOCK;
-    }
-    if (result.first == nullptr || result.second == 0)
-    {
-      prefix_cursor_.is_active = false;
-      return HA_ERR_KEY_NOT_FOUND;
-    }
-
-    if (set_fields_from_lineairdb(buf, result.first, result.second))
-    {
-      tx->set_status_to_abort();
-      return HA_ERR_OUT_OF_MEM;
-    }
-
-    last_fetched_primary_key_ = first_key.value();
-    return 0;
-  }
-
-  // PRIMARY KEY prefix/range search
-  std::string serialized_end_key;
-  std::string effective_start_key = serialized_key;
-
-  if (find_flag == HA_READ_AFTER_KEY)
-  {
-    // Exclude start key by appending a byte to search after it
-    effective_start_key.push_back('\x00');
-    if (end_range != nullptr)
-    {
-      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
-
-      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
-      if (end_range->flag == HA_READ_BEFORE_KEY)
-      {
-        // Exclusive end: do not extend prefix - scan ends before this key
-        end_range_exclusive_key_ = serialized_end_key;
-      }
-      else
-      {
-        // Inclusive end: extend prefix to include all keys with this prefix
-        uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
-        if (end_used_key_parts < key_info->user_defined_key_parts)
-        {
-          serialized_end_key = build_prefix_range_end(serialized_end_key);
-        }
-      }
-    }
-    else
-    {
-      serialized_end_key = std::string(effective_start_key.size() + 1, '\xFF');
-    }
-  }
-  else if (find_flag == HA_READ_KEY_OR_NEXT)
-  {
-    if (end_range != nullptr)
-    {
-      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
-
-      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
-      if (end_range->flag == HA_READ_BEFORE_KEY)
-      {
-        // Exclusive end: do not extend prefix - scan ends before this key
-        end_range_exclusive_key_ = serialized_end_key;
-      }
-      else
-      {
-        // Inclusive end: extend prefix to include all keys with this prefix
-        uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
-        if (end_used_key_parts < key_info->user_defined_key_parts)
-        {
-          serialized_end_key = build_prefix_range_end(serialized_end_key);
-        }
-      }
-    }
-    else
-    {
-      serialized_end_key = std::string(serialized_key.size() + 1, '\xFF');
-    }
-  }
-  else if (end_range != nullptr)
-  {
-    serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
-
-    // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
-    if (end_range->flag == HA_READ_BEFORE_KEY)
-    {
-      // Exclusive end: do not extend prefix - scan ends before this key
-      end_range_exclusive_key_ = serialized_end_key;
-    }
-    else
-    {
-      // Inclusive end: extend prefix to include all keys with this prefix
-      uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
-
-      // Extend if either: start key is prefix (and same as end), or end key itself is prefix
-      if ((is_prefix_search && serialized_end_key == serialized_key) ||
-          end_used_key_parts < key_info->user_defined_key_parts)
-      {
-        serialized_end_key = build_prefix_range_end(serialized_end_key);
-      }
-    }
-  }
-  else
-  {
-    serialized_end_key = build_prefix_range_end(serialized_key);
-  }
-
-  // Only extend if not exclusive end - exclusive end should use original key as boundary
-  if (serialized_end_key.size() < effective_start_key.size() && end_range_exclusive_key_.empty())
-  {
-    serialized_end_key = build_prefix_range_end(serialized_end_key);
-  }
-
-  secondary_index_results_ = tx->get_matching_keys_in_range(
-      effective_start_key, serialized_end_key, end_range_exclusive_key_);
-
-  if (tx->is_aborted())
-  {
-    thd_mark_transaction_to_rollback(ha_thd(), 1);
-    return HA_ERR_LOCK_DEADLOCK;
-  }
-
-  if (secondary_index_results_.empty())
-  {
-    return HA_ERR_KEY_NOT_FOUND;
-  }
-
-  return fetch_and_set_current_result(buf, tx);
-}
-
-/**
- * @brief Handle SECONDARY INDEX read operations
- *
- * This function handles all SECONDARY INDEX search operations including:
- * - Full scan (key == nullptr)
- * - Exact match search
- * - Prefix/range search with various find_flag values
- *
- * Note: Unlike PRIMARY KEY, SECONDARY INDEX does not perform prefix extension
- * checks on end_range.
- *
- * @param buf Buffer to store the result
- * @param key Search key (nullptr for full scan)
- * @param keypart_map Bitmap indicating which key parts are used
- * @param find_flag Search mode (HA_READ_KEY_EXACT, HA_READ_AFTER_KEY, etc.)
- * @param key_info KEY structure for the active index
- * @param is_prefix_search True if not all key parts are specified
- * @param tx Transaction object
- * @return 0 on success, error code on failure
- */
-int ha_lineairdb::index_read_secondary(uchar *buf, const uchar *key, key_part_map keypart_map,
-                                       enum ha_rkey_function find_flag, KEY *key_info [[maybe_unused]],
-                                       bool is_prefix_search, LineairDBTransaction *tx)
-{
-  // Full scan: key == nullptr
-  if (key == nullptr)
-  {
-    std::string serialized_start_key = "";
-    std::string serialized_end_key;
-
-    if (end_range != nullptr)
-    {
-      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
-
-      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
-      if (end_range->flag == HA_READ_BEFORE_KEY)
-      {
-        end_range_exclusive_key_ = serialized_end_key;
-      }
-    }
-    else
-    {
-      serialized_end_key = std::string(8, '\xFF');
-    }
-
-    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
-        current_index_name, serialized_start_key, serialized_end_key, end_range_exclusive_key_);
-
-    if (tx->is_aborted())
-    {
-      thd_mark_transaction_to_rollback(ha_thd(), 1);
-      return HA_ERR_LOCK_DEADLOCK;
-    }
-
-    if (secondary_index_results_.empty())
-    {
-      return HA_ERR_END_OF_FILE;
-    }
-
-    return fetch_and_set_current_result(buf, tx);
-  }
-
-  // Exact match search
-  if (end_range == nullptr && !is_prefix_search && find_flag == HA_READ_KEY_EXACT)
-  {
-    auto serialized_key = convert_key_to_ldbformat(key, keypart_map);
-
-    auto index_results = tx->read_secondary_index(current_index_name, serialized_key);
-
-    for (auto &[ptr, size] : index_results)
-    {
-      std::string pk = std::string(reinterpret_cast<const char *>(ptr), size);
-      secondary_index_results_.push_back(pk);
-    }
-
-    if (secondary_index_results_.empty())
-    {
-      return HA_ERR_KEY_NOT_FOUND;
-    }
-
-    return fetch_and_set_current_result(buf, tx);
-  }
-
-  // Range search (including prefix search)
-  auto serialized_start_key = convert_key_to_ldbformat(key, keypart_map);
-  std::string serialized_end_key;
-
-  if (find_flag == HA_READ_AFTER_KEY)
-  {
-    // Exclude start key by appending a byte to search after it
-    serialized_start_key.push_back('\x00');
-    if (end_range != nullptr)
-    {
-      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
-
-      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
-      if (end_range->flag == HA_READ_BEFORE_KEY)
-      {
-        end_range_exclusive_key_ = serialized_end_key;
-      }
-    }
-    else
-    {
-      serialized_end_key = std::string(serialized_start_key.size() + 1, '\xFF');
-    }
-  }
-  else if (find_flag == HA_READ_KEY_OR_NEXT)
-  {
-    if (end_range != nullptr)
-    {
-      serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
-
-      // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
-      if (end_range->flag == HA_READ_BEFORE_KEY)
-      {
-        end_range_exclusive_key_ = serialized_end_key;
-      }
-    }
-    else
-    {
-      serialized_end_key = std::string(serialized_start_key.size() + 1, '\xFF');
-    }
-  }
-  else if (end_range != nullptr)
-  {
-    serialized_end_key = convert_key_to_ldbformat(end_range->key, end_range->keypart_map);
-
-    // HA_READ_BEFORE_KEY means exclusive end boundary (< instead of <=)
-    if (end_range->flag == HA_READ_BEFORE_KEY)
-    {
-      end_range_exclusive_key_ = serialized_end_key;
-    }
-    else
-    {
-      // Inclusive end: extend prefix to include all keys with this prefix
-      uint end_used_key_parts = count_used_key_parts(key_info, end_range->keypart_map);
-      if (end_used_key_parts < key_info->user_defined_key_parts)
-      {
-        serialized_end_key = build_prefix_range_end(serialized_end_key);
-      }
-    }
-  }
-  else
-  {
-    // Prefix search: generate end key by appending maximum values
-    serialized_end_key = build_prefix_range_end(serialized_start_key);
-  }
-
-  // Only extend if not exclusive end - exclusive end should use original key as boundary
-  if (serialized_end_key.size() < serialized_start_key.size() && end_range_exclusive_key_.empty())
-  {
-    serialized_end_key = build_prefix_range_end(serialized_end_key);
-  }
-
-  secondary_index_results_ = tx->get_matching_primary_keys_in_range(
-      current_index_name, serialized_start_key, serialized_end_key, end_range_exclusive_key_);
-
-  if (tx->is_aborted())
-  {
-    thd_mark_transaction_to_rollback(ha_thd(), 1);
-    return HA_ERR_LOCK_DEADLOCK;
-  }
-
-  if (secondary_index_results_.empty())
-  {
-    return HA_ERR_KEY_NOT_FOUND;
-  }
-
-  return fetch_and_set_current_result(buf, tx);
-}
+// NOTE: index_read_primary_key() と index_read_secondary() は Phase 4 で削除されました。
+// 代わりに build_search_plan() + execute_plan() を使用します。
+// @see index_refactor_implementation_plan.md
 
 /**
  * @brief Serialize a single field value to LineairDB key format
