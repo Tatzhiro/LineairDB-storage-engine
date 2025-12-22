@@ -353,20 +353,24 @@ void LineairDBTransaction::begin_transaction()
 
 void LineairDBTransaction::set_status_to_abort() { tx->Abort(); }
 
-void LineairDBTransaction::end_transaction()
+bool LineairDBTransaction::end_transaction()
 {
   // tx may be nullptr for DDL operations like CREATE INDEX
   if (tx != nullptr)
   {
     bool was_aborted = tx->IsAborted();
-    db->EndTransaction(*tx, [&](auto) {});
+    bool committed = db->EndTransaction(*tx, [&](auto) {});
     // Skip fence() if transaction was aborted to avoid deadlock
-    if (isFence && !was_aborted)
+    if (isFence && !was_aborted && committed)
     {
       fence();
     }
+    delete this;
+    return committed;
   }
   delete this;
+  // If there was no transaction object (e.g. DDL paths), treat as success.
+  return true;
 }
 
 void LineairDBTransaction::fence() const { db->Fence(); }

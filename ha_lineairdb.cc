@@ -111,6 +111,7 @@
 #include "sql/sql_class.h"
 #include "sql/sql_plugin.h"
 #include "sql/table.h"
+#include "sql/log.h"
 #include "typelib.h"
 #include "storage/innobase/include/dict0mem.h"
 #include "lineairdb_field_types.h"
@@ -128,12 +129,13 @@ namespace
   constexpr unsigned char kKeyTypeString = 0x20;
   constexpr unsigned char kKeyTypeDatetime = 0x30;
   constexpr unsigned char kKeyTypeOther = 0xF0;
+
 }
 
 static std::shared_ptr<LineairDB::Database> get_or_allocate_database(
     LineairDB::Config conf);
 
-void terminate_tx(LineairDBTransaction *&tx);
+bool terminate_tx(LineairDBTransaction *&tx);
 static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit);
 static int lineairdb_abort(handlerton *hton, THD *thd, bool);
 
@@ -858,12 +860,53 @@ int ha_lineairdb::index_first(uchar *buf)
   @see
   opt_range.cc, opt_sum.cc, sql_handler.cc and sql_select.cc
 */
-int ha_lineairdb::index_last(uchar *)
+int ha_lineairdb::index_last(uchar *buf)
 {
-  int rc;
   DBUG_TRACE;
-  rc = HA_ERR_WRONG_COMMAND;
-  return rc;
+
+  secondary_index_results_.clear();
+  current_position_in_index_ = 0;
+  prefix_cursor_.is_active = false;
+  last_fetched_primary_key_.clear();
+
+  auto tx = get_transaction(ha_thd());
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  tx->choose_table(db_table_name);
+
+  if (active_index == table->s->primary_key)
+  {
+    secondary_index_results_ = tx->get_matching_keys_in_range("", "", "");
+  }
+  else
+  {
+    secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+        current_index_name, "", "", "");
+  }
+
+  if (tx->is_aborted())
+  {
+    thd_mark_transaction_to_rollback(ha_thd(), 1);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  if (secondary_index_results_.empty())
+  {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  current_position_in_index_ =
+      static_cast<uint>(secondary_index_results_.size() - 1);
+  int error = fetch_and_set_current_result(buf, tx);
+  if (error == HA_ERR_KEY_NOT_FOUND)
+  {
+    error = HA_ERR_END_OF_FILE;
+  }
+  return error;
 }
 
 /**
@@ -1447,8 +1490,8 @@ int ha_lineairdb::external_lock(THD *thd, int lock_type)
 {
   DBUG_TRACE;
 
-  // get_transaction() will automatically start the transaction if needed
-  LineairDBTransaction *&tx = get_transaction(thd);
+  LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction **>(
+      thd_ha_data(thd, lineairdb_hton));
 
   const bool tx_is_ready_to_commit = lock_type == F_UNLCK;
   if (tx_is_ready_to_commit)
@@ -1460,6 +1503,10 @@ int ha_lineairdb::external_lock(THD *thd, int lock_type)
     }
     return 0;
   }
+
+  // get_transaction() will automatically start the transaction if needed
+  // Avoid starting a new transaction on unlock, which can trip rollback asserts.
+  (void)get_transaction(thd);
 
   // Note: Transaction is already started in get_transaction()
   // This is intentional to handle cases where MySQL optimizer
@@ -1517,7 +1564,11 @@ static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldTerminate)
 
   assert(tx != nullptr);
 
-  terminate_tx(tx);
+  const bool committed = terminate_tx(tx);
+  if (!committed)
+  {
+    return HA_ERR_LOCK_DEADLOCK;
+  }
   return 0;
 }
 
@@ -1536,10 +1587,11 @@ static int lineairdb_abort(handlerton *hton, THD *thd, bool)
   return 0;
 }
 
-void terminate_tx(LineairDBTransaction *&tx)
+bool terminate_tx(LineairDBTransaction *&tx)
 {
-  tx->end_transaction();
+  const bool committed = tx->end_transaction();
   tx = nullptr;
+  return committed;
 }
 
 /**
@@ -2055,7 +2107,6 @@ void ha_lineairdb::build_search_plan(
   current_plan_.is_unique_index = (key_info->flags & HA_NOSAME) != 0;
   current_plan_.has_nullable_parts = (key_info->flags & HA_NULL_PART_KEY) != 0;
 
-
   // 3. op決定 (方針書 §4.2.3)
   if (key == nullptr)
   {
@@ -2081,7 +2132,6 @@ void ha_lineairdb::build_search_plan(
   {
     current_plan_.op = IndexSearchOp::kRangeMaterialize;
   }
-
 
   // 4. 境界シリアライズ
   if (key != nullptr)
@@ -2197,9 +2247,6 @@ int ha_lineairdb::execute_index_first(uchar *buf, LineairDBTransaction *tx)
  */
 int ha_lineairdb::execute_unique_point(uchar *buf, LineairDBTransaction *tx)
 {
-  // DEBUG: 確実に通る経路
-  fprintf(stderr, "[execute_unique_point] is_primary=%d\n", current_plan_.is_primary ? 1 : 0);
-
   if (current_plan_.is_primary)
   {
     auto result = tx->read(current_plan_.start_key_serialized);

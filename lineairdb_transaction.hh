@@ -57,7 +57,7 @@ public:
   bool delete_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
   void begin_transaction();
   void set_status_to_abort();
-  void end_transaction();
+  bool end_transaction();
   void fence() const;
 
   inline bool is_not_started() const
