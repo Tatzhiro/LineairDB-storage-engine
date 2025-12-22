@@ -102,6 +102,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string_view>
 
@@ -440,8 +441,8 @@ int ha_lineairdb::write_row(uchar *buf)
 {
   DBUG_TRACE;
 
-  auto key = extract_key(buf);
   set_write_buffer(buf);
+  auto key = extract_key(buf);
 
   auto tx = get_transaction(ha_thd());
 
@@ -973,6 +974,10 @@ bool ha_lineairdb::fetch_next_batch()
   {
     DBUG_RETURN(false);
   }
+
+  // Handlers share a transaction per THD. Ensure we are scanning the correct table
+  // even if another handler has changed the active table in the meantime.
+  tx->choose_table(db_table_name);
 
   scanned_keys_.clear();
   scanned_values_.clear();
@@ -1559,6 +1564,7 @@ static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldTerminate)
 {
   if (shouldTerminate == false)
     return 0;
+
   LineairDBTransaction *&tx =
       *reinterpret_cast<LineairDBTransaction **>(thd_ha_data(thd, hton));
 
