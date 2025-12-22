@@ -1640,15 +1640,16 @@ bool terminate_tx(LineairDBTransaction *&tx)
 THR_LOCK_DATA **ha_lineairdb::store_lock(THD *thd, THR_LOCK_DATA **to,
                                          enum thr_lock_type lock_type)
 {
-  if (lock_type != TL_IGNORE && lock.type == TL_UNLOCK)
-  {
-    if (lock_type == TL_WRITE && !thd->in_lock_tables)
-    {
-      lock_type = TL_WRITE_ALLOW_WRITE;
-    }
-    lock.type = lock_type;
-  }
-  *to++ = &lock;
+  DBUG_TRACE;
+  /* (void)thd;
+  (void)lock_type; */
+
+  /*
+    LineairDB uses its own transaction-level locking, so we don't take part
+    in the server's THR_LOCK table locking. lock_count() advertises this by
+    returning 0; keep store_lock() consistent by leaving the lock array
+    untouched.
+  */
   return to;
 }
 
