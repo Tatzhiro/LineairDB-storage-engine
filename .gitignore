@@ -1,4 +1,5 @@
 build
+release
 boost
 debug
 engine
@@ -9,6 +10,14 @@ perf
 bench/results/*
 bench/plots/*
 .cache
+
+# Replication module runtime files
+repl/config/
+repl/data/
+repl/logs/
+
+# Local test directories
+tony_test/
 
 # Created by https://www.toptal.com/developers/gitignore/api/c++,macos,windows
 # Edit at https://www.toptal.com/developers/gitignore?templates=c++,macos,windows
