@@ -119,7 +119,7 @@
 #include "lineairdb_field_types.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-#define FENCE true
+#define FENCE false
 
 namespace
 {
@@ -1251,25 +1251,56 @@ int ha_lineairdb::info(uint flag)
       }
       else
       {
-        auto tx = get_transaction(ha_thd());
-        if (tx->is_aborted())
+        std::optional<size_t> count;
+        LineairDBTransaction *active_tx = nullptr;
+        THD *thd = ha_thd();
+        if (thd != nullptr)
         {
-          thd_mark_transaction_to_rollback(ha_thd(), 1);
-          return HA_ERR_LOCK_DEADLOCK;
+          active_tx = *reinterpret_cast<LineairDBTransaction **>(
+              thd_ha_data(thd, lineairdb_hton));
         }
 
-        tx->choose_table(db_table_name);
-        auto count = tx->Scan("", std::nullopt, [](auto, auto)
-                              { return false; });
-        if (!count.has_value())
+        if (active_tx != nullptr && !active_tx->is_not_started())
         {
-          thd_mark_transaction_to_rollback(ha_thd(), 1);
-          return HA_ERR_LOCK_DEADLOCK;
+          if (active_tx->is_aborted())
+          {
+            thd_mark_transaction_to_rollback(thd, 1);
+            return HA_ERR_LOCK_DEADLOCK;
+          }
+
+          active_tx->choose_table(db_table_name);
+          count = active_tx->Scan("", std::nullopt, [](auto, auto)
+                                  { return false; });
+          if (!count.has_value())
+          {
+            thd_mark_transaction_to_rollback(thd, 1);
+            return HA_ERR_LOCK_DEADLOCK;
+          }
+        }
+        else
+        {
+          LineairDB::Database *db = get_db();
+          LineairDB::Transaction &tmp_tx = db->BeginTransaction();
+          const bool table_ok = tmp_tx.SetTable(db_table_name);
+          if (table_ok)
+          {
+            count = tmp_tx.Scan("", std::nullopt, [](auto, auto)
+                                { return false; });
+          }
+          db->EndTransaction(tmp_tx, [](auto) {});
         }
 
-        share->stats_cached_records.store(*count, std::memory_order_release);
-        share->stats_last_refresh_ms.store(now, std::memory_order_release);
-        stats.records = static_cast<ha_rows>(*count);
+        if (count.has_value())
+        {
+          share->stats_cached_records.store(*count, std::memory_order_release);
+          share->stats_last_refresh_ms.store(now, std::memory_order_release);
+          stats.records = static_cast<ha_rows>(*count);
+        }
+        else
+        {
+          stats.records = static_cast<ha_rows>(
+              share->stats_cached_records.load(std::memory_order_acquire));
+        }
       }
     }
 
