@@ -46,6 +46,7 @@
 #include <sys/types.h>
 
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 #include "lineairdb_field_types.h"
@@ -73,6 +74,9 @@ public:
   ~LineairDB_share() override { thr_lock_delete(&lock); }
   std::shared_ptr<LineairDB::Database> lineairdb_;
   std::atomic<uint64_t> next_hidden_pk{0};
+  std::atomic<uint64_t> stats_cached_records{0};
+  std::atomic<uint64_t> stats_last_refresh_ms{0};
+  std::mutex stats_mutex;
 };
 
 /** @brief
@@ -420,23 +424,11 @@ private:
   int set_fields_from_lineairdb(uchar *buf, const std::byte *const read_buf,
                                 const size_t read_buf_size);
 
-  // TPC-C statistics helpers
-  void set_tpcc_rec_per_key(const char *table_name);
-  void set_customer_rec_per_key(KEY *key, const char *key_name,
-                                uint key_parts, bool is_primary);
-  void set_orders_rec_per_key(KEY *key, const char *key_name,
-                              uint key_parts, bool is_primary);
-  void set_new_orders_rec_per_key(KEY *key, uint key_parts);
-  void set_stock_rec_per_key(KEY *key, uint key_parts);
-  void set_order_line_rec_per_key(KEY *key, uint key_parts);
+  // rec_per_key helpers
   void set_generic_rec_per_key(KEY *key, uint key_parts, bool is_primary);
 
   // records_in_range helpers
   uint calculate_key_parts_from_length(KEY *key, uint key_length);
-  ha_rows estimate_tpcc_records_in_range(const char *table_name,
-                                         const char *index_name,
-                                         uint key_parts_used,
-                                         bool is_primary);
 };
 
 #endif /* HA_LINEAIRDB_H */
