@@ -203,6 +203,50 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
   return keyList;
 }
 
+std::vector<std::pair<std::string, std::string>> LineairDBTransaction::get_matching_keys_and_values_in_range(
+    std::string start_key, std::string end_key,
+    const std::string &exclusive_end_key)
+{
+  if (table_is_not_chosen())
+    return {};
+
+  std::vector<std::pair<std::string, std::string>> result;
+  std::optional<std::string_view> end_opt;
+  if (!end_key.empty())
+  {
+    end_opt = end_key;
+  }
+
+  auto scan_result = tx->Scan(start_key, end_opt,
+                              [&result, &exclusive_end_key](auto key, auto value)
+                              {
+                                // Skip if key matches exclusive end key (HA_READ_BEFORE_KEY)
+                                if (!exclusive_end_key.empty() && key == exclusive_end_key)
+                                {
+                                  return false;
+                                }
+                                // Skip tombstones
+                                if (value.first == nullptr || value.second == 0)
+                                {
+                                  return false;
+                                }
+
+                                result.emplace_back(
+                                    std::string(key),
+                                    std::string(static_cast<const char *>(value.first), value.second));
+                                return false;
+                              });
+
+  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  if (!scan_result.has_value())
+  {
+    tx->Abort();
+    return {};
+  }
+
+  return result;
+}
+
 const std::optional<size_t>
 LineairDBTransaction::Scan(std::string_view begin,
                            std::optional<std::string_view> end,

@@ -866,6 +866,7 @@ int ha_lineairdb::index_last(uchar *buf)
   DBUG_TRACE;
 
   secondary_index_results_.clear();
+  secondary_index_payloads_.clear();
   current_position_in_index_ = 0;
   prefix_cursor_.is_active = false;
   last_fetched_primary_key_.clear();
@@ -881,7 +882,12 @@ int ha_lineairdb::index_last(uchar *buf)
 
   if (active_index == table->s->primary_key)
   {
-    secondary_index_results_ = tx->get_matching_keys_in_range("", "", "");
+    auto key_values = tx->get_matching_keys_and_values_in_range("", "", "");
+    for (auto &kv : key_values)
+    {
+      secondary_index_results_.push_back(kv.first);
+      secondary_index_payloads_.push_back(std::move(kv.second));
+    }
   }
   else
   {
@@ -1573,6 +1579,8 @@ static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldTerminate)
   const bool committed = terminate_tx(tx);
   if (!committed)
   {
+    // Mark for rollback and let the caller surface the deadlock error.
+    thd_mark_transaction_to_rollback(thd, true);
     return HA_ERR_LOCK_DEADLOCK;
   }
   return 0;
@@ -2089,6 +2097,7 @@ void ha_lineairdb::build_search_plan(
   // 1. 状態リセット
   current_plan_.reset();
   secondary_index_results_.clear();
+  secondary_index_payloads_.clear();
   current_position_in_index_ = 0;
   end_range_exclusive_key_.clear();
   prefix_cursor_.is_active = false;
@@ -2222,8 +2231,13 @@ int ha_lineairdb::execute_index_first(uchar *buf, LineairDBTransaction *tx)
 
   if (current_plan_.is_primary)
   {
-    secondary_index_results_ = tx->get_matching_keys_in_range(
+    auto key_values = tx->get_matching_keys_and_values_in_range(
         start_key, end_key, current_plan_.exclusive_end_key_serialized);
+    for (auto &kv : key_values)
+    {
+      secondary_index_results_.push_back(kv.first);
+      secondary_index_payloads_.push_back(std::move(kv.second));
+    }
   }
   else
   {
@@ -2406,9 +2420,14 @@ int ha_lineairdb::execute_range_materialize(uchar *buf, LineairDBTransaction *tx
   // Scan実行
   if (current_plan_.is_primary)
   {
-    secondary_index_results_ = tx->get_matching_keys_in_range(
+    auto key_values = tx->get_matching_keys_and_values_in_range(
         effective_start, effective_end,
         current_plan_.exclusive_end_key_serialized);
+    for (auto &kv : key_values)
+    {
+      secondary_index_results_.push_back(kv.first);
+      secondary_index_payloads_.push_back(std::move(kv.second));
+    }
   }
   else
   {
@@ -2443,10 +2462,15 @@ int ha_lineairdb::execute_prefix_last(uchar *buf, LineairDBTransaction *tx)
   // materialize方式
   if (current_plan_.is_primary)
   {
-    secondary_index_results_ = tx->get_matching_keys_in_range(
+    auto key_values = tx->get_matching_keys_and_values_in_range(
         current_plan_.same_group_prefix_serialized,
         current_plan_.same_group_end_serialized,
         current_plan_.same_group_end_serialized);
+    for (auto &kv : key_values)
+    {
+      secondary_index_results_.push_back(kv.first);
+      secondary_index_payloads_.push_back(std::move(kv.second));
+    }
   }
   else
   {
@@ -2494,14 +2518,34 @@ int ha_lineairdb::fetch_and_set_current_result(uchar *buf, LineairDBTransaction 
 
   tx->choose_table(db_table_name);
 
-  auto result = tx->read(primary_key);
+  const bool has_inline_value =
+      current_position_in_index_ < secondary_index_payloads_.size();
+  const std::byte *value_ptr = nullptr;
+  size_t value_size = 0;
 
-  if (result.first == nullptr || result.second == 0)
+  if (has_inline_value)
   {
-    return HA_ERR_KEY_NOT_FOUND;
+    const std::string &inline_value = secondary_index_payloads_[current_position_in_index_];
+    value_ptr = reinterpret_cast<const std::byte *>(inline_value.data());
+    value_size = inline_value.size();
+  }
+  else
+  {
+    auto result = tx->read(primary_key);
+    if (tx->is_aborted())
+    {
+      thd_mark_transaction_to_rollback(ha_thd(), 1);
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+    if (result.first == nullptr || result.second == 0)
+    {
+      return HA_ERR_KEY_NOT_FOUND;
+    }
+    value_ptr = result.first;
+    value_size = result.second;
   }
 
-  if (set_fields_from_lineairdb(buf, result.first, result.second))
+  if (set_fields_from_lineairdb(buf, value_ptr, value_size))
   {
     tx->set_status_to_abort();
     return HA_ERR_OUT_OF_MEM;
@@ -3040,8 +3084,8 @@ void ha_lineairdb::set_write_buffer(uchar *buf)
   ldbField.set_null_field(buf, table->s->null_bytes);
   write_buffer_ = ldbField.get_null_field();
 
-  char attribute_buffer[1024];
-  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
+  String attribute;
+  attribute.set_charset(&my_charset_bin);
 
   my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
   for (Field **field = table->field; *field; field++)
