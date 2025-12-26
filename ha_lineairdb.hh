@@ -45,12 +45,15 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include <array>
 #include <atomic>
+#include <cstdint>
 #include <vector>
 
 #include "lineairdb_field_types.h"
 #include "lineairdb_field.hh"
 #include "lineairdb_transaction.hh"
+#include "index_search_plan.hh"
 #include "my_base.h" /* ha_rows */
 #include "my_compiler.h"
 #include "my_inttypes.h"
@@ -67,11 +70,20 @@ class LineairDB_share : public Handler_share
 public:
   THR_LOCK lock;
   LineairDB_share();
-  // std::shared_ptr<LineairDB::Database>
-  // get_or_allocate_database(LineairDB::Config conf);
   ~LineairDB_share() override { thr_lock_delete(&lock); }
   std::shared_ptr<LineairDB::Database> lineairdb_;
   std::atomic<uint64_t> next_hidden_pk{0};
+
+  // Row-count estimate for handler::info() (sum of committed deltas in shards).
+  static constexpr size_t kRowCountShards = 64; // must be power-of-two
+  struct alignas(64) RowCountShard
+  {
+    std::atomic<int64_t> delta{0};
+  };
+  std::array<RowCountShard, kRowCountShards> rowcount_shards{};
+
+  // Baseline for committed row count (currently unused; defaults to 0).
+  std::atomic<uint64_t> stats_base_records{0};
 };
 
 /** @brief
@@ -100,7 +112,9 @@ private:
   // which provides reliable access to the current thread handle.
   uint current_position_in_index_;
   std::vector<std::string> scanned_keys_;
+  std::vector<std::vector<std::byte>> scanned_values_;
   std::vector<std::string> secondary_index_results_;
+  std::vector<std::string> secondary_index_payloads_;
   std::string last_fetched_primary_key_;
   std::string end_range_exclusive_key_; // For HA_READ_BEFORE_KEY: exclude this key from results
   my_off_t
@@ -115,12 +129,25 @@ private:
   std::string last_batch_key_;
   bool scan_exhausted_{false};
 
+  // カーソルベースのプレフィックス検索の状態
+  struct PrefixScanCursor
+  {
+    bool is_active = false;
+    std::string prefix_key;       // 検索プレフィックス
+    std::string prefix_end_key;   // プレフィックス範囲の終端
+    std::string last_fetched_key; // 最後に取得したキー（次回の開始点）
+    bool scan_exhausted = false;  // スキャン完了フラグ
+  };
+  PrefixScanCursor prefix_cursor_;
+
+  // 検索計画（Phase 1: index_refactor_implementation_plan.md）
+  IndexSearchPlan current_plan_;
+
   void store_primary_key_in_ref(const std::string &primary_key);
   std::string extract_primary_key_from_ref(const uchar *pos) const;
   bool uses_hidden_primary_key() const;
   std::string generate_hidden_primary_key();
   std::string serialize_hidden_primary_key(uint64_t row_id) const;
-  std::string format_row_debug(const uchar *row_buffer) const;
   bool fetch_next_batch();
 
 public:
@@ -166,7 +193,7 @@ public:
   ulong index_flags(uint inx [[maybe_unused]], uint part [[maybe_unused]],
                     bool all_parts [[maybe_unused]]) const override
   {
-    return HA_READ_RANGE;
+    return HA_READ_RANGE | HA_READ_NEXT | HA_READ_ORDER;
   }
 
   /** @brief
@@ -318,7 +345,7 @@ public:
   int rnd_next(uchar *buf) override;            ///< required
   int rnd_pos(uchar *buf, uchar *pos) override; ///< required
   void position(const uchar *record) override;  ///< required
-  int info(uint) override;                      ///< required
+  int info(uint flag) override;                 ///< required
   int extra(enum ha_extra_function operation) override;
   int external_lock(THD *thd, int lock_type) override; ///< required
   int start_stmt(THD *thd, thr_lock_type lock_type) override;
@@ -376,13 +403,17 @@ private:
   static uint count_used_key_parts(const KEY *key_info, key_part_map keypart_map);
   int fetch_and_set_current_result(uchar *buf, LineairDBTransaction *tx);
 
-  // index_read_map helper functions
-  int index_read_primary_key(uchar *buf, const uchar *key, key_part_map keypart_map,
-                             enum ha_rkey_function find_flag, KEY *key_info,
-                             bool is_prefix_search, LineairDBTransaction *tx);
-  int index_read_secondary(uchar *buf, const uchar *key, key_part_map keypart_map,
-                           enum ha_rkey_function find_flag, KEY *key_info,
-                           bool is_prefix_search, LineairDBTransaction *tx);
+  // Phase 2: 検索計画の構築 (index_refactor_implementation_plan.md)
+  void build_search_plan(const uchar *key, key_part_map keypart_map,
+                         enum ha_rkey_function find_flag, KEY *key_info);
+
+  // Phase 3: 検索計画の実行 (index_refactor_implementation_plan.md)
+  int execute_plan(uchar *buf, LineairDBTransaction *tx);
+  int execute_index_first(uchar *buf, LineairDBTransaction *tx);
+  int execute_unique_point(uchar *buf, LineairDBTransaction *tx);
+  int execute_same_key_cursor(uchar *buf, LineairDBTransaction *tx);
+  int execute_range_materialize(uchar *buf, LineairDBTransaction *tx);
+  int execute_prefix_last(uchar *buf, LineairDBTransaction *tx);
 
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);
@@ -399,6 +430,12 @@ private:
   bool store_blob_to_field(Field **field);
   int set_fields_from_lineairdb(uchar *buf, const std::byte *const read_buf,
                                 const size_t read_buf_size);
+
+  // rec_per_key helpers
+  void set_generic_rec_per_key(KEY *key, uint key_parts, bool is_primary);
+
+  // records_in_range helpers
+  uint calculate_key_parts_from_length(KEY *key, uint key_length);
 };
 
 #endif /* HA_LINEAIRDB_H */

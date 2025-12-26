@@ -17,6 +17,13 @@ def test_primary_key_exact_match(db, cursor):
             age INT NOT NULL
         ) ENGINE=LineairDB
     ''')
+    cursor.execute('''
+        CREATE TABLE ha_lineairdb_test.users_no_pk (
+            id INT NOT NULL,
+            name VARCHAR(50) NOT NULL,
+            age INT NOT NULL
+        ) ENGINE=LineairDB
+    ''')
     
     # テストデータ挿入
     test_data = [
@@ -31,7 +38,26 @@ def test_primary_key_exact_match(db, cursor):
         cursor.execute(
             f'INSERT INTO ha_lineairdb_test.users VALUES ({id_val}, "{name}", {age})'
         )
+        cursor.execute(
+            f'INSERT INTO ha_lineairdb_test.users_no_pk VALUES ({id_val}, "{name}", {age})'
+        )
     db.commit()
+
+    # 全データ検索テスト
+    print("\t全データ検索:")
+    cursor.execute('SELECT * FROM ha_lineairdb_test.users')
+    rows = cursor.fetchall()
+    for row in rows:
+        print(f"\t  {row}")
+    print(f"\t✅ Passed: {len(rows)} rows")
+
+    # 全データ検索テスト
+    print("\t全データ検索 (no PK):")
+    cursor.execute('SELECT * FROM ha_lineairdb_test.users_no_pk')
+    rows = cursor.fetchall()
+    for row in rows:
+        print(f"\t  {row}")
+    print(f"\t✅ Passed (no PK): {len(rows)} rows")
     
     # 完全一致検索テスト
     print("\t完全一致検索: id=5")

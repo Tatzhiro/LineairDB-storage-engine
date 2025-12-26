@@ -1,6 +1,9 @@
 #include "lineairdb_transaction.hh"
 
+#include <cstdio>
 #include <utility>
+
+#include "storage/lineairdb/ha_lineairdb.hh"
 
 LineairDBTransaction::LineairDBTransaction(THD *thd, LineairDB::Database *ldb,
                                            handlerton *lineairdb_hton,
@@ -30,6 +33,37 @@ bool LineairDBTransaction::table_is_not_chosen()
     return true;
   }
   return false;
+}
+
+void LineairDBTransaction::add_rowcount_delta(LineairDB_share *share, int64_t delta)
+{
+  if (share == nullptr || delta == 0)
+    return;
+
+  for (auto &entry : rowcount_deltas_)
+  {
+    if (entry.first == share)
+    {
+      entry.second += delta;
+      return;
+    }
+  }
+
+  rowcount_deltas_.push_back({share, delta});
+}
+
+int64_t LineairDBTransaction::peek_rowcount_delta(const LineairDB_share *share) const
+{
+  if (share == nullptr)
+    return 0;
+
+  for (const auto &entry : rowcount_deltas_)
+  {
+    if (entry.first == share)
+      return entry.second;
+  }
+
+  return 0;
 }
 
 const std::pair<const std::byte *const, const size_t>
@@ -78,8 +112,8 @@ std::vector<std::string> LineairDBTransaction::get_all_keys()
     return {};
 
   std::vector<std::string> keyList;
-  tx->Scan("", std::nullopt, [&](auto key, auto)
-           {
+  auto scan_result = tx->Scan("", std::nullopt, [&](auto key, auto)
+                              {
     std::string key_str(key);
     auto value = tx->Read(key_str);
     if (value.second == 0 || value.first == nullptr)
@@ -89,6 +123,14 @@ std::vector<std::string> LineairDBTransaction::get_all_keys()
     }
     keyList.push_back(std::move(key_str));
     return false; });
+
+  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  if (!scan_result.has_value())
+  {
+    tx->Abort();
+    return {};
+  }
+
   return keyList;
 }
 
@@ -100,11 +142,16 @@ std::vector<std::string> LineairDBTransaction::get_matching_primary_keys_in_rang
     return {};
 
   std::vector<std::string> result;
+  std::optional<std::string_view> end_opt;
+  if (!end_key.empty())
+  {
+    end_opt = end_key;
+  }
 
-  tx->ScanSecondaryIndex(
+  auto scan_result = tx->ScanSecondaryIndex(
       index_name,
       start_key,
-      end_key,
+      end_opt,
       [&result, &exclusive_end_key](std::string_view secondary_key, const std::vector<std::string> &primary_keys)
       {
         // Skip if secondary_key matches exclusive end key (HA_READ_BEFORE_KEY)
@@ -119,6 +166,13 @@ std::vector<std::string> LineairDBTransaction::get_matching_primary_keys_in_rang
         return false;
       });
 
+  // Phantom検出: ScanSecondaryIndexがnulloptを返した場合はabort状態
+  if (!scan_result.has_value())
+  {
+    tx->Abort();
+    return {};
+  }
+
   return result;
 }
 
@@ -131,12 +185,20 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys(
   std::vector<std::string> keyList;
   std::string key_prefix{first_key_part};
 
-  tx->Scan("", std::nullopt, [&](auto key, auto)
-           {
+  auto scan_result = tx->Scan("", std::nullopt, [&](auto key, auto)
+                              {
     if (key_prefix_is_matching(key_prefix, std::string(key))) {
       keyList.push_back(std::string(key));
     }
     return false; });
+
+  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  if (!scan_result.has_value())
+  {
+    tx->Abort();
+    return {};
+  }
+
   return keyList;
 }
 
@@ -148,9 +210,14 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
     return {};
 
   std::vector<std::string> keyList;
+  std::optional<std::string_view> end_opt;
+  if (!end_key.empty())
+  {
+    end_opt = end_key;
+  }
 
-  tx->Scan(start_key, end_key, [&keyList, &exclusive_end_key](auto key, auto)
-           {
+  auto scan_result = tx->Scan(start_key, end_opt, [&keyList, &exclusive_end_key](auto key, auto)
+                              {
     // Skip if key matches exclusive end key (HA_READ_BEFORE_KEY)
     if (!exclusive_end_key.empty() && key == exclusive_end_key)
     {
@@ -159,7 +226,58 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
     keyList.push_back(std::string(key));
     return false; });
 
+  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  if (!scan_result.has_value())
+  {
+    tx->Abort();
+    return {};
+  }
+
   return keyList;
+}
+
+std::vector<std::pair<std::string, std::string>> LineairDBTransaction::get_matching_keys_and_values_in_range(
+    std::string start_key, std::string end_key,
+    const std::string &exclusive_end_key)
+{
+  if (table_is_not_chosen())
+    return {};
+
+  std::vector<std::pair<std::string, std::string>> result;
+  std::optional<std::string_view> end_opt;
+  if (!end_key.empty())
+  {
+    end_opt = end_key;
+  }
+
+  auto scan_result = tx->Scan(start_key, end_opt,
+                              [&result, &exclusive_end_key](auto key, auto value)
+                              {
+                                // Skip if key matches exclusive end key (HA_READ_BEFORE_KEY)
+                                if (!exclusive_end_key.empty() && key == exclusive_end_key)
+                                {
+                                  return false;
+                                }
+                                // Skip tombstones
+                                if (value.first == nullptr || value.second == 0)
+                                {
+                                  return false;
+                                }
+
+                                result.emplace_back(
+                                    std::string(key),
+                                    std::string(static_cast<const char *>(value.first), value.second));
+                                return false;
+                              });
+
+  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  if (!scan_result.has_value())
+  {
+    tx->Abort();
+    return {};
+  }
+
+  return result;
 }
 
 const std::optional<size_t>
@@ -175,6 +293,88 @@ LineairDBTransaction::Scan(std::string_view begin,
     return std::nullopt;
   }
   return tx->Scan(begin, end, std::move(operation));
+}
+
+std::optional<std::string> LineairDBTransaction::fetch_first_key_with_prefix(
+    const std::string &prefix, const std::string &prefix_end)
+{
+  if (table_is_not_chosen())
+    return std::nullopt;
+
+  std::optional<std::string> result;
+  std::optional<std::string_view> end_opt;
+  if (!prefix_end.empty())
+  {
+    end_opt = prefix_end;
+  }
+  auto scan_result = tx->Scan(prefix, end_opt, [&result, &prefix_end](auto key, auto value)
+                              {
+                                if (!prefix_end.empty() && key == prefix_end)
+                                {
+                                  return true; // exclusive end
+                                }
+                                // Skip tombstones
+                                if (value.first == nullptr || value.second == 0)
+                                {
+                                  return false; // Continue scanning
+                                }
+                                result = std::string(key);
+                                return true; // Stop after first valid key
+                              });
+
+  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  if (!scan_result.has_value())
+  {
+    tx->Abort();
+    return std::nullopt;
+  }
+
+  return result;
+}
+
+std::optional<std::string> LineairDBTransaction::fetch_next_key_with_prefix(
+    const std::string &last_key, const std::string &prefix_end)
+{
+  if (table_is_not_chosen())
+    return std::nullopt;
+
+  std::optional<std::string> result;
+  bool skip_first = true;
+  std::optional<std::string_view> end_opt;
+  if (!prefix_end.empty())
+  {
+    end_opt = prefix_end;
+  }
+
+  auto scan_result = tx->Scan(last_key, end_opt, [&result, &skip_first, &last_key, &prefix_end](auto key, auto value)
+                              {
+                                // Skip the last_key itself (we want the next one)
+                                if (skip_first && key == last_key)
+                                {
+                                  skip_first = false;
+                                  return false; // Continue scanning
+                                }
+                                if (!prefix_end.empty() && key == prefix_end)
+                                {
+                                  return true; // exclusive end
+                                }
+                                // Skip tombstones
+                                if (value.first == nullptr || value.second == 0)
+                                {
+                                  return false; // Continue scanning
+                                }
+                                result = std::string(key);
+                                return true; // Stop after first valid key
+                              });
+
+  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  if (!scan_result.has_value())
+  {
+    tx->Abort();
+    return std::nullopt;
+  }
+
+  return result;
 }
 
 bool LineairDBTransaction::write(std::string key, const std::string value)
@@ -200,7 +400,7 @@ bool LineairDBTransaction::delete_value(std::string key)
 {
   if (table_is_not_chosen())
     return false;
-  tx->Write(key, nullptr, 0);
+  tx->Delete(key);
   return true;
 }
 
@@ -230,16 +430,45 @@ void LineairDBTransaction::begin_transaction()
 
 void LineairDBTransaction::set_status_to_abort() { tx->Abort(); }
 
-void LineairDBTransaction::end_transaction()
+bool LineairDBTransaction::end_transaction()
 {
   // tx may be nullptr for DDL operations like CREATE INDEX
   if (tx != nullptr)
   {
-    db->EndTransaction(*tx, [&](auto) {});
-    if (isFence)
+    bool was_aborted = tx->IsAborted();
+    bool committed = db->EndTransaction(*tx, [&](auto) {});
+
+    // Flush committed row-count deltas only when commit succeeds.
+    // Avoid touching shared counters on abort/rollback paths.
+    if (!was_aborted && committed && !rowcount_deltas_.empty())
+    {
+      const uint64_t tid = static_cast<uint64_t>(thread->thread_id());
+      const size_t shard =
+          static_cast<size_t>(tid) & (LineairDB_share::kRowCountShards - 1);
+
+      for (const auto &entry : rowcount_deltas_)
+      {
+        LineairDB_share *share = entry.first;
+        const int64_t delta = entry.second;
+        if (share == nullptr || delta == 0)
+          continue;
+
+        share->rowcount_shards[shard].delta.fetch_add(delta,
+                                                      std::memory_order_relaxed);
+      }
+    }
+
+    // Skip fence() if transaction was aborted to avoid deadlock
+    if (isFence && !was_aborted && committed)
+    {
       fence();
+    }
+    delete this;
+    return committed;
   }
   delete this;
+  // If there was no transaction object (e.g. DDL paths), treat as success.
+  return true;
 }
 
 void LineairDBTransaction::fence() const { db->Fence(); }
