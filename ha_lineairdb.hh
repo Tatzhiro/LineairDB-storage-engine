@@ -45,8 +45,9 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include <array>
 #include <atomic>
-#include <mutex>
+#include <cstdint>
 #include <vector>
 
 #include "lineairdb_field_types.h"
@@ -69,14 +70,20 @@ class LineairDB_share : public Handler_share
 public:
   THR_LOCK lock;
   LineairDB_share();
-  // std::shared_ptr<LineairDB::Database>
-  // get_or_allocate_database(LineairDB::Config conf);
   ~LineairDB_share() override { thr_lock_delete(&lock); }
   std::shared_ptr<LineairDB::Database> lineairdb_;
   std::atomic<uint64_t> next_hidden_pk{0};
-  std::atomic<uint64_t> stats_cached_records{0};
-  std::atomic<uint64_t> stats_last_refresh_ms{0};
-  std::mutex stats_mutex;
+
+  // Row-count estimate for handler::info() (sum of committed deltas in shards).
+  static constexpr size_t kRowCountShards = 64; // must be power-of-two
+  struct alignas(64) RowCountShard
+  {
+    std::atomic<int64_t> delta{0};
+  };
+  std::array<RowCountShard, kRowCountShards> rowcount_shards{};
+
+  // Baseline for committed row count (currently unused; defaults to 0).
+  std::atomic<uint64_t> stats_base_records{0};
 };
 
 /** @brief

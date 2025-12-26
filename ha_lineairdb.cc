@@ -96,27 +96,29 @@
 
 #include <algorithm>
 #include <chrono>
-#include <iostream>
-#include <fstream>
-#include <iomanip>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <sstream>
 #include <string_view>
+// for ::strcasecmp
+#include <strings.h>
 
+#include "lineairdb_field_types.h"
 #include "my_dbug.h"
 #include "mysql/plugin.h"
 #include "sql/field.h"
+#include "sql/log.h"
 #include "sql/sql_class.h"
 #include "sql/sql_plugin.h"
 #include "sql/table.h"
-#include "sql/log.h"
-#include "typelib.h"
 #include "storage/innobase/include/dict0mem.h"
-#include "lineairdb_field_types.h"
+#include "typelib.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
 #define FENCE false
@@ -130,16 +132,6 @@ namespace
   constexpr unsigned char kKeyTypeString = 0x20;
   constexpr unsigned char kKeyTypeDatetime = 0x30;
   constexpr unsigned char kKeyTypeOther = 0xF0;
-
-  constexpr uint64_t kStatsCacheTtlMs = 1000;
-
-  uint64_t now_ms()
-  {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
-  }
 
 }
 
@@ -263,7 +255,7 @@ LineairDB_share::LineairDB_share()
     LineairDB::Config conf;
     conf.enable_checkpointing = false;
     conf.enable_recovery = false;
-    conf.max_thread = 1;
+    conf.max_thread = std::max<size_t>(1, std::thread::hardware_concurrency());
     lineairdb_ = get_or_allocate_database(conf);
   }
 }
@@ -474,8 +466,6 @@ int ha_lineairdb::write_row(uchar *buf)
     auto key_info = table->key_info[i];
     if (i != table->s->primary_key)
     {
-      // Use build_secondary_key_from_row to correctly read from buf instead of table->record[0]
-      // This ensures thread-safety in multi-threaded environments
       std::string secondary_key = build_secondary_key_from_row(buf, key_info);
 
       bool is_successful = tx->write_secondary_index(key_info.name, secondary_key, key);
@@ -489,6 +479,8 @@ int ha_lineairdb::write_row(uchar *buf)
       }
     }
   }
+
+  tx->add_rowcount_delta(share, +1);
 
   return 0;
 }
@@ -608,8 +600,6 @@ int ha_lineairdb::delete_row(const uchar *buf)
     auto key_info = table->key_info[i];
     if (i != table->s->primary_key)
     {
-      // Use build_secondary_key_from_row to correctly read from buf instead of table->record[0]
-      // This ensures thread-safety in multi-threaded environments
       std::string secondary_key = build_secondary_key_from_row(buf, key_info);
 
       bool is_successful = tx->delete_secondary_index(key_info.name, secondary_key, key);
@@ -623,6 +613,9 @@ int ha_lineairdb::delete_row(const uchar *buf)
       }
     }
   }
+
+  tx->add_rowcount_delta(share, -1);
+
   return 0;
 }
 
@@ -987,8 +980,6 @@ bool ha_lineairdb::fetch_next_batch()
     DBUG_RETURN(false);
   }
 
-  // Handlers share a transaction per THD. Ensure we are scanning the correct table
-  // even if another handler has changed the active table in the meantime.
   tx->choose_table(db_table_name);
 
   scanned_keys_.clear();
@@ -1232,74 +1223,45 @@ int ha_lineairdb::info(uint flag)
     return 0;
   }
 
-  if (flag & HA_STATUS_VARIABLE)
+  // Always refresh stats.records when asked for either CONST or VARIABLE stats.
+  // MySQL's call pattern may not include HA_STATUS_VARIABLE in all places where
+  // records_in_range() is later used, so we keep stats.records consistent.
+  if (flag & (HA_STATUS_VARIABLE | HA_STATUS_CONST))
   {
-    const uint64_t now = now_ms();
-    const uint64_t last_refresh = share->stats_last_refresh_ms.load(std::memory_order_acquire);
-    if (last_refresh != 0 && (now - last_refresh) < kStatsCacheTtlMs)
+    int64_t delta_sum = 0;
+    for (const auto &shard : share->rowcount_shards)
     {
-      stats.records = static_cast<ha_rows>(share->stats_cached_records.load(std::memory_order_acquire));
+      delta_sum += shard.delta.load(std::memory_order_relaxed);
     }
-    else
+
+    const int64_t base =
+        static_cast<int64_t>(share->stats_base_records.load(std::memory_order_relaxed));
+    int64_t total = base + delta_sum;
+    if (total < 0)
+      total = 0;
+
+    stats.records = static_cast<ha_rows>(total);
+
+    THD *thd = ha_thd();
+    if (thd != nullptr)
     {
-      std::lock_guard<std::mutex> lock(share->stats_mutex);
-      const uint64_t refresh_after_lock =
-          share->stats_last_refresh_ms.load(std::memory_order_acquire);
-      if (refresh_after_lock != 0 && (now - refresh_after_lock) < kStatsCacheTtlMs)
+      LineairDBTransaction *active_tx = *reinterpret_cast<LineairDBTransaction **>(
+          thd_ha_data(thd, lineairdb_hton));
+      if (active_tx != nullptr && !active_tx->is_not_started())
       {
-        stats.records = static_cast<ha_rows>(share->stats_cached_records.load(std::memory_order_acquire));
-      }
-      else
-      {
-        std::optional<size_t> count;
-        LineairDBTransaction *active_tx = nullptr;
-        THD *thd = ha_thd();
-        if (thd != nullptr)
+        if (active_tx->is_aborted())
         {
-          active_tx = *reinterpret_cast<LineairDBTransaction **>(
-              thd_ha_data(thd, lineairdb_hton));
+          thd_mark_transaction_to_rollback(thd, 1);
+          return HA_ERR_LOCK_DEADLOCK;
         }
 
-        if (active_tx != nullptr && !active_tx->is_not_started())
+        const int64_t local_delta = active_tx->peek_rowcount_delta(share);
+        if (local_delta != 0)
         {
-          if (active_tx->is_aborted())
-          {
-            thd_mark_transaction_to_rollback(thd, 1);
-            return HA_ERR_LOCK_DEADLOCK;
-          }
-
-          active_tx->choose_table(db_table_name);
-          count = active_tx->Scan("", std::nullopt, [](auto, auto)
-                                  { return false; });
-          if (!count.has_value())
-          {
-            thd_mark_transaction_to_rollback(thd, 1);
-            return HA_ERR_LOCK_DEADLOCK;
-          }
-        }
-        else
-        {
-          LineairDB::Database *db = get_db();
-          LineairDB::Transaction &tmp_tx = db->BeginTransaction();
-          const bool table_ok = tmp_tx.SetTable(db_table_name);
-          if (table_ok)
-          {
-            count = tmp_tx.Scan("", std::nullopt, [](auto, auto)
-                                { return false; });
-          }
-          db->EndTransaction(tmp_tx, [](auto) {});
-        }
-
-        if (count.has_value())
-        {
-          share->stats_cached_records.store(*count, std::memory_order_release);
-          share->stats_last_refresh_ms.store(now, std::memory_order_release);
-          stats.records = static_cast<ha_rows>(*count);
-        }
-        else
-        {
-          stats.records = static_cast<ha_rows>(
-              share->stats_cached_records.load(std::memory_order_acquire));
+          int64_t local_total = static_cast<int64_t>(stats.records) + local_delta;
+          if (local_total < 0)
+            local_total = 0;
+          stats.records = static_cast<ha_rows>(local_total);
         }
       }
     }
@@ -1311,7 +1273,7 @@ int ha_lineairdb::info(uint flag)
     stats.data_file_length = stats.records * stats.mean_rec_length;
     stats.index_file_length = stats.data_file_length / 2;
   }
-  if (flag & HA_STATUS_CONST)
+  if ((flag & (HA_STATUS_CONST | HA_STATUS_VARIABLE)) && table != nullptr && table->s != nullptr)
   {
     for (uint i = 0; i < table->s->keys; i++)
     {
@@ -1321,11 +1283,6 @@ int ha_lineairdb::info(uint flag)
       bool is_primary = (i == table->s->primary_key);
       set_generic_rec_per_key(key, key->user_defined_key_parts, is_primary);
     }
-  }
-  else
-  {
-    if (stats.records < 2)
-      stats.records = 2;
   }
 
   return 0;
@@ -1414,27 +1371,21 @@ int ha_lineairdb::external_lock(THD *thd, int lock_type)
 {
   DBUG_TRACE;
 
-  LineairDBTransaction *&tx = *reinterpret_cast<LineairDBTransaction **>(
-      thd_ha_data(thd, lineairdb_hton));
-
   const bool tx_is_ready_to_commit = lock_type == F_UNLCK;
   if (tx_is_ready_to_commit)
   {
-    // tx may be nullptr for DDL operations like CREATE INDEX
-    if (tx != nullptr && tx->is_a_single_statement())
-    {
-      lineairdb_commit(lineairdb_hton, thd, true);
-    }
     return 0;
   }
 
   // get_transaction() will automatically start the transaction if needed
-  // Avoid starting a new transaction on unlock, which can trip rollback asserts.
+  // Avoid starting a new transaction on unlock, which can trip rollback
+  // asserts.
   (void)get_transaction(thd);
 
   // Note: Transaction is already started in get_transaction()
   // This is intentional to handle cases where MySQL optimizer
-  // calls index_read_map() before external_lock() (e.g., semi-join optimization)
+  // calls index_read_map() before external_lock() (e.g., semi-join
+  // optimization)
 
   return 0;
 }
@@ -1479,15 +1430,21 @@ LineairDBTransaction *&ha_lineairdb::get_transaction(THD *thd)
 /**
  * implementation of commit for lineairdb_hton
  */
-static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldTerminate)
+static int lineairdb_commit(handlerton *hton, THD *thd, bool all)
 {
-  if (shouldTerminate == false)
-    return 0;
 
   LineairDBTransaction *&tx =
       *reinterpret_cast<LineairDBTransaction **>(thd_ha_data(thd, hton));
 
-  assert(tx != nullptr);
+  if (tx == nullptr)
+  {
+    return 0;
+  }
+
+  const bool should_terminate_now =
+      (all == true) || tx->is_a_single_statement();
+  if (!should_terminate_now)
+    return 0;
 
   const bool committed = terminate_tx(tx);
   if (!committed)
@@ -2078,7 +2035,6 @@ void ha_lineairdb::build_search_plan(
       }
     }
   }
-
 }
 
 /**

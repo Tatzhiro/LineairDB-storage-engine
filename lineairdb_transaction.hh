@@ -1,11 +1,20 @@
+#ifndef LINEAIRDB_TRANSACTION_HH
+#define LINEAIRDB_TRANSACTION_HH
+
 #include <lineairdb/lineairdb.h>
+#include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "mysql/plugin.h"
 #include "sql/handler.h" /* handler */
 #include "sql/sql_class.h"
+
+class LineairDB_share;
 
 /**
  * @brief
@@ -46,9 +55,9 @@ public:
 
   // Cursor-based prefix search methods
   std::optional<std::string> fetch_first_key_with_prefix(
-      const std::string& prefix, const std::string& prefix_end);
+      const std::string &prefix, const std::string &prefix_end);
   std::optional<std::string> fetch_next_key_with_prefix(
-      const std::string& last_key, const std::string& prefix_end);
+      const std::string &last_key, const std::string &prefix_end);
   bool update_secondary_index(
       std::string index_name,
       std::string old_secondary_key,
@@ -62,6 +71,11 @@ public:
   void set_status_to_abort();
   bool end_transaction();
   void fence() const;
+
+  // Per-table committed row-count delta aggregation.
+  // Deltas are accumulated within the transaction and flushed only if commit succeeds.
+  void add_rowcount_delta(LineairDB_share *share, int64_t delta);
+  int64_t peek_rowcount_delta(const LineairDB_share *share) const;
 
   inline bool is_not_started() const
   {
@@ -88,8 +102,11 @@ private:
   bool isTransaction;
   handlerton *hton;
   bool isFence;
+  std::vector<std::pair<LineairDB_share *, int64_t>> rowcount_deltas_;
   bool key_prefix_is_matching(std::string target_key, std::string key);
   bool thd_is_transaction() const;
   void register_transaction_to_mysql();
   void register_single_statement_to_mysql();
 };
+
+#endif // LINEAIRDB_TRANSACTION_HH

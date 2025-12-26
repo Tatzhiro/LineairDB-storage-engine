@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <utility>
 
+#include "storage/lineairdb/ha_lineairdb.hh"
+
 LineairDBTransaction::LineairDBTransaction(THD *thd, LineairDB::Database *ldb,
                                            handlerton *lineairdb_hton,
                                            bool isFence)
@@ -31,6 +33,37 @@ bool LineairDBTransaction::table_is_not_chosen()
     return true;
   }
   return false;
+}
+
+void LineairDBTransaction::add_rowcount_delta(LineairDB_share *share, int64_t delta)
+{
+  if (share == nullptr || delta == 0)
+    return;
+
+  for (auto &entry : rowcount_deltas_)
+  {
+    if (entry.first == share)
+    {
+      entry.second += delta;
+      return;
+    }
+  }
+
+  rowcount_deltas_.push_back({share, delta});
+}
+
+int64_t LineairDBTransaction::peek_rowcount_delta(const LineairDB_share *share) const
+{
+  if (share == nullptr)
+    return 0;
+
+  for (const auto &entry : rowcount_deltas_)
+  {
+    if (entry.first == share)
+      return entry.second;
+  }
+
+  return 0;
 }
 
 const std::pair<const std::byte *const, const size_t>
@@ -404,6 +437,27 @@ bool LineairDBTransaction::end_transaction()
   {
     bool was_aborted = tx->IsAborted();
     bool committed = db->EndTransaction(*tx, [&](auto) {});
+
+    // Flush committed row-count deltas only when commit succeeds.
+    // Avoid touching shared counters on abort/rollback paths.
+    if (!was_aborted && committed && !rowcount_deltas_.empty())
+    {
+      const uint64_t tid = static_cast<uint64_t>(thread->thread_id());
+      const size_t shard =
+          static_cast<size_t>(tid) & (LineairDB_share::kRowCountShards - 1);
+
+      for (const auto &entry : rowcount_deltas_)
+      {
+        LineairDB_share *share = entry.first;
+        const int64_t delta = entry.second;
+        if (share == nullptr || delta == 0)
+          continue;
+
+        share->rowcount_shards[shard].delta.fetch_add(delta,
+                                                      std::memory_order_relaxed);
+      }
+    }
+
     // Skip fence() if transaction was aborted to avoid deadlock
     if (isFence && !was_aborted && committed)
     {
