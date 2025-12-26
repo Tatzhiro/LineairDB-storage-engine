@@ -7,6 +7,7 @@ perf
 .vscode
 *.log
 */__pycache__/*
+*/*/__pycache__/*
 bench/results/*
 bench/plots/*
 .cache
@@ -14,10 +15,11 @@ bench/plots/*
 # Replication module runtime files
 repl/config/
 repl/data/
-repl/logs/
 
-# Local test directories
-tony_test/
+# Docker compose files
+repl/docker-compose-secondaries.yml
+
+
 
 # Created by https://www.toptal.com/developers/gitignore/api/c++,macos,windows
 # Edit at https://www.toptal.com/developers/gitignore?templates=c++,macos,windows

@@ -11,6 +11,3 @@ path = third_party/LineairDB
 	url = git@github.com:wasanemon/LineairDB-ssh.git
 branch = secondary_index_test
 
-[submodule "third_party/mysql-cluster"]
-	path = third_party/mysql-cluster
-	url = https://github.com/mitou-Kamo/mysql-cluster
