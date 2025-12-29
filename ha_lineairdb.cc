@@ -95,7 +95,6 @@
 #include "storage/lineairdb/ha_lineairdb.hh"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -1223,9 +1222,6 @@ int ha_lineairdb::info(uint flag)
     return 0;
   }
 
-  // Always refresh stats.records when asked for either CONST or VARIABLE stats.
-  // MySQL's call pattern may not include HA_STATUS_VARIABLE in all places where
-  // records_in_range() is later used, so we keep stats.records consistent.
   if (flag & (HA_STATUS_VARIABLE | HA_STATUS_CONST))
   {
     int64_t delta_sum = 0;

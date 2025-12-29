@@ -1,6 +1,5 @@
 #include "lineairdb_transaction.hh"
 
-#include <cstdio>
 #include <utility>
 
 #include "storage/lineairdb/ha_lineairdb.hh"

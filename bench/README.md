@@ -25,6 +25,22 @@ bench/bin/benchbase tpcc # [tpcc|ycsb]
 cd third_party/benchbase && ./mvnw -DskipTests -P mysql clean package && unzip -o target/benchbase-mysql.zip
 ```
 
+## Notes (YCSB / LineairDB)
+
+- **Important**: When running YCSB on LineairDB, you may see transient deadlocks during worker initialization:
+  - BenchBase's YCSB module queries the initial key range with `SELECT MAX(ycsb_key) FROM usertable`.
+  - On LineairDB this may transiently surface as `Deadlock found when trying to get lock; try restarting transaction` (errorCode=1213 / sqlState=40001).
+  - Without a retry, BenchBase can end up creating **0 workers** and still run the benchmark, producing **0 requests/sec**.
+- **Required fix**: Retry the above initialization query (and fail fast if 0 workers were created), then rebuild `benchbase.jar`:
+  - Patch locations:
+    - `third_party/benchbase/src/main/java/com/oltpbenchmark/benchmarks/ycsb/YCSBBenchmark.java`
+    - `third_party/benchbase/src/main/java/com/oltpbenchmark/DBWorkload.java`
+  - Rebuild:
+
+```
+cd third_party/benchbase && ./mvnw -DskipTests -P mysql clean package && unzip -o target/benchbase-mysql.zip
+```
+
 ## Plotting
 
 ```
