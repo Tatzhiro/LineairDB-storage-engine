@@ -10,27 +10,27 @@
 #include "my_base.h"
 
 /**
- * @brief 検索操作の種別
- * @see index_refactor_plan.md §3.1
+ * @brief Types of search operations
  */
 enum class IndexSearchOp
 {
-    kIndexFirst,       // key == nullptr
-    kUniquePoint,      // (PK or UNIQUE) && full key && !nullable-unique
-    kSameKeyCursor,    // find_flag == EXACT だが unique point でない
-    kRangeMaterialize, // 範囲検索（KEY_OR_NEXT / AFTER_KEY / BEFORE_KEY 等）
-    kPrefixLast,       // HA_READ_PREFIX_LAST / LAST_OR_PREV 等
+    kIndexFirst,         // key == nullptr
+    kUniquePoint,        // (PK or UNIQUE) && full key && !nullable-unique
+    kSameKeyMaterialize, // find_flag == EXACT but not unique point
+    kPrefixFirst,        // HA_READ_PREFIX: return first match only
+    kRangeMaterialize,   // range search (KEY_OR_NEXT / AFTER_KEY / BEFORE_KEY, etc.)
+    kPrevKey,            // HA_READ_KEY_OR_PREV / HA_READ_BEFORE_KEY
+    kPrefixLast,         // HA_READ_PREFIX_LAST / LAST_OR_PREV, etc.
 };
 
 /**
- * @brief 検索計画を保持する構造体
- * @see index_refactor_plan.md §3.2
+ * @brief Structure to hold search plan
  */
 struct IndexSearchPlan
 {
     IndexSearchOp op = IndexSearchOp::kRangeMaterialize;
 
-    // 基本情報
+    // basic information
     bool is_primary = false;
     uint used_key_parts = 0;
     bool all_parts_specified = false;
@@ -38,17 +38,14 @@ struct IndexSearchPlan
     bool has_nullable_parts = false; // HA_NULL_PART_KEY
     enum ha_rkey_function find_flag = HA_READ_KEY_EXACT;
 
-    // 境界情報（シリアライズ済み）
+    // boundary information (serialized)
     std::string start_key_serialized;
     std::string end_key_serialized;
-    std::string exclusive_end_key_serialized; // HA_READ_BEFORE_KEY用
+    std::string exclusive_end_key_serialized; // for HA_READ_BEFORE_KEY
 
-    // same グループ境界（index_next_same用）
+    // same group boundary (for index_next_same)
     std::string same_group_prefix_serialized;
     std::string same_group_end_serialized;
-
-    // 実行状態
-    bool executed = false;
 
     void reset()
     {
@@ -64,11 +61,7 @@ struct IndexSearchPlan
         exclusive_end_key_serialized.clear();
         same_group_prefix_serialized.clear();
         same_group_end_serialized.clear();
-        executed = false;
     }
 };
 
 #endif // INDEX_SEARCH_PLAN_HH
-
-
-

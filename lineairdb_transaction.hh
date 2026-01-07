@@ -29,6 +29,12 @@ class LineairDB_share;
 class LineairDBTransaction
 {
 public:
+  struct SecondaryIndexEntry
+  {
+    std::string secondary_key;
+    std::vector<std::string> primary_keys;
+  };
+
   std::string get_selected_table_name();
   void choose_table(std::string db_table_name);
   bool table_is_not_chosen();
@@ -41,6 +47,8 @@ public:
   std::vector<std::pair<std::string, std::string>> get_matching_keys_and_values_in_range(
       std::string start_key, std::string end_key,
       const std::string &exclusive_end_key = "");
+  std::vector<std::pair<std::string, std::string>> get_matching_keys_and_values_from_prefix(
+      std::string prefix);
   const std::optional<size_t> Scan(
       std::string_view begin, std::optional<std::string_view> end,
       std::function<bool(std::string_view,
@@ -51,6 +59,19 @@ public:
   std::vector<std::pair<const std::byte *const, const size_t>> read_secondary_index(std::string index_name, std::string secondary_key);
   std::vector<std::string> get_matching_primary_keys_in_range(
       std::string index_name, std::string start_key, std::string end_key,
+      const std::string &exclusive_end_key = "");
+  std::vector<std::string> get_matching_primary_keys_from_prefix(
+      std::string index_name, std::string prefix);
+  std::optional<std::string> fetch_last_key_in_range(
+      const std::string &start_key, const std::string &end_key,
+      const std::string &exclusive_end_key = "");
+  std::optional<std::string> fetch_last_primary_key_in_secondary_range(
+      const std::string &index_name, const std::string &start_key,
+      const std::string &end_key,
+      const std::string &exclusive_end_key = "");
+  std::optional<SecondaryIndexEntry> fetch_last_secondary_entry_in_range(
+      const std::string &index_name, const std::string &start_key,
+      const std::string &end_key,
       const std::string &exclusive_end_key = "");
 
   // Cursor-based prefix search methods

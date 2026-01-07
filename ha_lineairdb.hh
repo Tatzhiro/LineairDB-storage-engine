@@ -129,17 +129,6 @@ private:
   std::string last_batch_key_;
   bool scan_exhausted_{false};
 
-  // カーソルベースのプレフィックス検索の状態
-  struct PrefixScanCursor
-  {
-    bool is_active = false;
-    std::string prefix_key;       // 検索プレフィックス
-    std::string prefix_end_key;   // プレフィックス範囲の終端
-    std::string last_fetched_key; // 最後に取得したキー（次回の開始点）
-    bool scan_exhausted = false;  // スキャン完了フラグ
-  };
-  PrefixScanCursor prefix_cursor_;
-
   // 検索計画（Phase 1: index_refactor_implementation_plan.md）
   IndexSearchPlan current_plan_;
 
@@ -149,6 +138,7 @@ private:
   std::string generate_hidden_primary_key();
   std::string serialize_hidden_primary_key(uint64_t row_id) const;
   bool fetch_next_batch();
+  void reset_index_search_buffers();
 
 public:
   ha_lineairdb(handlerton *hton, TABLE_SHARE *table_arg);
@@ -193,7 +183,7 @@ public:
   ulong index_flags(uint inx [[maybe_unused]], uint part [[maybe_unused]],
                     bool all_parts [[maybe_unused]]) const override
   {
-    return HA_READ_RANGE | HA_READ_NEXT | HA_READ_ORDER;
+    return HA_READ_RANGE | HA_READ_NEXT | HA_READ_ORDER | HA_READ_PREV;
   }
 
   /** @brief
@@ -277,6 +267,7 @@ public:
     skip it and and MySQL will treat it as not implemented.
   */
   int index_read(uchar *buf, const uchar *key, uint key_len, enum ha_rkey_function find_flag) override;
+  int index_read_last(uchar *buf, const uchar *key, uint key_len) override;
 
   /** @brief
     We implement this in ha_lineairdb.cc. It's not an obligatory method;
@@ -383,6 +374,7 @@ public:
   int multi_range_read_next(char **range_info) override;
   int read_range_first(const key_range *start_key, const key_range *end_key,
                        bool eq_range_arg, bool sorted) override;
+  int read_range_next() override;
 
 private:
   /** The multi range read session object */
@@ -411,8 +403,10 @@ private:
   int execute_plan(uchar *buf, LineairDBTransaction *tx);
   int execute_index_first(uchar *buf, LineairDBTransaction *tx);
   int execute_unique_point(uchar *buf, LineairDBTransaction *tx);
-  int execute_same_key_cursor(uchar *buf, LineairDBTransaction *tx);
+  int execute_same_key_materialize(uchar *buf, LineairDBTransaction *tx);
+  int execute_prefix_first(uchar *buf, LineairDBTransaction *tx);
   int execute_range_materialize(uchar *buf, LineairDBTransaction *tx);
+  int execute_prev_key(uchar *buf, LineairDBTransaction *tx);
   int execute_prefix_last(uchar *buf, LineairDBTransaction *tx);
 
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
