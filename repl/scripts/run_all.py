@@ -302,10 +302,11 @@ def setup_cluster_and_benchmark(
     return result.returncode == 0
 
 
-def extract_results(engine: str) -> BenchmarkResult:
+def extract_results(engine: str, tool: str = "benchbase") -> BenchmarkResult:
     """Extract benchmark results from JSON summary."""
     root_dir = get_root_dir()
-    result_dir = root_dir / "bench" / "results" / engine / "gr_test"
+    # Use the correct results directory based on tool used
+    result_dir = root_dir / "bench" / "results" / engine / tool
     
     result = BenchmarkResult()
     
@@ -488,7 +489,7 @@ Examples:
             duration=args.duration,
         ):
             print_success(f"{engine} benchmark completed successfully")
-            results[engine] = extract_results(engine)
+            results[engine] = extract_results(engine, args.tool)
             results[engine].success = True
         else:
             print_error(f"{engine} benchmark failed")

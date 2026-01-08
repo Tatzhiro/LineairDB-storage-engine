@@ -781,10 +781,21 @@ def setup_innodb_cluster(config: ClusterConfig, primary_ip: str, binbench: bool 
             add_uri = f"{MYSQL_USER}:{MYSQL_PASSWORD}@{sec.host}:{sec.port}"
         
         print(f"    Adding {name}...")
+        # Use longer timeout (5 min) for addInstance with clone - it involves data transfer and restart
         success, output = mysqlsh_execute(f"""
         shell.options.useWizards = false;
         var cluster = dba.getCluster('{CLUSTER_NAME}');
         var ipAllowlist = '{ip_allowlist_str}';
+        
+        // First, try to remove any existing instance (handles MISSING/errant GTID cases)
+        try {{
+            cluster.removeInstance('{add_uri}', {{force: true}});
+            print('Removed stale instance entry');
+        }} catch(e) {{
+            // Ignore errors - instance may not exist in cluster
+        }}
+        
+        // Now add the instance with clone recovery
         try {{
             cluster.addInstance('{add_uri}', {{
                 recoveryMethod: 'clone',
@@ -798,7 +809,7 @@ def setup_innodb_cluster(config: ClusterConfig, primary_ip: str, binbench: bool 
                 print('ERROR: ' + e.message);
             }}
         }}
-        """)
+        """, timeout=300)
         # Show output to help debug failures
         if output:
             for line in output.strip().split('\n'):

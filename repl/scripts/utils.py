@@ -373,6 +373,7 @@ def mysqlsh_execute(
     user: str = MYSQL_USER,
     password: str = MYSQL_PASSWORD,
     capture_output: bool = True,
+    timeout: int = 60,
 ) -> Tuple[bool, str]:
     """
     Execute JavaScript code in MySQL Shell.
@@ -384,6 +385,7 @@ def mysqlsh_execute(
         user: MySQL user
         password: MySQL password
         capture_output: Whether to capture output
+        timeout: Command timeout in seconds (default 60, use higher for clone ops)
         
     Returns:
         Tuple of (success, output)
@@ -396,13 +398,19 @@ def mysqlsh_execute(
         "-e", js_code,
     ]
     
-    result = run_command(cmd, capture_output=capture_output, timeout=60)
+    result = run_command(cmd, capture_output=capture_output, timeout=timeout)
+    
+    # Combine stdout and stderr - mysqlsh outputs progress/messages to stderr
+    combined_output = ""
+    if result.stdout:
+        combined_output += result.stdout
+    if result.stderr:
+        combined_output += "\n" + result.stderr
     
     # Filter out warnings from output
-    output = result.stdout if result.stdout else ""
     output = "\n".join(
-        line for line in output.split("\n")
-        if "WARNING" not in line
+        line for line in combined_output.split("\n")
+        if "WARNING" not in line and line.strip()
     )
     
     return result.returncode == 0, output.strip()
