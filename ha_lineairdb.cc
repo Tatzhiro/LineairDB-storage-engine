@@ -680,15 +680,14 @@ int ha_lineairdb::index_read_map(uchar *buf, const uchar *key, key_part_map keyp
 
   KEY *key_info = &table->key_info[active_index];
 
-  // Phase 4: Plan/Execute分離 (index_refactor_implementation_plan.md)
+  // Phase 4: Separation of planning and execution
   build_search_plan(key, keypart_map, find_flag, key_info);
 
   return execute_plan(buf, tx);
 }
 
 /**
- * @brief index_next: 現在カーソルの次行
- * @see index_refactor_implementation_plan.md §5 Phase 5
+ * @brief index_next: The next row after the current cursor position
  */
 int ha_lineairdb::index_next(uchar *buf)
 {
@@ -702,7 +701,7 @@ int ha_lineairdb::index_next(uchar *buf)
   }
   tx->choose_table(db_table_name);
 
-  // materializeモード
+  // materialize mode
   if (secondary_index_results_.empty() ||
       current_position_in_index_ >= secondary_index_results_.size())
   {
@@ -1816,15 +1815,15 @@ void ha_lineairdb::append_key_part_encoding(std::string &out, bool is_null,
 }
 
 /**
- * @brief プレフィックス範囲の終端キー（次の辞書順キー）を生成
+ * @brief Generate the end key of a prefix range (the next lexicographic key)
  *
- * 次の辞書順キーを返すことで、prefix で始まる全てのキーを
- * [prefix, end) の形で正確にカバーする。
+ * By returning the next lexicographic key, all keys that start with the prefix
+ * are covered precisely in the form [prefix, end).
  *
- * 例:
+ * Example:
  *   prefix = 01 02 FF -> end = 01 03
  *
- * 全バイトが 0xFF の場合は「上限なし」を意味する空文字を返す。
+ * If all bytes are 0xFF, return an empty string meaning "no upper bound".
  */
 std::string ha_lineairdb::build_prefix_range_end(const std::string &prefix)
 {
@@ -1839,7 +1838,7 @@ std::string ha_lineairdb::build_prefix_range_end(const std::string &prefix)
       return end;
     }
   }
-  // 上限なし
+  // no upper bound
   return std::string();
 }
 
@@ -1994,7 +1993,6 @@ void ha_lineairdb::build_search_plan(
 
 /**
  * @brief Execute search plan
- * @see index_refactor_implementation_plan.md §3
  * @return 0: success, HA_ERR_*: error
  */
 int ha_lineairdb::execute_plan(uchar *buf, LineairDBTransaction *tx)
@@ -2047,7 +2045,7 @@ int ha_lineairdb::execute_index_first(uchar *buf, LineairDBTransaction *tx)
         current_plan_.exclusive_end_key_serialized);
   }
 
-  // phantom detection check (index_refactor_implementation_plan.md §9.2)
+  // phantom detection check
   if (tx->is_aborted())
   {
     thd_mark_transaction_to_rollback(ha_thd(), 1);
@@ -2225,7 +2223,6 @@ int ha_lineairdb::execute_prefix_first(uchar *buf, LineairDBTransaction *tx)
 
 /**
  * @brief kRangeMaterialize: range search (AFTER_KEY, KEY_OR_NEXT, etc.)
- * @see index_refactor_implementation_plan.md §5.4
  */
 int ha_lineairdb::execute_range_materialize(uchar *buf, LineairDBTransaction *tx)
 {
@@ -2269,7 +2266,6 @@ int ha_lineairdb::execute_range_materialize(uchar *buf, LineairDBTransaction *tx
 
   if (secondary_index_results_.empty())
   {
-    // index_refactor_implementation_plan.md §5.4: 0件なら原則 HA_ERR_END_OF_FILE
     return HA_ERR_END_OF_FILE;
   }
 

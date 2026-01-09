@@ -1,6 +1,5 @@
 // index_search_plan.hh
-// LineairDB Storage Engine: 検索計画を保持する構造体
-// @see index_refactor_implementation_plan.md
+// LineairDB Storage Engine: A structure to hold the search plan
 
 #ifndef INDEX_SEARCH_PLAN_HH
 #define INDEX_SEARCH_PLAN_HH

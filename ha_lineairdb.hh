@@ -123,13 +123,13 @@ private:
   LineairDBField ldbField;
   MEM_ROOT blobroot;
 
-  // バッファフェッチ用の状態
+  // State for buffer fetching
   static constexpr size_t SCAN_BATCH_SIZE = 100;
   size_t buffer_position_{0};
   std::string last_batch_key_;
   bool scan_exhausted_{false};
 
-  // 検索計画（Phase 1: index_refactor_implementation_plan.md）
+  // Search plan
   IndexSearchPlan current_plan_;
 
   void store_primary_key_in_ref(const std::string &primary_key);
@@ -395,11 +395,11 @@ private:
   static uint count_used_key_parts(const KEY *key_info, key_part_map keypart_map);
   int fetch_and_set_current_result(uchar *buf, LineairDBTransaction *tx);
 
-  // Phase 2: 検索計画の構築 (index_refactor_implementation_plan.md)
+  // Phase 2: Building the search plan 
   void build_search_plan(const uchar *key, key_part_map keypart_map,
                          enum ha_rkey_function find_flag, KEY *key_info);
 
-  // Phase 3: 検索計画の実行 (index_refactor_implementation_plan.md)
+  // Phase 3: Executing the search plan 
   int execute_plan(uchar *buf, LineairDBTransaction *tx);
   int execute_index_first(uchar *buf, LineairDBTransaction *tx);
   int execute_unique_point(uchar *buf, LineairDBTransaction *tx);

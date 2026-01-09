@@ -123,7 +123,7 @@ std::vector<std::string> LineairDBTransaction::get_all_keys()
     keyList.push_back(std::move(key_str));
     return false; });
 
-  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  // Phantom detection: if Scan returns nullopt, the transaction is in an abort state
   if (!scan_result.has_value())
   {
     tx->Abort();
@@ -358,7 +358,7 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys(
     }
     return false; });
 
-  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  // Phantom detection: if Scan returns nullopt, the transaction is in an abort state
   if (!scan_result.has_value())
   {
     tx->Abort();
@@ -392,7 +392,7 @@ std::vector<std::string> LineairDBTransaction::get_matching_keys_in_range(
     keyList.push_back(std::string(key));
     return false; });
 
-  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  // Phantom detection: if Scan returns nullopt, the transaction is in an abort state
   if (!scan_result.has_value())
   {
     tx->Abort();
@@ -436,7 +436,7 @@ std::vector<std::pair<std::string, std::string>> LineairDBTransaction::get_match
                                 return false;
                               });
 
-  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  // Phantom detection: if Scan returns nullopt, the transaction is in an abort state
   if (!scan_result.has_value())
   {
     tx->Abort();
@@ -482,7 +482,7 @@ std::vector<std::pair<std::string, std::string>> LineairDBTransaction::get_match
         return false;
       });
 
-  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  // Phantom detection: if Scan returns nullopt, the transaction is in an abort state
   if (!scan_result.has_value())
   {
     tx->Abort();
@@ -539,7 +539,7 @@ std::optional<std::string> LineairDBTransaction::fetch_first_key_with_prefix(
                                 return true; // Stop after first valid key
                               });
 
-  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  // Phantom detection: if Scan returns nullopt, the transaction is in an abort state
   if (!scan_result.has_value())
   {
     tx->Abort();
@@ -584,7 +584,7 @@ std::optional<std::string> LineairDBTransaction::fetch_next_key_with_prefix(
                                 return true; // Stop after first valid key
                               });
 
-  // Phantom検出: Scanがnulloptを返した場合はabort状態
+  // Phantom detection: if Scan returns nullopt, the transaction is in an abort state
   if (!scan_result.has_value())
   {
     tx->Abort();
