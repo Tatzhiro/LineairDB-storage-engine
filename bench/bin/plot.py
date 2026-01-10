@@ -9,6 +9,8 @@ import argparse
 
 
 def Average(lst):
+    if len(lst) == 0:
+        return None
     return sum(lst) / len(lst)
 
 def makeDFfromCSV(clm, xaxis):
@@ -17,7 +19,8 @@ def makeDFfromCSV(clm, xaxis):
         clm = []
         for x in xaxis:
             csvlist = glob.glob(
-                f'{os.path.dirname(__file__)}/../results/{db}/thread_{x}/*results.csv')
+                f'{os.path.dirname(__file__)}/../results/{db}/thread_{x}/*results.csv'
+            )
             # csvlist = sorted(csvlist, key=lambda x: os.path.basename(x))
             avg = []
             for f in csvlist:

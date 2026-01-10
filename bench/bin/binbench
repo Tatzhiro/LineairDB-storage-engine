@@ -1,6 +1,6 @@
 #! /bin/bash
 
-set -xu
+set -xue
 
 export LD_PRELOAD=/lib/x86_64-linux-gnu/libjemalloc.so.2
 
@@ -70,11 +70,11 @@ function RESTART_MYSQL()
 message "Execute the benchmarking $benchmark"
 ex_file=benchbase-mysql/benchbase.jar
 
-step=8
+step=16
 num_threads=(1 $(seq $step $step `nproc`))
 engines=(
-  myisam
-  blackhole 
+  # myisam
+  # blackhole 
   lineairdb
   innodb 
   #fence
@@ -83,6 +83,9 @@ build_dir=build
 cnf=my.cnf
 
 sudo systemctl stop mysql.service
+
+cd $base_path/$build_dir
+ninja -j `nproc`
 $base_path/$build_dir/bin/mysqld --defaults-file=$base_path/$cnf --daemonize
 if [[ `$base_path/$build_dir/bin/mysql -uroot -N -e "SHOW ENGINES;" | grep LINEAIRDB` != LINEAIRDB* ]] ; 
 then $base_path/$build_dir/bin/mysql -uroot -N -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"; 
@@ -137,4 +140,7 @@ for bm_type in A B C E F write; do
   cd $base_path/bench/plots/ycsb/$bm_type
   python3 $base_path/bench/bin/plot.py --engine ${engines[@]} --xaxis ${num_threads[@]} --fname month_day
 done
+if [ "$MYSQL_UP" -ne 0 ]; then
+  kill -9 `pgrep mysqld`
+fi
 message 'Finish the benchmarking'
