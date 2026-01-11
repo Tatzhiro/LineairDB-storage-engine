@@ -118,7 +118,7 @@
 #include "typelib.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-#define FENCE true
+#define FENCE false
 
 namespace {
 constexpr unsigned char kKeyMarkerNotNull = 0x00;
@@ -243,7 +243,7 @@ LineairDB_share::LineairDB_share() {
     LineairDB::Config conf;
     conf.enable_checkpointing = false;
     conf.enable_recovery = false;
-    conf.max_thread = std::max<size_t>(1, std::thread::hardware_concurrency());
+    conf.max_thread = 1;
     lineairdb_ = get_or_allocate_database(conf);
   }
 }
