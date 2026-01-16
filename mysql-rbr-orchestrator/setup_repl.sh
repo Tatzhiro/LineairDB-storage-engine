@@ -1,13 +1,21 @@
 #!/bin/bash
 set -eux
 
+# Set up config
+sudo tee /etc/mysql/mysql.conf.d/z-toggle.cnf >/dev/null <<'EOF'
+[mysqld]
+server-id = 1
+log_bin = /var/log/mysql/mysql-bin.log
+gtid_mode = ON
+enforce_gtid_consistency = ON
+EOF
+
 # Initialize MySQL servers
 sudo systemctl restart mysql
 
 # Build the MySQL Docker image and start MySQL containers as replicas
 sudo docker build -t mysql-lineairdb:8.0.43 .
 sudo docker compose down
-sudo rm -rf replica*
 sudo docker compose up -d
 
 
@@ -24,7 +32,6 @@ sudo mysql -u root -e "
   CREATE USER IF NOT EXISTS 'repl'@'%' IDENTIFIED WITH mysql_native_password BY 'replpass';
   GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';
   FLUSH PRIVILEGES;
-  RESET MASTER;
 "
 
 # Clear any existing binary logs and GTIDs on the Source
