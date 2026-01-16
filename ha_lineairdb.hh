@@ -151,7 +151,7 @@ public:
     This is a list of flags that indicate what functionality the storage engine
     implements. The current table flags are documented in handler.h
   */
-  ulonglong table_flags() const override { return HA_HAS_OWN_BINLOGGING; }
+  ulonglong table_flags() const override { return HA_BINLOG_ROW_CAPABLE; }
 
   /** @brief
     This is a bitmap of flags that indicates how the storage engine

@@ -1,0 +1,17 @@
+services:
+  leader:
+    image: mysql-lineairdb:8.0.43
+    container_name: leader
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+    ports:
+      - "3307:3306"
+    command: >
+      --server-id=1
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+      --innodb_flush_log_at_trx_commit=1
+      --sync_binlog=1
+      --log-bin=mysql-bin
+      --binlog-format=ROW
+      --plugin-load-add=LineairDB=ha_lineairdb_storage_engine.so

@@ -1,0 +1,36 @@
+{
+  "Debug": true,
+
+  "BackendDB": "sqlite",
+  "SQLite3DataFile": "/var/lib/orchestrator/orchestrator.sqlite3",
+
+  "ListenAddress": ":3000",
+
+  "AuthenticationMethod": "basic",
+  "HTTPAuthUser": "admin",
+  "HTTPAuthPassword": "admin",
+
+  "MySQLTopologyUser": "orc",
+  "MySQLTopologyPassword": "orcpass",
+  "MySQLTopologySSLSkipVerify": true,
+  "MySQLTopologyUseMutualTLS": false,
+  "MySQLTopologySSLCAFile": "",
+  "MySQLTopologySSLCertFile": "",
+  "MySQLTopologySSLPrivateKeyFile": "",
+
+  "DiscoverByShowSlaveHosts": false,
+  "DiscoverIntervalSeconds": 5,
+  "InstancePollSeconds": 5,
+
+  "ReasonableReplicationLagSeconds": 10,
+  "DetectReplicationLagQuery": "SELECT 0",
+
+  "UnseenInstanceForgetHours": 240,
+  "SnapshotTopologiesIntervalHours": 0,
+
+  "RecoverMasterClusterFilters": ["*"],
+  "RecoverIntermediateMasterClusterFilters": ["*"],
+  "OnFailureDetectionProcesses": [],
+  "PreFailoverProcesses": [],
+  "PostFailoverProcesses": []
+}
