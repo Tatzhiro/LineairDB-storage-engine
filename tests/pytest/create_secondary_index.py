@@ -66,7 +66,7 @@ def test_create_multiple_indexes (db, cursor) :
 
 def test_create_duplicate_index (db, cursor) :
     print("CREATE DUPLICATE INDEX TEST (should fail)")
-    # 同じ名前のインデックスを複数定義しようとする（失敗するはず）
+    # Attempt to define duplicate index names (should fail)
     try:
         cursor.execute('CREATE TABLE ha_lineairdb_test.test_dup (\
             id int NOT NULL PRIMARY KEY,\
