@@ -1115,7 +1115,9 @@ int ha_lineairdb::info(uint flag) {
 
 void ha_lineairdb::set_generic_rec_per_key(KEY *key, uint key_parts,
                                            bool is_primary) {
-  // Generic heuristic for unknown indexes
+  // Generic heuristic for unknown indexes.
+  // NOTE: This ignores actual data distribution and assumes a simple 1/10
+  // reduction per key part as a conservative fallback when no stats exist.
   for (uint j = 0; j < key_parts; j++) {
     ulong rpk;
     if (is_primary && j == key_parts - 1) {
@@ -1326,9 +1328,6 @@ bool terminate_tx(LineairDBTransaction *&tx) {
 THR_LOCK_DATA **ha_lineairdb::store_lock(THD *thd, THR_LOCK_DATA **to,
                                          enum thr_lock_type lock_type) {
   DBUG_TRACE;
-  /* (void)thd;
-  (void)lock_type; */
-
   /*
     LineairDB uses its own transaction-level locking, so we don't take part
     in the server's THR_LOCK table locking. lock_count() advertises this by
@@ -1653,7 +1652,9 @@ void ha_lineairdb::append_key_part_encoding(std::string &out, bool is_null,
  * Example:
  *   prefix = 01 02 FF -> end = 01 03
  *
- * If all bytes are 0xFF, return an empty string meaning "no upper bound".
+ * If all bytes are 0xFF, there is no valid next lexicographic key. In that
+ * case we return an empty string as a sentinel for "no upper bound", which the
+ * caller treats as an open-ended range (e.g., converted to std::nullopt).
  */
 std::string ha_lineairdb::build_prefix_range_end(const std::string &prefix) {
   std::string end = prefix;
