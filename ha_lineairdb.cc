@@ -241,8 +241,9 @@ LineairDB_share::LineairDB_share() {
   next_hidden_pk.store(0);
   if (lineairdb_ == nullptr) {
     LineairDB::Config conf;
-    conf.enable_checkpointing = false;
+    conf.enable_checkpointing = true;
     conf.enable_recovery = false;
+    conf.enable_logging = true;
     conf.max_thread = 1;
     lineairdb_ = get_or_allocate_database(conf);
   }

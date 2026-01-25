@@ -194,6 +194,46 @@ def test_primary_key_range_queries(db, cursor):
     return 0
 
 
+def test_primary_key_max_query(db, cursor):
+    """PRIMARY KEYのMAX()集計テスト"""
+    print("\nPRIMARY KEY MAX() QUERY TEST")
+
+    cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
+    cursor.execute('CREATE DATABASE ha_lineairdb_test')
+    cursor.execute('''
+        CREATE TABLE ha_lineairdb_test.usertable (
+            ycsb_key INT NOT NULL PRIMARY KEY,
+            field1 VARCHAR(50) NOT NULL
+        ) ENGINE=LineairDB
+    ''')
+
+    test_data = [
+        (1, 'alice'),
+        (3, 'bob'),
+        (5, 'carol'),
+        (10, 'dave'),
+        (15, 'eve')
+    ]
+
+    for ycsb_key, field1 in test_data:
+        cursor.execute(
+            f'INSERT INTO ha_lineairdb_test.usertable VALUES ({ycsb_key}, "{field1}")'
+        )
+    db.commit()
+
+    print("\tMAX(ycsb_key)")
+    cursor.execute('SELECT MAX(ycsb_key) FROM ha_lineairdb_test.usertable')
+    row = cursor.fetchone()
+    max_key = row[0] if row else None
+
+    if max_key != 15:
+        print(f"\t❌ Failed: Expected 15, got {max_key}")
+        return 1
+    print(f"\t✅ Passed: {max_key}")
+
+    return 0
+
+
 
 
 def test_primary_key_exclusive_range(db, cursor):
@@ -439,6 +479,7 @@ def main():
     # 各テストを実行
     result |= test_primary_key_exact_match(db, cursor)
     result |= test_primary_key_range_queries(db, cursor)
+    result |= test_primary_key_max_query(db, cursor)
     result |= test_primary_key_exclusive_range(db, cursor)
     result |= test_composite_primary_key_exclusive_range(db, cursor)
     result |= test_primary_key_composite(db, cursor)
@@ -465,4 +506,3 @@ if __name__ == "__main__":
                         default="")
     args = parser.parse_args()
     main()
-
