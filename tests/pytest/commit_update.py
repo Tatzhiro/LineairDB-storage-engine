@@ -6,7 +6,7 @@ import argparse
 
 
 def commit_update_single_row(db, cursor):
-    """COMMITとUPDATEの基本動作確認テスト"""
+    """Basic behavior test for COMMIT and UPDATE"""
     reset(db, cursor)
     print("COMMIT UPDATE SINGLE ROW TEST")
 
@@ -47,7 +47,7 @@ def commit_update_single_row(db, cursor):
 
 
 def commit_update_multiple_rows(db, cursor):
-    """複数行に対するUPDATEとCOMMITの動作確認テスト"""
+    """Behavior test for UPDATE and COMMIT on multiple rows"""
     reset(db, cursor)
     print("COMMIT UPDATE MULTIPLE ROWS TEST")
 

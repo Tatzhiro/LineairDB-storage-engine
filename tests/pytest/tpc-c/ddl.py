@@ -60,7 +60,7 @@ def setup_schema(db, cursor, dbname, engine):
     ) ENGINE=LineairDB
     ''')
 
-    # ★ インデックスは CREATE TABLE の中で同時定義（MySQLで安全）
+    # Define indexes inside CREATE TABLE (safe in MySQL)
     cursor.execute(f'''
     CREATE TABLE bmsql_customer (
       c_w_id         INT NOT NULL,
