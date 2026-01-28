@@ -1,11 +1,20 @@
+#ifndef LINEAIRDB_TRANSACTION_HH
+#define LINEAIRDB_TRANSACTION_HH
+
 #include <lineairdb/lineairdb.h>
+#include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "mysql/plugin.h"
 #include "sql/handler.h" /* handler */
 #include "sql/sql_class.h"
+
+class LineairDB_share;
 
 /**
  * @brief
@@ -20,6 +29,12 @@
 class LineairDBTransaction
 {
 public:
+  struct SecondaryIndexEntry
+  {
+    std::string secondary_key;
+    std::vector<std::string> primary_keys;
+  };
+
   std::string get_selected_table_name();
   void choose_table(std::string db_table_name);
   bool table_is_not_chosen();
@@ -29,6 +44,11 @@ public:
   std::vector<std::string> get_matching_keys(std::string key);
   std::vector<std::string> get_matching_keys_in_range(std::string start_key, std::string end_key,
                                                       const std::string &exclusive_end_key = "");
+  std::vector<std::pair<std::string, std::string>> get_matching_keys_and_values_in_range(
+      std::string start_key, std::string end_key,
+      const std::string &exclusive_end_key = "");
+  std::vector<std::pair<std::string, std::string>> get_matching_keys_and_values_from_prefix(
+      std::string prefix);
   const std::optional<size_t> Scan(
       std::string_view begin, std::optional<std::string_view> end,
       std::function<bool(std::string_view,
@@ -40,6 +60,25 @@ public:
   std::vector<std::string> get_matching_primary_keys_in_range(
       std::string index_name, std::string start_key, std::string end_key,
       const std::string &exclusive_end_key = "");
+  std::vector<std::string> get_matching_primary_keys_from_prefix(
+      std::string index_name, std::string prefix);
+  std::optional<std::string> fetch_last_key_in_range(
+      const std::string &start_key, const std::string &end_key,
+      const std::string &exclusive_end_key = "");
+  std::optional<std::string> fetch_last_primary_key_in_secondary_range(
+      const std::string &index_name, const std::string &start_key,
+      const std::string &end_key,
+      const std::string &exclusive_end_key = "");
+  std::optional<SecondaryIndexEntry> fetch_last_secondary_entry_in_range(
+      const std::string &index_name, const std::string &start_key,
+      const std::string &end_key,
+      const std::string &exclusive_end_key = "");
+
+  // Cursor-based prefix search methods
+  std::optional<std::string> fetch_first_key_with_prefix(
+      const std::string &prefix, const std::string &prefix_end);
+  std::optional<std::string> fetch_next_key_with_prefix(
+      const std::string &last_key, const std::string &prefix_end);
   bool update_secondary_index(
       std::string index_name,
       std::string old_secondary_key,
@@ -51,8 +90,13 @@ public:
   bool delete_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
   void begin_transaction();
   void set_status_to_abort();
-  void end_transaction();
+  bool end_transaction();
   void fence() const;
+
+  // Per-table committed row-count delta aggregation.
+  // Deltas are accumulated within the transaction and flushed only if commit succeeds.
+  void add_rowcount_delta(LineairDB_share *share, int64_t delta);
+  int64_t peek_rowcount_delta(const LineairDB_share *share) const;
 
   inline bool is_not_started() const
   {
@@ -79,9 +123,11 @@ private:
   bool isTransaction;
   handlerton *hton;
   bool isFence;
-
+  std::vector<std::pair<LineairDB_share *, int64_t>> rowcount_deltas_;
   bool key_prefix_is_matching(std::string target_key, std::string key);
   bool thd_is_transaction() const;
   void register_transaction_to_mysql();
   void register_single_statement_to_mysql();
 };
+
+#endif // LINEAIRDB_TRANSACTION_HH

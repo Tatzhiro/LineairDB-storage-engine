@@ -28,7 +28,7 @@ def setup_schema(db, cursor, dbname, engine):
     for t in drops:
         cursor.execute(f"DROP TABLE IF EXISTS {t}")
 
-    # Minimal DDL (必要最小限。必要に応じて列追加OK)
+    # Minimal DDL (minimum required; add columns as needed)
     cursor.execute(f'''
     CREATE TABLE bmsql_warehouse (
       w_id       INT NOT NULL,
@@ -51,7 +51,7 @@ def setup_schema(db, cursor, dbname, engine):
     ) ENGINE={engine}
     ''')
 
-    # ★ インデックスは CREATE TABLE の中で同時定義（MySQLで安全）
+    # Define indexes inside CREATE TABLE (safe in MySQL)
     cursor.execute(f'''
     CREATE TABLE bmsql_customer (
       c_w_id         INT NOT NULL,
@@ -323,7 +323,7 @@ def populate_order_status_fixture(db, cursor, dbname):
 
     db.commit()
 def pick_middle_index(n):
-    # Java 実装と同じロジック:
+    # Same logic as the Java implementation:
     # index = n / 2 ; if n % 2 == 0 then index -= 1
     if n <= 0:
         return None
@@ -370,7 +370,7 @@ def test_tpcc_orderstatus(db, cursor, dbname):
             return 1
         c_balance = Decimal(str(balance_value))
 
-        # --- 最新の注文を取得（ordStatGetNewestOrdSQL）
+        # --- Fetch latest order (ordStatGetNewestOrdSQL)
         cursor.execute('''
           SELECT o_id, o_carrier_id, o_entry_d
             FROM bmsql_oorder
@@ -392,7 +392,7 @@ def test_tpcc_orderstatus(db, cursor, dbname):
             print(f"\tOrder-Status: Failed - expected latest order 2001, got {o_id}")
             return 1
 
-        # --- 注文明細（order lines）を取得（ordStatGetOrderLinesSQL）
+        # --- Fetch order lines (ordStatGetOrderLinesSQL)
         cursor.execute('''
           SELECT ol_i_id, ol_supply_w_id, ol_quantity, ol_amount, ol_delivery_d
             FROM bmsql_order_line

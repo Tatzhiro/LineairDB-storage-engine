@@ -29,7 +29,7 @@ def setup_schema(db, cursor, dbname, engine):
     for t in drops:
         cursor.execute(f"DROP TABLE IF EXISTS {t}")
 
-    # Minimal DDL (必要最小限。必要に応じて列追加OK)
+    # Minimal DDL (minimum required; add columns as needed)
     cursor.execute(f'''
     CREATE TABLE bmsql_warehouse (
       w_id       INT NOT NULL,
@@ -52,7 +52,7 @@ def setup_schema(db, cursor, dbname, engine):
     ) ENGINE={engine}
     ''')
 
-    # ★ インデックスは CREATE TABLE の中で同時定義（MySQLで安全）
+    # Define indexes inside CREATE TABLE (safe in MySQL)
     cursor.execute(f'''
     CREATE TABLE bmsql_customer (
       c_w_id         INT NOT NULL,
@@ -293,13 +293,13 @@ def prepare_tpcc_environment(db, cursor, dbname, engine, num_items=20, reset_sch
 
 def test_tpcc_neworder(db, cursor, dbname, num_items=5, force_invalid=False):
     """
-    New-Order の簡易テスト:
-      - customer, warehouse の存在確認
-      - district の D_NEXT_O_ID を FOR UPDATE で取得
-      - district の D_NEXT_O_ID を +1
-      - oorder を挿入
-      - new_order を挿入
-      - 各 order-line ごとに item/stock を取得 (stock は FOR UPDATE)、stock を更新、order_line を挿入
+    Simplified New-Order test:
+      - verify customer and warehouse exist
+      - fetch district D_NEXT_O_ID with FOR UPDATE
+      - increment district D_NEXT_O_ID
+      - insert into oorder
+      - insert into new_order
+      - for each order line, fetch item/stock (stock with FOR UPDATE), update stock, insert order_line
       - commit / rollback
     """
     print("TEST TPC-C New-Order")
@@ -307,16 +307,16 @@ def test_tpcc_neworder(db, cursor, dbname, num_items=5, force_invalid=False):
 
     try:
         cursor.execute('START TRANSACTION')
-        # パラメータ（テスト用固定値、必要に応じてランダム化）
+        # Parameters (fixed for tests; randomize if needed)
         w_id = 1
         d_id = 1
         c_id = 1
 
-        # Java 実装では numItems が 5..15 でランダム。ここは引数で受け取れる。
+        # In the Java implementation, numItems is random in 5..15; here it is passed as an argument.
         o_ol_cnt = num_items
         o_all_local = 1
 
-        # --- 客情報取得（stmtGetCustSQL）
+        # --- Fetch customer info (stmtGetCustSQL)
         cursor.execute('''
           SELECT c_discount, c_last, c_credit
             FROM bmsql_customer
@@ -327,14 +327,14 @@ def test_tpcc_neworder(db, cursor, dbname, num_items=5, force_invalid=False):
             print("\tFailed: customer not found")
             return 1
 
-        # --- 倉庫情報取得（stmtGetWhseSQL）
+        # --- Fetch warehouse info (stmtGetWhseSQL)
         cursor.execute('SELECT w_tax FROM bmsql_warehouse WHERE w_id = %s', (w_id,))
         if cursor.fetchone() is None:
             cursor.execute('ROLLBACK')
             print("\tFailed: warehouse not found")
             return 1
 
-        # --- district から D_NEXT_O_ID を FOR UPDATE で取得（stmtGetDistSQL）
+        # --- Fetch D_NEXT_O_ID from district with FOR UPDATE (stmtGetDistSQL)
         cursor.execute('SELECT d_next_o_id, d_tax FROM bmsql_district WHERE d_w_id = %s AND d_id = %s FOR UPDATE', (w_id, d_id))
         row = cursor.fetchone()
         if not row:
@@ -342,10 +342,10 @@ def test_tpcc_neworder(db, cursor, dbname, num_items=5, force_invalid=False):
             print("\tFailed: district not found")
             return 1
         d_next_o_id = int(row[0])
-        # o_id として使う
+        # Use as o_id
         o_id = d_next_o_id
 
-        # --- district の更新（stmtUpdateDistSQL）
+        # --- Update district (stmtUpdateDistSQL)
         cursor.execute('UPDATE bmsql_district SET d_next_o_id = d_next_o_id + 1 WHERE d_w_id = %s AND d_id = %s', (w_id, d_id))
         if cursor.rowcount == 0:
             cursor.execute('ROLLBACK')
@@ -363,28 +363,28 @@ def test_tpcc_neworder(db, cursor, dbname, num_items=5, force_invalid=False):
             print("\tFailed: cannot insert oorder")
             return 1
 
-        # --- insert new_order（stmtInsertNewOrderSQL）
+        # --- insert new_order (stmtInsertNewOrderSQL)
         cursor.execute('INSERT INTO bmsql_new_order (no_o_id, no_d_id, no_w_id) VALUES (%s,%s,%s)', (o_id, d_id, w_id))
         if cursor.rowcount == 0:
-            # Java は warn で済ませるが、ここでは異常扱いにして rollback する選択肢あり
+            # Java logs a warning, but we may treat this as an error and roll back here
             cursor.execute('ROLLBACK')
             print("\tFailed: cannot insert new_order")
             return 1
 
-        # --- アイテム・在庫データの用意（このテストではランダムか引数で指定）
+        # --- Prepare item/stock data (random or specified by args in this test)
         itemIDs = []
         supplierWarehouseIDs = []
         orderQuantities = []
         for i in range(o_ol_cnt):
-            # 実データに存在する i_id を使う必要あり。テスト用に 1..N を期待。
+            # Must use existing i_id in real data; this test expects 1..N
             if force_invalid and i == o_ol_cnt - 1:
-                itemIDs.append(99999999)  # 存在しない ID を強制して rollback を試す
+                itemIDs.append(99999999)  # Force a missing ID to test rollback
             else:
-                itemIDs.append(random.randint(1, 20))  # 実 DB の item 範囲に合わせること
-            supplierWarehouseIDs.append(w_id)  # 単一倉庫シナリオ
+                itemIDs.append(random.randint(1, 20))  # Match the item range in the real DB
+            supplierWarehouseIDs.append(w_id)  # Single-warehouse scenario
             orderQuantities.append(random.randint(1, 10))
 
-        # --- 各 OL を処理（stmtGetItemSQL, stmtGetStockSQL, stmtUpdateStockSQL, stmtInsertOrderLineSQL）
+        # --- Process each OL (stmtGetItemSQL, stmtGetStockSQL, stmtUpdateStockSQL, stmtInsertOrderLineSQL)
         ol_number = 0
         for ol_number in range(1, o_ol_cnt + 1):
             ol_i_id = itemIDs[ol_number - 1]
@@ -395,7 +395,7 @@ def test_tpcc_neworder(db, cursor, dbname, num_items=5, force_invalid=False):
             cursor.execute('SELECT i_price, i_name, i_data FROM bmsql_item WHERE i_id = %s', (ol_i_id,))
             item_row = cursor.fetchone()
             if not item_row:
-                # Java 実装は UserAbortException を投げて rollback させる（1% の期待されるロールバック）
+                # Java throws UserAbortException to roll back (expected 1% rollback)
                 cursor.execute('ROLLBACK')
                 print(f"\tExpected rollback: item {ol_i_id} not found")
                 return 0  # expected rollback scenario -> test passes as rollback
@@ -455,7 +455,7 @@ def test_tpcc_neworder(db, cursor, dbname, num_items=5, force_invalid=False):
                 print("\tFailed: insert order_line")
                 return 1
 
-        # すべて成功したらコミット
+        # Commit if everything succeeds
         cursor.execute('COMMIT')
         print("\tPassed!")
         return 0
