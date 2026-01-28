@@ -11,11 +11,11 @@ mysqlx-bind-address = 0.0.0.0
 
 skip-name-resolve
 
-server-id = 1
+server-id=102
 gtid_mode = ON
 enforce_gtid_consistency = ON
-log_bin = binlog
-port = 3306
+sync_relay_log=1
+read_only=ON
 
 plugin-load-add=LineairDB=ha_lineairdb_storage_engine.so
-plugin-load-add=rpl_semi_sync_source=semisync_source.so
+plugin-load-add=rpl_semi_sync_replica=semisync_replica.so
