@@ -18,7 +18,7 @@ def tx1_select_for_update(user, password):
         rows = cursor.fetchall()
         print(f"[T1] Result: {rows}")
         
-        # ロックを保持したまま待機
+        # Wait while holding the lock
         time.sleep(2)
         
         print("[T1] COMMIT")
@@ -29,7 +29,7 @@ def tx1_select_for_update(user, password):
 
 def tx2_update(user, password):
     try:
-        # T1が確実にロックを取るまで少し待つ
+        # Wait briefly so T1 surely acquires the lock
         time.sleep(0.5)
         
         conn = get_connection(user=user, password=password)
@@ -40,7 +40,7 @@ def tx2_update(user, password):
         print("[T2] UPDATE executing...")
         start_time = time.time()
         
-        # 更新実行
+        # Execute update
         cursor.execute("UPDATE ha_lineairdb_test.items SET content='updated_by_t2' WHERE title='alice'")
         
         end_time = time.time()
@@ -58,19 +58,19 @@ def tx2_update(user, password):
         print(f"[T2] Error: {e}")
 
 def test_for_update(db, cursor, args):
-    # データベース初期化
+    # Initialize database
     reset(db, cursor)
     
-    # テストデータ挿入
+    # Insert test data
     print("Initializing data...")
     cursor.execute("INSERT INTO ha_lineairdb_test.items (title, content) VALUES ('alice', 'initial_content')")
     db.commit()
     
-    # スレッド作成
+    # Create threads
     t1 = threading.Thread(target=tx1_select_for_update, args=(args.user, args.password))
     t2 = threading.Thread(target=tx2_update, args=(args.user, args.password))
 
-    # テスト実行
+    # Run test
     t1.start()
     t2.start()
 

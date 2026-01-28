@@ -15,11 +15,19 @@ def tx2_expect_no_row () :
     cursor.execute('BEGIN')
 
     print("\ttx2 SELECT")
-    cursor.execute('SELECT title, content FROM ha_lineairdb_test.items')
-    rows = cursor.fetchall()
-    
+    try:
+        cursor.execute('SELECT title, content FROM ha_lineairdb_test.items')
+        rows = cursor.fetchall()
+    except mysql.connector.errors.DatabaseError as e:
+        # Precision Locking may abort tx2 due to range overlap with tx1's INSERT.
+        # Treat as "no rows visible" to avoid hanging on tx1's wait.
+        print(f"\ttx2 aborted (expected due to Precision Locking): {e}")
+        cursor.execute('ROLLBACK')
+        return []
+    finally:
+        isThread2Precommit.set()
+
     print("\ttx2 COMMIT")
-    isThread2Precommit.set()
     cursor.execute('COMMIT')
 
     return rows

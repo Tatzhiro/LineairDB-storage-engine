@@ -29,7 +29,7 @@ def setup_schema(db, cursor, dbname, engine):
     for t in drops:
         cursor.execute(f"DROP TABLE IF EXISTS {t}")
 
-    # Minimal DDL (必要最小限。必要に応じて列追加OK)
+    # Minimal DDL (minimum required; add columns as needed)
     cursor.execute(f'''
     CREATE TABLE bmsql_warehouse (
       w_id       INT NOT NULL,
@@ -52,7 +52,7 @@ def setup_schema(db, cursor, dbname, engine):
     ) ENGINE={engine}
     ''')
 
-    # ★ インデックスは CREATE TABLE の中で同時定義（MySQLで安全）
+    # Define indexes inside CREATE TABLE (safe in MySQL)
     cursor.execute(f'''
     CREATE TABLE bmsql_customer (
       c_w_id         INT NOT NULL,
@@ -204,7 +204,7 @@ def seed_minimal_data(db, cursor, dbname, item_count=100, initial_next_o_id=3001
 # =========================
 
 def test_tpcc_new_order(db, cursor, dbname, ol_cnt=10):
-    """JOIN + 複数明細ループを含む New-Order テスト"""
+    """New-Order test with JOIN and multi-line loop"""
     print("TEST TPC-C New-Order (JOIN & multi-line)")
     cursor.execute(f'USE {dbname}')
     try:
@@ -212,7 +212,7 @@ def test_tpcc_new_order(db, cursor, dbname, ol_cnt=10):
 
         w_id, d_id, c_id = 1, 1, 1001
 
-        # 倉庫税 + 顧客割引を JOIN で同時取得
+        # Fetch warehouse tax + customer discount via JOIN
         cursor.execute('''
           SELECT w.w_tax, c.c_discount
             FROM bmsql_warehouse w
@@ -225,7 +225,7 @@ def test_tpcc_new_order(db, cursor, dbname, ol_cnt=10):
             raise RuntimeError("warehouse/customer not seeded")
         w_tax, c_discount = float(row[0]), float(row[1])
 
-        # 次注文IDをロック取得
+        # Lock and fetch the next order ID
         cursor.execute('''
           SELECT d_next_o_id
             FROM bmsql_district
@@ -235,12 +235,12 @@ def test_tpcc_new_order(db, cursor, dbname, ol_cnt=10):
         d_next_o_id = int(cursor.fetchone()[0])
         new_o_id = d_next_o_id
 
-        # 採番更新
+        # Update sequence
         cursor.execute('UPDATE bmsql_district SET d_next_o_id = d_next_o_id + 1 WHERE d_w_id = %s AND d_id = %s',
                        (w_id, d_id))
 
-        # 受注ヘッダ
-        all_local_flag = 1  # 本テンプレではリモート倉庫なし
+        # Order header
+        all_local_flag = 1  # This template assumes no remote warehouse
         cursor.execute('''
           INSERT INTO bmsql_oorder (o_w_id, o_d_id, o_id, o_c_id, o_entry_d, o_ol_cnt, o_all_local)
           VALUES (%s, %s, %s, %s, NOW(), %s, %s)
@@ -250,9 +250,9 @@ def test_tpcc_new_order(db, cursor, dbname, ol_cnt=10):
         cursor.execute('INSERT INTO bmsql_new_order (no_w_id, no_d_id, no_o_id) VALUES (%s, %s, %s)',
                        (w_id, d_id, new_o_id))
 
-        # 明細ループ
+        # Order line loop
         total_amount = 0.0
-        item_max_id = 100  # seed_minimal_data と合わせる
+        item_max_id = 100  # Must match seed_minimal_data
         for ol_number in range(1, ol_cnt + 1):
             i_id = random.randint(1, item_max_id)
             supply_w_id = w_id
@@ -278,7 +278,7 @@ def test_tpcc_new_order(db, cursor, dbname, ol_cnt=10):
             s_quantity = int(srow[0])
             s_dist_info = srow[5]
 
-            # 在庫更新ロジック（TPC-C準拠の簡易版）
+            # Stock update logic (simplified TPC-C compliant)
             if s_quantity < quantity + 10:
                 new_s_quantity = s_quantity - quantity + 91
             else:
@@ -318,7 +318,7 @@ def test_tpcc_new_order(db, cursor, dbname, ol_cnt=10):
         return 1
 
 def test_tpcc_payment(db, cursor, dbname, amount=200.00):
-    """Payment（JOIN/複数ループ不要のシンプル版）"""
+    """Payment (simple version without JOIN/multi-loop)"""
     print("TEST TPC-C Payment")
     cursor.execute(f'USE {dbname}')
     try:
@@ -433,7 +433,7 @@ def test_tpcc_payment(db, cursor, dbname, amount=200.00):
         return 1
 
 def test_tpcc_delivery(db, cursor, dbname):
-    """Delivery（JOIN/複数ループ不要のシンプル版）"""
+    """Delivery (simple version without JOIN/multi-loop)"""
     print("TEST TPC-C Delivery")
     cursor.execute(f'USE {dbname}')
     try:
@@ -493,7 +493,7 @@ def test_tpcc_delivery(db, cursor, dbname):
         return 1
 
 def test_tpcc_order_status(db, cursor, dbname):
-    """Order-Status（JOIN/複数ループ不要のシンプル版）"""
+    """Order-Status (simple version without JOIN/multi-loop)"""
     print("TEST TPC-C Order-Status")
     cursor.execute(f'USE {dbname}')
     try:
@@ -524,7 +524,7 @@ def test_tpcc_order_status(db, cursor, dbname):
         return 1
 
 def test_tpcc_stock_level(db, cursor, dbname, threshold=50):
-    """Stock-Level（JOIN/複数ループ不要のシンプル版）"""
+    """Stock-Level (simple version without JOIN/multi-loop)"""
     print("TEST TPC-C Stock-Level")
     cursor.execute(f'USE {dbname}')
     try:

@@ -62,7 +62,7 @@ def setup_schema(db, cursor, dbname, engine):
     ) ENGINE={engine}
     ''')
 
-    # ★ インデックスは CREATE TABLE の中で同時定義（MySQLで安全）
+    # Define indexes inside CREATE TABLE (safe in MySQL)
     cursor.execute(f'''
     CREATE TABLE bmsql_customer (
       c_w_id         INT NOT NULL,
@@ -361,11 +361,11 @@ def populate_delivery_fixture(db, cursor, dbname):
 # TPC-C Tests
 # =========================
 def test_tpcc_delivery(db, cursor, dbname):
-    """Delivery（JOIN/複数ループ不要のシンプル版、修正版）"""
+    """Delivery (simple version without JOIN/multi-loop, revised)"""
     print("TEST TPC-C Delivery")
     cursor.execute(f'USE {dbname}')
     try:
-        # Optional: 明示的に分離レベルを上げたい場合はここで設定する
+        # Optional: set a higher isolation level explicitly here
         # cursor.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
 
         cursor.execute('START TRANSACTION')
