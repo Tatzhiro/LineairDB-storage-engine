@@ -1,8 +1,10 @@
 #! /bin/bash
 
-set -xu
+set -xue
 
 export LD_PRELOAD=/lib/x86_64-linux-gnu/libjemalloc.so.2
+
+NOW=$(date +"%Y-%m-%d_%H%M%S")
 
 if [ $# -eq 0 ]; then
     echo "No arguments supplied."
@@ -21,31 +23,7 @@ base_path=$(pwd)/../..
 cd $base_path/third_party/benchbase
 
 benchmark=$1
-
-### Install and Build
-zip_file=target/benchbase-mysql.zip
-if [ ! -f "$zip_file" ]; then
-  message " It seems to be the first-time execution of this script. Clean & Build the mvn package..."
-
-  ### Install JDK-17
-  JAVA_HOME=$(/usr/libexec/java_home -v 17)
-  if  [[ ${JAVA_HOME} != *"17"* ]]; then
-    message '    JDK-17 is not found. Start installing...'
-    if [ "$(uname)" == "Darwin" ]; then
-      brew install openjdk@17
-      export PATH=$(brew --prefix openjdk@17)/bin:$PATH
-      sudo ln -sfn $(brew --prefix openjdk@17)/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk-17.jdk
-    else
-      sudo apt install openjdk-17-jdk
-    fi
-    export JAVA_HOME=$(/usr/libexec/java_home -v 17)
-  fi
-
-  ### Build JAR
-  ./mvnw clean package -P mysql -e -DskipTests
-  unzip $zip_file
-  cd -
-fi
+plot_name=${2:-plot}
 
 function EDIT_FENCE()
 {
@@ -59,9 +37,16 @@ cd $base_path/third_party/benchbase
 
 function RESTART_MYSQL()
 {
-  MYSQL_UP=$(pgrep mysql | wc -l);
-  if [ "$MYSQL_UP" -ne 0 ]; then
-    kill -9 `pgrep mysqld`
+  PRIMARY_PID=$(ps -eo pid,args | \
+    grep '[m]ysqld' | \
+    grep -- '--defaults-file=' | \
+    grep -v -- '--read_only=ON' | \
+    awk '{print $1}')
+
+  if [ -n "$PRIMARY_PID" ]; then
+    echo "Killing primary mysqld: $PRIMARY_PID"
+    kill -9 $PRIMARY_PID
+    sleep 5
   fi
   $base_path/$build_dir/bin/mysqld --defaults-file=$base_path/$cnf --daemonize
 }
@@ -73,8 +58,8 @@ ex_file=benchbase-mysql/benchbase.jar
 step=8
 num_threads=(1 $(seq $step $step `nproc`))
 engines=(
-  myisam
-  blackhole 
+  # myisam
+  # blackhole 
   lineairdb
   innodb 
   #fence
@@ -83,11 +68,10 @@ build_dir=build
 cnf=my.cnf
 
 sudo systemctl stop mysql.service
-$base_path/$build_dir/bin/mysqld --defaults-file=$base_path/$cnf --daemonize
+RESTART_MYSQL
 if [[ `$base_path/$build_dir/bin/mysql -uroot -N -e "SHOW ENGINES;" | grep LINEAIRDB` != LINEAIRDB* ]] ; 
 then $base_path/$build_dir/bin/mysql -uroot -N -e "INSTALL PLUGIN lineairdb SONAME 'ha_lineairdb_storage_engine.so';"; 
 fi
-rm -rf $base_path/bench/results/*
 
 for bm_type in A B C E F write; do
   cd $base_path/third_party/benchbase
@@ -106,7 +90,6 @@ for bm_type in A B C E F write; do
     weight=0,0,0,100,0,0
   fi
 
-  rm -rf $base_path/bench/results/*
   sed -i "s/<weights>.*<\/weights>/<weights>$weight<\/weights>/" $base_path/bench/config/ycsb.xml
   EDIT_FENCE false
   for i in 1; do
@@ -127,14 +110,14 @@ for bm_type in A B C E F write; do
 
         java -jar $ex_file -b $benchmark -c $base_path/bench/config/$benchmark.xml --create=true --load=true --execute=true
 
-        mkdir -p $base_path/bench/results/$engine/thread_$num_thread
-        mv results/*.csv $base_path/bench/results/$engine/thread_$num_thread
+        mkdir -p $base_path/bench/results/$NOW/$bm_type/$engine/thread_$num_thread
+        mv results/*.csv $base_path/bench/results/$NOW/$bm_type/$engine/thread_$num_thread
       done
 
     done
   done
   mkdir -p $base_path/bench/plots/ycsb/$bm_type
   cd $base_path/bench/plots/ycsb/$bm_type
-  python3 $base_path/bench/bin/plot.py --engine ${engines[@]} --xaxis ${num_threads[@]} --fname month_day
+  python3 $base_path/bench/bin/plot.py --engine ${engines[@]} --xaxis ${num_threads[@]} --input_path $base_path/bench/results/$NOW/$bm_type --fname $plot_name
 done
 message 'Finish the benchmarking'

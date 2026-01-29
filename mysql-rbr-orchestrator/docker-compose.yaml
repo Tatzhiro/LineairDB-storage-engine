@@ -1,0 +1,50 @@
+services:
+  replica1:
+    image: mysql-lineairdb:8.0.43
+    container_name: replica1
+    hostname: replica1
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "3307:3306"
+    command: >
+      --server-id=101
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+      --sync_relay_log=1
+      --read_only=ON
+      --plugin-load-add=LineairDB=ha_lineairdb_storage_engine.so
+      --plugin-load-add=rpl_semi_sync_replica=semisync_replica.so
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  replica2:
+    image: mysql-lineairdb:8.0.43
+    container_name: replica2
+    hostname: replica2
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "3308:3306"
+    command: >
+      --server-id=102
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+      --sync_relay_log=1
+      --read_only=ON
+      --plugin-load-add=LineairDB=ha_lineairdb_storage_engine.so
+      --plugin-load-add=rpl_semi_sync_replica=semisync_replica.so
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  orchestrator:
+    image: perconalab/percona-orchestrator:3.2.6-19
+    container_name: orchestrator
+    ports:
+      - "3000:3000"   # Web UI
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./orchestrator/orchestrator.conf.json:/etc/orchestrator/orchestrator.conf.json:ro

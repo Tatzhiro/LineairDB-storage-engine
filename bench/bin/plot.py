@@ -11,36 +11,36 @@ import argparse
 def Average(lst):
     return sum(lst) / len(lst)
 
-def makeDFfromCSV(clm, xaxis):
+def makeDFfromCSV(engines, clm, xaxis, input_path):
     sample = pd.DataFrame(columns=clm)
-    for db in args.engine:
+    for engine in engines:
         clm = []
         for x in xaxis:
             csvlist = glob.glob(
-                f'{os.path.dirname(__file__)}/../results/{db}/thread_{x}/*results.csv')
+                f'{input_path}/{engine}/thread_{x}/*results.csv')
             # csvlist = sorted(csvlist, key=lambda x: os.path.basename(x))
             avg = []
             for f in csvlist:
                 df = pd.read_csv(f)
 
                 # drop rows that are measuring warmup phase
-                df = df.drop(df.index[[0, 1]])
+                df = df.drop(df.index[[0]])
                 # drop rows that may include data from incomplete run
                 df = df.drop(df.index[[-1]])
 
                 mean = df["Throughput (requests/second)"].mean()
                 avg.append(mean)
             clm.append(Average(avg))
-        sample[db] = clm
+        sample[engine] = clm
 
     sample["numThread"] = xaxis
     return sample
 
 
-def genplot(sample, engine, fname):
+def genplot(sample, engines, fname):
     fig, ax = plt.subplots()
     plot = []
-    for c in engine:
+    for c in engines:
         plot.append(ax.plot(sample["numThread"],
                     sample[c], marker='o', label=c))
 
@@ -53,10 +53,13 @@ def genplot(sample, engine, fname):
     fig.savefig(f'{fname}.png')
 
 
-def main(args):
-    clm = ["numThread"] + args.engine
-    sample = makeDFfromCSV(clm, args.xaxis)
-    genplot(sample, args.engine, args.fname)
+def plot_benchmark_result(engines, xaxis, input_path, fname):
+    clm = ["numThread"] + engines
+    sample = makeDFfromCSV(engines, clm, xaxis, input_path)
+    genplot(sample, engines, fname)
+    sample.to_csv(f"{fname}.csv", index=False)
+
+
 
 
 if __name__ == "__main__":
@@ -69,5 +72,8 @@ if __name__ == "__main__":
     parser.add_argument('--fname', metavar='fname', type=str,
                         help='name of output file',
                         default="plot")
+    parser.add_argument('--input_path', type=str,
+                        help='path to the input csv files')
     args = parser.parse_args()
-    main(args)
+    plot_benchmark_result(args.engine, args.xaxis, args.input_path, args.fname)
+
