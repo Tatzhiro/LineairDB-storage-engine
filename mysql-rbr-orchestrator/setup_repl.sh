@@ -62,6 +62,8 @@ done
 $HOST_MYSQL -e "
   CREATE USER IF NOT EXISTS 'repl'@'%' IDENTIFIED WITH mysql_native_password BY 'replpass';
   GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';
+  CREATE USER 'root'@'127.0.0.1' IDENTIFIED WITH mysql_native_password BY '';
+  GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1';
   FLUSH PRIVILEGES;
 "
 
@@ -85,6 +87,7 @@ for i in 1 2; do
       SOURCE_USER='repl',
       SOURCE_PASSWORD='replpass',
       SOURCE_AUTO_POSITION=1;
+    CHANGE REPLICATION SOURCE TO SOURCE_CONNECT_RETRY = 2;
     START REPLICA;
     SET GLOBAL rpl_semi_sync_replica_enabled = 1;
   "

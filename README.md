@@ -51,6 +51,7 @@ build/bin/mysql -u root  -e "
     SOURCE_USER='repl',
     SOURCE_PASSWORD='replpass',
     SOURCE_AUTO_POSITION=1;
+  CHANGE REPLICATION SOURCE TO SOURCE_CONNECT_RETRY = 2;
   START REPLICA;
 
   SET GLOBAL rpl_semi_sync_replica_enabled = 1;
@@ -65,6 +66,14 @@ build/bin/mysql -u root  -e "
   SET GLOBAL rpl_semi_sync_source_timeout = 4294967295;
   SET GLOBAL rpl_semi_sync_source_wait_for_replica_count = 1;
 "
+```
+
+Add these to my.cnf as well so that semi-sync setup persists even when primary node gets restarted:
+```
+rpl_semi_sync_source_enabled = 1
+rpl_semi_sync_source_timeout = 4294967295
+rpl_semi_sync_source_wait_for_replica_count = 1
+```
 
 
 # verify semi-sync replication setup is successful.
@@ -72,7 +81,7 @@ build/bin/mysql -u root  -e "
 # OK if the command returns the number of replicas
 build/bin/mysql -u root  -e "SHOW STATUS LIKE 'Rpl_semi_sync_source_clients';"
 # OK if ON
-build/bin/mysql -u root  -e "Rpl_semi_sync_source_status';";
+build/bin/mysql -u root  -e "SHOW STATUS LIKE 'Rpl_semi_sync_source_status';";
 ```
 
 
