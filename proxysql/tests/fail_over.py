@@ -1,4 +1,25 @@
 #!/usr/bin/env python3
+"""
+ProxySQL Failover Test with LineairDB Storage Engine
+
+This test verifies failover behavior when the primary MySQL server fails.
+It tests:
+1. Write to primary through ProxySQL
+2. Simulate primary failure
+3. Promote a replica to primary
+4. Verify writes continue working
+
+Usage:
+    python3 fail_over.py
+    python3 fail_over.py --primary database2-01 --replicas database2-02,database2-03
+    python3 fail_over.py --help
+
+Requirements:
+    - ProxySQL must be running and configured
+    - LineairDB storage engine must be available
+    - SSH access to replica nodes for promotion
+"""
+
 import sys
 import argparse
 import uuid
@@ -10,8 +31,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import mysql.connector
-
 from mysql.connector import Error as MySQLError
+
+# Import shared configuration
+from config import TestConfig as BaseTestConfig, check_lineairdb_available
 
 # Helper to detect "Unknown database" error
 def is_unknown_database(err: Exception, db_name: str) -> bool:
@@ -295,7 +318,7 @@ class ProxySQLFailoverTester:
         return row[0], int(row[1]), int(row[2])
 
     def setup_schema(self, ddl_timeout: int = 30):
-        """Setup test database and table."""
+        """Setup test database and table with LineairDB engine."""
         if not self.check_writer_responsive(timeout=10):
             raise RuntimeError("Writer backend is not responsive. Cannot proceed with schema setup.")
         
@@ -305,12 +328,13 @@ class ProxySQLFailoverTester:
             write_timeout=ddl_timeout,
         )
         
+        # Create table with LineairDB engine (falls back to InnoDB if not available)
         self.proxysql_exec_with_timeouts(
             f"""
             CREATE TABLE IF NOT EXISTS {self.db_name}.{self.table_name} (
               id INT PRIMARY KEY,
               content VARCHAR(255)
-            )
+            ) ENGINE=LINEAIRDB
             """,
             read_timeout=ddl_timeout,
             write_timeout=ddl_timeout,
@@ -570,11 +594,14 @@ def get_local_ip() -> str:
         return "127.0.0.1"
 
 
+# Get default configuration from shared config
+_base_config = BaseTestConfig()
+
 # Default node configurations (can be overridden by command-line)
 DEFAULT_NODES = {
-    "database2-01": {"host": "133.125.85.242", "port": 3306},
-    "database2-02": {"host": "133.242.17.72",  "port": 3306},
-    "database2-03": {"host": "153.120.20.111", "port": 3306},
+    "database2-01": {"host": _base_config.primary_host, "port": _base_config.mysql_port},
+    "database2-02": {"host": _base_config.replica_hosts[0] if len(_base_config.replica_hosts) > 0 else "133.242.17.72", "port": _base_config.mysql_port},
+    "database2-03": {"host": _base_config.replica_hosts[1] if len(_base_config.replica_hosts) > 1 else "153.120.20.111", "port": _base_config.mysql_port},
 }
 
 
@@ -645,6 +672,10 @@ Examples:
 def main() -> int:
     args = parse_args()
 
+    print("=" * 60)
+    print("ProxySQL Failover Test (LineairDB)")
+    print("=" * 60)
+
     # Auto-detect mysqld binary
     mysqld_bin = detect_mysqld_binary()
     if mysqld_bin:
@@ -655,6 +686,15 @@ def main() -> int:
         mysql_bin = "~/LineairDB-storage-engine/build-release/bin/mysql"
         mysqld_bin = "~/LineairDB-storage-engine/build-release/bin/mysqld"
         print(f"[warn] Could not detect running mysqld, using default: {mysqld_bin}")
+    
+    # Check LineairDB availability
+    print("\n[Prereq] Checking LineairDB availability...")
+    base_cfg = _base_config.proxysql_cfg()
+    if not check_lineairdb_available(base_cfg):
+        print("  ⚠️  LineairDB storage engine may not be available.")
+        print("  Test will proceed but may use InnoDB fallback.")
+    else:
+        print("  ✅ LineairDB storage engine is available")
 
     # Build backend nodes configuration
     backend_nodes = {}

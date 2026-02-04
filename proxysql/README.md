@@ -1,82 +1,123 @@
-# ProxySQL Setup Guide
+# ProxySQL Setup for LineairDB
 
-Set up ProxySQL with MySQL/LineairDB backends for read/write splitting and failover.
+ProxySQL configuration for MySQL/LineairDB backends with read/write splitting, failover, and GTID causal reads.
 
 ## Quick Start
 
+### 1. Configure Environment
+
+Edit `config` to set your server IP addresses and hostnames:
+
 ```bash
-cd ~/LineairDB-storage-engine/proxysql
+vim config
+# Update PRIMARY_HOST, REPLICA1_HOST, REPLICA2_HOST, etc.
+```
 
-# 1. Setup - registers backends, creates user, configures routing
-./setup_proxysql.sh
+### 2. Install ProxySQL (if not installed)
 
-# 2. Check status
-./status.sh
+```bash
+sudo ./install/install_proxysql.sh
+```
 
-# 3. Test connection
-mysql -u proxysql_user -pproxysql_pass -h <PROXYSQL_HOST> -P 6033 \
+### 3. Setup ProxySQL
+
+```bash
+sudo ./scripts/setup_proxysql.sh
+```
+
+### 4. Check Status
+
+```bash
+./scripts/status.sh
+```
+
+### 5. Test Connection
+
+```bash
+mysql -u proxysql_user -pproxysql_pass -h 127.0.0.1 -P 6033 \
   -e "SELECT @@hostname, @@server_id, @@read_only;"
-
-# 4. Teardown (optional)
-./teardown_proxysql.sh
 ```
-
-## Failover Test
-
-```bash
-# Run with defaults
-python3 tests/fail_over.py
-
-# Specify nodes
-python3 tests/fail_over.py --primary database2-01 --replicas database2-02,database2-03
-
-# Custom nodes
-python3 tests/fail_over.py \
-    --node mymaster:192.168.1.10:3306 \
-    --node replica1:192.168.1.11:3306 \
-    --primary mymaster --replicas replica1
-
-# See all options
-python3 tests/fail_over.py --help
-```
-
-> **Note:** After the failover test, remember to restart mysqld on the primary node and run `./setup_proxysql.sh` to restore the original configuration.
 
 ## Configuration
 
-**Default Nodes:**
-| Node | Host | Port |
-|------|------|------|
-| database2-01 (primary) | 133.125.85.242 | 3306 |
-| database2-02 (replica) | 133.242.17.72 | 3306 |
-| database2-03 (replica) | 153.120.20.111 | 3306 |
+All configuration is centralized in the `config` file:
 
-**ProxySQL Ports:**
-- `6032` - Admin interface
-- `6033` - Client interface
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PRIMARY_HOST` | Primary (writer) IP | 133.125.85.242 |
+| `REPLICA1_HOST` | First replica IP | 133.242.17.72 |
+| `REPLICA2_HOST` | Second replica IP | 153.120.20.111 |
+| `FRONTEND_USER` | ProxySQL client user | proxysql_user |
+| `FRONTEND_PASS` | ProxySQL client password | proxysql_pass |
+| `WRITER_HG` | Writer hostgroup ID | 0 |
+| `READER_HG` | Reader hostgroup ID | 1 |
 
-**Query Routing:**
-- `SELECT ... FOR UPDATE` → Writer (HG 0)
-- `SELECT` → Reader (HG 1)
-- All other queries → Writer (HG 0)
+## Query Routing
 
-## Troubleshooting
+| Query Type | Destination |
+|------------|-------------|
+| `SELECT ... FOR UPDATE` | Writer (HG 0) |
+| `SELECT` | Reader (HG 1) |
+| All other queries | Writer (HG 0) |
 
-**ProxySQL not running:**
+## GTID Causal Reads
+
+For read-after-write consistency:
+
+### Prerequisites
+
+1. Install binlog reader on each MySQL server:
+   ```bash
+   sudo ./install/install_binlog_reader.sh
+   ```
+
+2. Start binlog reader on each server:
+   ```bash
+   proxysql_binlog_reader -h 127.0.0.1 -u repl_user -p repl_pass -P 3306 -l 6020 &
+   ```
+
+### Enable
+
 ```bash
-sudo systemctl status proxysql
-sudo journalctl -u proxysql --no-pager | tail -50
+sudo ./scripts/enable_gtid_causal_read.sh
 ```
 
-**DDL hangs (semi-sync issue):**
+### Test
+
 ```bash
-# Check and fix semi-sync timeout
-mysql -u root -e "SET GLOBAL rpl_semi_sync_source_timeout = 10000;"
+cd tests && python3 gtid_causal_read_test.py --verbose
 ```
 
-**Stuck queries:**
+### Disable
+
+To restore simple read/write splitting (no consistency guarantees):
+
 ```bash
-mysql -u root -e "SHOW PROCESSLIST;"
-# Temporarily disable semi-sync to release
-mysql -u root -e "SET GLOBAL rpl_semi_sync_source_enabled = OFF;"
+sudo ./scripts/disable_gtid_causal_read.sh
 ```
+
+## Tests
+
+All tests verify LineairDB storage engine is used.
+
+| Test | Command | Description |
+|------|---------|-------------|
+| Read/Write Split | `python3 tests/read_write_split.py` | Verify query routing |
+| Replication | `python3 tests/replication.py` | Verify data replication |
+| GTID Causal | `python3 tests/gtid_causal_read_test.py` | Verify read consistency |
+| Failover | `python3 tests/fail_over.py` | Test primary failure recovery |
+
+## Teardown
+
+```bash
+sudo ./scripts/teardown_proxysql.sh
+```
+
+## Ports
+
+| Port | Service |
+|------|---------|
+| 6032 | ProxySQL Admin |
+| 6033 | ProxySQL Client |
+| 6020 | Binlog Reader |
+| 3306 | MySQL |
