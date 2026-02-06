@@ -1956,7 +1956,9 @@ int ha_lineairdb::execute_prefix_first(uchar *buf, LineairDBTransaction *tx) {
   const std::string &prefix_end = current_plan_.same_group_end_serialized;
 
   if (current_plan_.is_primary) {
-    auto key_values = tx->get_matching_keys_and_values_from_prefix(prefix);
+    // Restrict to [prefix, prefix_end) so index_next never leaks non-prefix rows.
+    auto key_values = tx->get_matching_keys_and_values_in_range(
+        prefix, prefix_end, prefix_end);
     for (auto &kv : key_values) {
       secondary_index_results_.push_back(kv.first);
       secondary_index_payloads_.push_back(std::move(kv.second));
@@ -1974,9 +1976,9 @@ int ha_lineairdb::execute_prefix_first(uchar *buf, LineairDBTransaction *tx) {
     return fetch_and_set_current_result(buf, tx);
   }
 
-  // secondary index: scan from prefix and stop early if no prefix match
-  secondary_index_results_ =
-      tx->get_matching_primary_keys_from_prefix(current_index_name, prefix);
+  // Restrict to [prefix, prefix_end) so index_next never leaks non-prefix rows.
+  secondary_index_results_ = tx->get_matching_primary_keys_in_range(
+      current_index_name, prefix, prefix_end, prefix_end);
 
   if (tx->is_aborted()) {
     thd_mark_transaction_to_rollback(ha_thd(), 1);
