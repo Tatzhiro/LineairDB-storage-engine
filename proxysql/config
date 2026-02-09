@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# ProxySQL Configuration File
+# 
+# This file contains all configurable settings for the ProxySQL setup.
+# Source this file in other scripts to use these variables.
+# Modify these values when deploying to a different environment.
+
+############################################
+# Cluster Topology
+############################################
+# Primary (Writer) node
+PRIMARY_HOST="133.125.85.242"
+PRIMARY_HOSTNAME="database2-01"
+PRIMARY_PORT=3306
+
+# Replica (Reader) nodes - comma separated
+REPLICA1_HOST="133.242.17.72"
+REPLICA1_HOSTNAME="database2-02"
+REPLICA1_PORT=3306
+
+REPLICA2_HOST="153.120.20.111"
+REPLICA2_HOSTNAME="database2-03"
+REPLICA2_PORT=3306
+
+# Combined replica list (for scripts that iterate)
+REPLICA_HOSTS="${REPLICA1_HOST},${REPLICA2_HOST}"
+ALL_HOSTS="${PRIMARY_HOST},${REPLICA1_HOST},${REPLICA2_HOST}"
+
+############################################
+# ProxySQL Admin Configuration
+############################################
+PROXYSQL_ADMIN_HOST="127.0.0.1"
+PROXYSQL_ADMIN_PORT=6032
+PROXYSQL_ADMIN_USER="admin"
+PROXYSQL_ADMIN_PASS="admin"
+
+############################################
+# ProxySQL Client Configuration
+############################################
+PROXYSQL_CLIENT_PORT=6033
+
+############################################
+# Hostgroups
+############################################
+WRITER_HG=0
+READER_HG=1
+
+############################################
+# Frontend User (client -> ProxySQL)
+############################################
+FRONTEND_USER="proxysql_user"
+FRONTEND_PASS="proxysql_pass"
+
+############################################
+# MySQL Replication User (for binlog reader)
+############################################
+MYSQL_REPL_USER="repl_user"
+MYSQL_REPL_PASS="repl_pass"
+
+############################################
+# Binlog Reader Configuration
+############################################
+BINLOG_READER_PORT=6020
+
+############################################
+# LineairDB Base Directory
+############################################
+LINEAIRDB_BASE="${LINEAIRDB_BASE:-/home/ubuntu/LineairDB-storage-engine}"
+
+############################################
+# Query Rule IDs
+############################################
+RULE_SELECT_FOR_UPDATE_ID=90
+RULE_SELECT_ID=100
+
+############################################
+# Helper Functions
+############################################
+
+# Get script directory (useful for sourcing config)
+get_script_dir() {
+    local script_path="${BASH_SOURCE[1]}"
+    cd "$(dirname "${script_path}")" && pwd
+}
+
+# Check if LineairDB mysqld is running
+check_lineairdb_running() {
+    local mysqld_line
+    mysqld_line=$(ps -u ubuntu -o pid,cmd 2>/dev/null | grep '[m]ysqld' | grep -v '/usr/sbin/mysqld' | head -n 1)
+    
+    if [[ -z "${mysqld_line}" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Get LineairDB mysql client path
+get_lineairdb_mysql_client() {
+    local mysqld_line mysqld_bin
+    mysqld_line=$(ps -u ubuntu -o pid,cmd 2>/dev/null | grep '[m]ysqld' | grep -v '/usr/sbin/mysqld' | head -n 1 | awk '{$1=""; print substr($0,2)}')
+    
+    if [[ -z "${mysqld_line}" ]]; then
+        echo "${LINEAIRDB_BASE}/build-release/bin/mysql"
+        return
+    fi
+    
+    mysqld_bin=$(echo "${mysqld_line}" | awk '{print $1}')
+    
+    if [[ "${mysqld_bin}" == /* ]]; then
+        echo "$(dirname "${mysqld_bin}")/mysql"
+    else
+        echo "${LINEAIRDB_BASE}/$(dirname "${mysqld_bin}")/mysql"
+    fi
+}
+
+# Get LineairDB defaults file
+get_lineairdb_defaults_file() {
+    local mysqld_line cnf_raw
+    mysqld_line=$(ps -u ubuntu -o pid,cmd 2>/dev/null | grep '[m]ysqld' | grep -v '/usr/sbin/mysqld' | head -n 1 | awk '{$1=""; print substr($0,2)}')
+    
+    if [[ -z "${mysqld_line}" ]]; then
+        echo "${LINEAIRDB_BASE}/my_release.cnf"
+        return
+    fi
+    
+    cnf_raw=$(echo "${mysqld_line}" | sed -n "s/.*--defaults-file=\([^ ]*\).*/\1/p")
+    
+    if [[ -z "${cnf_raw}" ]]; then
+        echo "${LINEAIRDB_BASE}/my_release.cnf"
+        return
+    fi
+    
+    if [[ "${cnf_raw}" == /* ]]; then
+        echo "${cnf_raw}"
+    else
+        echo "${LINEAIRDB_BASE}/${cnf_raw}"
+    fi
+}
+
+# Get MySQL socket path from defaults file
+get_mysql_socket() {
+    local cnf_file="${1:-$(get_lineairdb_defaults_file)}"
+    grep -E '^[[:space:]]*socket[[:space:]]*=' "${cnf_file}" 2>/dev/null | tail -n 1 | sed -E 's/^[[:space:]]*socket[[:space:]]*=[[:space:]]*//' || echo "/tmp/mysql.sock"
+}
+
+# Detect if current node is master or replica
+detect_node_role() {
+    local cnf_file="${1:-$(get_lineairdb_defaults_file)}"
+    if [[ "${cnf_file}" == *my_release.cnf ]]; then
+        echo "MASTER"
+    elif [[ "${cnf_file}" == *my_replica_release.cnf ]]; then
+        echo "REPLICA"
+    else
+        echo "UNKNOWN"
+    fi
+}
+
+# Run SQL on ProxySQL admin
+run_proxysql_admin_sql() {
+    local sql="$1"
+    MYSQL_PWD="${PROXYSQL_ADMIN_PASS}" \
+    mysql -u "${PROXYSQL_ADMIN_USER}" \
+          -h "${PROXYSQL_ADMIN_HOST}" \
+          -P "${PROXYSQL_ADMIN_PORT}" \
+          --protocol=tcp \
+          -e "${sql}"
+}
+
+# Run SQL on local LineairDB MySQL
+run_lineairdb_sql() {
+    local sql="$1"
+    local mysql_cli socket cnf_file
+    
+    mysql_cli=$(get_lineairdb_mysql_client)
+    cnf_file=$(get_lineairdb_defaults_file)
+    socket=$(get_mysql_socket "${cnf_file}")
+    
+    "${mysql_cli}" --defaults-file="${cnf_file}" -u root --protocol=SOCKET --socket="${socket}" -e "${sql}"
+}
+
+# Verify LineairDB is available and running
+verify_lineairdb_available() {
+    if ! check_lineairdb_running; then
+        echo "ERROR: LineairDB mysqld is not running." >&2
+        echo "Please start LineairDB first:" >&2
+        echo "  cd ${LINEAIRDB_BASE}" >&2
+        echo "  ./build-release/bin/mysqld --defaults-file=my_release.cnf &" >&2
+        return 1
+    fi
+    
+    # Check if LineairDB engine is available
+    local engine_check
+    engine_check=$(run_lineairdb_sql "SHOW ENGINES" 2>/dev/null | grep -i "LINEAIRDB" || true)
+    
+    if [[ -z "${engine_check}" ]]; then
+        echo "ERROR: LineairDB storage engine is not available." >&2
+        echo "Make sure you're running the LineairDB-enabled MySQL build." >&2
+        return 1
+    fi
+    
+    return 0
+}
+
+# CSV to newline-separated list
+csv_to_lines() {
+    echo "$1" | tr ',' '\n' | sed '/^$/d'
+}
