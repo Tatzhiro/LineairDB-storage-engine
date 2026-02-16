@@ -6,9 +6,18 @@ We evaluate this project via [Benchbase](https://github.com/cmu-db/benchbase).
 
 OS: Ubuntu
 
+Create user for benchmark (please set password for security):
+```sql
+CREATE USER IF NOT EXISTS 'root'@'127.0.0.1'
+  IDENTIFIED WITH mysql_native_password BY '';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+```
+
 ## Executables
 First, install benchbase:
 ```bash
+bench/bin/patch_ycsb.sh
 bench/bin/install_benchbase.sh
 ```
 
