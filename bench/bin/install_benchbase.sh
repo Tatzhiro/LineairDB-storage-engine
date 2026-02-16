@@ -16,7 +16,8 @@ if [ ! -f "$zip_file" ]; then
   message " Clean & Build the mvn package..."
 
   ### Install JDK-17
-  JAVA_HOME=$(/usr/libexec/java_home -v 17)
+  JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")
+  export JAVA_HOME
   if  [[ ${JAVA_HOME} != *"17"* ]]; then
     message '    JDK-17 is not found. Start installing...'
     if [ "$(uname)" == "Darwin" ]; then
@@ -26,7 +27,8 @@ if [ ! -f "$zip_file" ]; then
     else
       sudo apt install openjdk-17-jdk
     fi
-    export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+    JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")
+    export JAVA_HOME
   fi
 
   ### Build JAR

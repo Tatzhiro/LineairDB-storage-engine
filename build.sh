@@ -17,7 +17,7 @@ cmake ../third_party/mysql-server \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
   -DWITH_BUILD_ID=0 \
   -DWITH_ASAN=0 \
-  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_BUILD_TYPE=Release \
   -DDOWNLOAD_BOOST=0 \
   -DWITH_BOOST=../boost \
   -DWITHOUT_EXAMPLE_STORAGE_ENGINE=1 \

@@ -38,11 +38,11 @@ def main(benchmark, plot_name, engines, step):
     if benchmark == "ycsb":
         workloads = {
             "A": "50,0,0,50,0,0",
-            "B": "95,0,0,5,0,0",
-            "C": "100,0,0,0,0,0",
-            "E": "0,5,95,0,0,0",
-            "F": "50,0,0,0,0,50",
-            "write": "0,0,0,100,0,0"
+#            "B": "95,0,0,5,0,0",
+#            "C": "100,0,0,0,0,0",
+#            "E": "0,5,95,0,0,0",
+#            "F": "50,0,0,0,0,50",
+#            "write": "0,0,0,100,0,0"
         }
     elif benchmark == "tpcc":
         workloads = {
@@ -103,10 +103,21 @@ def message(text):
 def run_cmd(cmd, cwd=None, shell=True, check=True, print_output=True):
     """Wrapper for subprocess to mimic 'set -x' and 'set -e'"""
     print(f"\033[90m+ {cmd}\033[0m") # Uncomment for 'set -x' style tracing
-    res = subprocess.run(cmd, cwd=cwd, shell=shell, check=check, capture_output=True, text=True)
-    if print:
-        print(f"\033[90m+ {res.stdout}\033[0m")
-    return res
+    try:
+        res = subprocess.run(
+            cmd, cwd=cwd, shell=shell, check=check,
+            capture_output=True, text=True
+        )
+        if print_output and res.stdout:
+            print(f"\033[90m{res.stdout}\033[0m")
+        return res
+    except subprocess.CalledProcessError as e:
+        # This is where the magic happens:
+        print("\033[91m[ERROR] Command failed!\033[0m")
+        print(f"\033[91mSTDOUT:\033[0m\n{e.stdout}")
+        print(f"\033[91mSTDERR:\033[0m\n{e.stderr}")
+        # Re-raise if you want the script to stop, or return None to continue
+        raise
 
 
 def replace_in_file(file_path, search, replace):
