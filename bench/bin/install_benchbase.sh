@@ -6,6 +6,10 @@ cd "$(dirname "$0")"
 base_path=$(pwd)/../..
 cd $base_path/third_party/benchbase
 
+message () {
+ printf "${ESC}1m%s${ESC}m\n" "$1"
+}
+
 zip_file=target/benchbase-mysql.zip
 if [ ! -f "$zip_file" ]; then
   message " Clean & Build the mvn package..."
