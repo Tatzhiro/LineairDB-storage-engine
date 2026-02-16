@@ -114,17 +114,21 @@ create_ycsb_a_config() {
 }
 
 throughput_from_latest_csv() {
-  python3 - "$BENCHBASE_RESULTS_DIR_PRIMARY" "$BENCHBASE_RESULTS_DIR_LEGACY" <<'PY'
+  local run_start_epoch="$1"
+  python3 - "$BENCHBASE_RESULTS_DIR_PRIMARY" "$BENCHBASE_RESULTS_DIR_LEGACY" "$run_start_epoch" <<'PY'
 import csv, sys
 from pathlib import Path
 
-search_dirs = [Path(p) for p in sys.argv[1:] if p]
+search_dirs = [Path(p) for p in sys.argv[1:3] if p]
+run_start_epoch = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
 candidates = []
 for d in search_dirs:
     if d.exists():
         candidates.extend(d.glob('*.csv'))
 
-csvs = sorted(set(candidates), key=lambda p: p.stat().st_mtime, reverse=True)
+# Only consider files generated/updated by current benchmark run.
+csvs = [p for p in set(candidates) if p.stat().st_mtime >= run_start_epoch - 1]
+csvs = sorted(csvs, key=lambda p: p.stat().st_mtime, reverse=True)
 if not csvs:
     raise SystemExit(2)
 
@@ -164,7 +168,7 @@ for path in csvs:
                 if t == 'total' and v:
                     vals.append(float(v))
             if vals:
-                print(vals[-1])
+                print(max(vals))
                 raise SystemExit(0)
 
             for row in rows:
@@ -172,7 +176,7 @@ for path in csvs:
                 if v:
                     vals.append(float(v))
             if vals:
-                print(vals[-1])
+                print(max(vals))
                 raise SystemExit(0)
     except Exception:
         continue
@@ -216,6 +220,8 @@ bench_target() {
   prepare_db "$port"
 
   log "Running BenchBase YCSB-A for ${name}"
+  local run_start_epoch
+  run_start_epoch="$(date +%s)"
   if ! (cd "$BENCHBASE_HOME" && java -jar "$BENCHBASE_JAR" -b ycsb -c "$cfg" --create=true --load=true --execute=true) >"/tmp/benchbase_${name}.log" 2>&1; then
     echo "FAILED_BENCHBASE::$(tr '\n' ' ' </tmp/benchbase_${name}.log)"
     runtime_exec rm -f "$container" >/dev/null 2>&1 || true
@@ -224,7 +230,7 @@ bench_target() {
   fi
 
   local throughput
-  if ! throughput="$(throughput_from_latest_csv)"; then
+  if ! throughput="$(throughput_from_latest_csv "$run_start_epoch")"; then
     # Fallback: parse throughput from BenchBase log output.
     throughput="$({ python3 - "/tmp/benchbase_${name}.log" <<'PY'
 import re, sys
