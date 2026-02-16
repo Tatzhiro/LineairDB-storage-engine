@@ -5,8 +5,9 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$ROOT_DIR/bench/results/ycsb_a_mysql_versions"
 BASE_YCSB_XML="$ROOT_DIR/bench/config/ycsb.xml"
 BENCHBASE_JAR="$ROOT_DIR/third_party/benchbase/benchbase-mysql/benchbase.jar"
-BENCHBASE_RESULTS_DIR="$ROOT_DIR/third_party/benchbase/results"
 BENCHBASE_HOME="$(dirname "$BENCHBASE_JAR")"
+BENCHBASE_RESULTS_DIR_PRIMARY="$BENCHBASE_HOME/results"
+BENCHBASE_RESULTS_DIR_LEGACY="$ROOT_DIR/third_party/benchbase/results"
 
 TERMINALS="${TERMINALS:-8}"
 DURATION="${DURATION:-20}"
@@ -15,7 +16,7 @@ TARGET_NAMES=("mysql-5.7" "mysql-8.0.43")
 TARGET_IMAGES=("docker.io/library/mysql:5.7" "docker.io/library/mysql:8.0.43")
 TARGET_PORTS=("34057" "34080")
 
-mkdir -p "$OUT_DIR" "$BENCHBASE_RESULTS_DIR"
+mkdir -p "$OUT_DIR" "$BENCHBASE_RESULTS_DIR_PRIMARY" "$BENCHBASE_RESULTS_DIR_LEGACY"
 
 log() { echo "[$(date +'%H:%M:%S')] $*" >&2; }
 
@@ -113,29 +114,59 @@ create_ycsb_a_config() {
 }
 
 throughput_from_latest_csv() {
-  python3 - "$BENCHBASE_RESULTS_DIR" <<'PY'
+  python3 - "$BENCHBASE_RESULTS_DIR_PRIMARY" "$BENCHBASE_RESULTS_DIR_LEGACY" <<'PY'
 import csv, sys
 from pathlib import Path
-res = Path(sys.argv[1])
-csvs = sorted(res.glob('*.csv'), key=lambda p: p.stat().st_mtime, reverse=True)
+
+search_dirs = [Path(p) for p in sys.argv[1:] if p]
+candidates = []
+for d in search_dirs:
+    if d.exists():
+        candidates.extend(d.glob('*.csv'))
+
+csvs = sorted(set(candidates), key=lambda p: p.stat().st_mtime, reverse=True)
 if not csvs:
     raise SystemExit(2)
+
+key_aliases = (
+    'throughput(req/sec)',
+    'throughput(req/s)',
+    'throughput',
+    'requests/sec',
+    'req/s',
+    'throughput (requests/second)',
+    'throughput(req_per_sec)',
+)
+
 for path in csvs:
     try:
         with path.open(newline='') as f:
             r = csv.DictReader(f)
             if not r.fieldnames:
                 continue
-            lookup = {k.lower(): k for k in r.fieldnames}
+            lookup = {k.strip().lower(): k for k in r.fieldnames}
             cand = None
-            for key in ('throughput(req/sec)', 'throughput(req/s)', 'throughput', 'requests/sec', 'req/s'):
+            for key in key_aliases:
                 if key in lookup:
                     cand = lookup[key]
                     break
             if cand is None:
                 continue
+
             rows = list(r)
+            if not rows:
+                continue
+
             vals = []
+            for row in rows:
+                t = (row.get('Transaction Type') or row.get('transaction type') or '').strip().lower()
+                v = (row.get(cand) or '').strip()
+                if t == 'total' and v:
+                    vals.append(float(v))
+            if vals:
+                print(vals[-1])
+                raise SystemExit(0)
+
             for row in rows:
                 v = (row.get(cand) or '').strip()
                 if v:
@@ -194,10 +225,30 @@ bench_target() {
 
   local throughput
   if ! throughput="$(throughput_from_latest_csv)"; then
-    echo "FAILED_PARSE::Could not parse throughput from BenchBase CSVs"
-    runtime_exec rm -f "$container" >/dev/null 2>&1 || true
-    rm -f "$cfg"
-    return 1
+    # Fallback: parse throughput from BenchBase log output.
+    throughput="$({ python3 - "/tmp/benchbase_${name}.log" <<'PY'
+import re, sys
+text = open(sys.argv[1], 'r', errors='ignore').read()
+patterns = [
+    r"Throughput\(req/sec\)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
+    r"Throughput\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
+    r"\bTOTAL\b.*?([0-9]+(?:\.[0-9]+)?)\s*$",
+]
+for pat in patterns:
+    m = re.findall(pat, text, flags=re.MULTILINE)
+    if m:
+        print(m[-1])
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+    } || true)"
+
+    if [[ -z "$throughput" ]]; then
+      echo "FAILED_PARSE::Could not parse throughput from BenchBase CSVs/logs"
+      runtime_exec rm -f "$container" >/dev/null 2>&1 || true
+      rm -f "$cfg"
+      return 1
+    fi
   fi
 
   runtime_exec rm -f "$container" >/dev/null 2>&1 || true
