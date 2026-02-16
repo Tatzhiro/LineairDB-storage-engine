@@ -6,6 +6,7 @@ OUT_DIR="$ROOT_DIR/bench/results/ycsb_a_mysql_versions"
 BASE_YCSB_XML="$ROOT_DIR/bench/config/ycsb.xml"
 BENCHBASE_JAR="$ROOT_DIR/third_party/benchbase/benchbase-mysql/benchbase.jar"
 BENCHBASE_RESULTS_DIR="$ROOT_DIR/third_party/benchbase/results"
+BENCHBASE_HOME="$(dirname "$BENCHBASE_JAR")"
 
 TERMINALS="${TERMINALS:-8}"
 DURATION="${DURATION:-20}"
@@ -16,7 +17,7 @@ TARGET_PORTS=("34057" "34080")
 
 mkdir -p "$OUT_DIR" "$BENCHBASE_RESULTS_DIR"
 
-log() { echo "[$(date +'%H:%M:%S')] $*"; }
+log() { echo "[$(date +'%H:%M:%S')] $*" >&2; }
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo "ERROR: command not found: $1" >&2; exit 1; }
@@ -184,7 +185,7 @@ bench_target() {
   prepare_db "$port"
 
   log "Running BenchBase YCSB-A for ${name}"
-  if ! java -jar "$BENCHBASE_JAR" -b ycsb -c "$cfg" --create=true --load=true --execute=true >"/tmp/benchbase_${name}.log" 2>&1; then
+  if ! (cd "$BENCHBASE_HOME" && java -jar "$BENCHBASE_JAR" -b ycsb -c "$cfg" --create=true --load=true --execute=true) >"/tmp/benchbase_${name}.log" 2>&1; then
     echo "FAILED_BENCHBASE::$(tr '\n' ' ' </tmp/benchbase_${name}.log)"
     runtime_exec rm -f "$container" >/dev/null 2>&1 || true
     rm -f "$cfg"
@@ -239,10 +240,10 @@ done
 {
   echo "# BenchBase YCSB-A benchmark (containerized MySQL)"
   echo
-  echo "Runtime: `$RUNTIME`"
-  echo "Docker command: `$(printf '%q ' "${RUNCMD[@]}")`"
-  echo "Terminals: `$TERMINALS`"
-  echo "Duration: `${DURATION}s`"
+  printf "%s\n" "Runtime: \`$RUNTIME\`"
+  printf "%s\n" "Docker command: \`$(printf '%q ' "${RUNCMD[@]}")\`"
+  printf "%s\n" "Terminals: \`$TERMINALS\`"
+  printf "%s\n" "Duration: \`${DURATION}s\`"
   echo
   echo "Targets:"
   for i in "${!TARGET_NAMES[@]}"; do
