@@ -10,6 +10,10 @@ BENCHBASE_RESULTS_DIR="$BENCHBASE_PATH/results"
 
 DURATION="${DURATION:-20}"
 
+# Force key MySQL options to be identical across versions for fair comparison.
+MYSQL_COMMON_OPTS="${MYSQL_COMMON_OPTS:---innodb_flush_log_at_trx_commit=1 --sync_binlog=1 --skip-log-bin --innodb_buffer_pool_size=1G}"
+read -r -a MYSQL_COMMON_OPTS_ARR <<< "$MYSQL_COMMON_OPTS"
+
 TARGET_NAMES=("mysql-5.7" "mysql-8.0.43")
 TARGET_IMAGES=("docker.io/library/mysql:5.7" "docker.io/library/mysql:8.0.43")
 TARGET_PORTS=("34057" "34080")
@@ -224,7 +228,7 @@ bench_target() {
   fi
 
   log "Starting ${container} on port ${port}"
-  if ! runtime_exec run -d --name "$container" -e MYSQL_ALLOW_EMPTY_PASSWORD=yes -p "${port}:3306" "$image" >/tmp/run_${name}.log 2>&1; then
+  if ! runtime_exec run -d --name "$container" -e MYSQL_ALLOW_EMPTY_PASSWORD=yes -p "${port}:3306" "$image" "${MYSQL_COMMON_OPTS_ARR[@]}" >/tmp/run_${name}.log 2>&1; then
     echo "FAILED_START::$(tr '\n' ' ' </tmp/run_${name}.log)"
     runtime_exec rm -f "$container" >/dev/null 2>&1 || true
     rm -f "$cfg"
@@ -333,6 +337,7 @@ done
   printf "%s\n" "Runtime: \`$RUNTIME\`"
   printf "%s\n" "Docker command: \`$(printf '%q ' "${RUNCMD[@]}")\`"
   printf "%s\n" "Duration: \`${DURATION}s\`"
+  printf "%s\n" "MySQL common options: \`${MYSQL_COMMON_OPTS}\`"
   printf "%s\n" "Thread points: \`${THREAD_POINTS[*]}\`"
   echo
   echo "Targets:"
