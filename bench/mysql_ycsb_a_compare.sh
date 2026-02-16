@@ -8,7 +8,6 @@ BENCHBASE_JAR="$ROOT_DIR/third_party/benchbase/benchbase-mysql/benchbase.jar"
 BENCHBASE_PATH="$ROOT_DIR/third_party/benchbase"
 BENCHBASE_RESULTS_DIR="$BENCHBASE_PATH/results"
 
-TERMINALS="${TERMINALS:-8}"
 DURATION="${DURATION:-20}"
 
 TARGET_NAMES=("mysql-5.7" "mysql-8.0.43")
@@ -35,7 +34,7 @@ if [[ ! -f "$BENCHBASE_JAR" ]]; then
   exit 1
 fi
 
-# Prefer podman. If using docker and socket permission is denied, automatically fallback to sudo docker.
+# Prefer podman. If using docker and socket permission is denied, fallback to sudo docker.
 RUNTIME=""
 RUNCMD=()
 if command -v podman >/dev/null 2>&1; then
@@ -61,6 +60,30 @@ fi
 runtime_exec() {
   "${RUNCMD[@]}" "$@"
 }
+
+calc_thread_points() {
+  python3 - <<'PY'
+import os
+n = os.cpu_count() or 1
+# 4 measurements spanning 1..nproc
+if n <= 1:
+    pts = [1, 1, 1, 1]
+else:
+    pts = [1, max(1, round(n/3)), max(1, round(2*n/3)), n]
+# ensure non-decreasing and within [1,n]
+pts = [min(n, max(1, p)) for p in pts]
+for i in range(1, len(pts)):
+    if pts[i] < pts[i-1]:
+        pts[i] = pts[i-1]
+print(" ".join(map(str, pts)))
+PY
+}
+
+THREAD_POINTS_STR="${THREAD_POINTS:-}"
+if [[ -z "$THREAD_POINTS_STR" ]]; then
+  THREAD_POINTS_STR="$(calc_thread_points)"
+fi
+read -r -a THREAD_POINTS <<< "$THREAD_POINTS_STR"
 
 wait_mysql() {
   local port="$1"
@@ -123,25 +146,8 @@ run_start_epoch = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
 if not results_dir.exists():
     raise SystemExit(2)
 
-# Only consider files generated/updated by current benchmark run.
 candidates = [p for p in results_dir.glob('*.csv') if p.stat().st_mtime >= run_start_epoch - 1]
 if not candidates:
-    raise SystemExit(2)
-
-# Prefer likely summary-style files first.
-def file_rank(p: Path):
-    name = p.name.lower()
-    rank = 0
-    if 'summary' in name:
-        rank -= 20
-    if 'result' in name:
-        rank -= 10
-    if 'samples' in name:
-        rank += 10
-    return (rank, -p.stat().st_mtime)
-
-csvs = sorted(candidates, key=file_rank)
-if not csvs:
     raise SystemExit(2)
 
 key_aliases = (
@@ -151,11 +157,10 @@ key_aliases = (
     'requests/sec',
     'req/s',
     'throughput (requests/second)',
-    'throughput(req_per_sec)',
 )
 
 all_vals = []
-for path in csvs:
+for path in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
     try:
         with path.open(newline='') as f:
             r = csv.DictReader(f)
@@ -169,27 +174,30 @@ for path in csvs:
                     break
             if cand is None:
                 continue
-
             rows = list(r)
             if not rows:
                 continue
 
-            vals = []
+            total_vals = []
+            other_vals = []
             for row in rows:
+                v = (row.get(cand) or '').strip()
+                if not v:
+                    continue
+                try:
+                    fv = float(v)
+                except Exception:
+                    continue
                 t = (row.get('Transaction Type') or row.get('transaction type') or '').strip().lower()
-                v = (row.get(cand) or '').strip()
-                if t == 'total' and v:
-                    vals.append(float(v))
-            if vals:
-                all_vals.extend(vals)
-                continue
+                if t == 'total':
+                    total_vals.append(fv)
+                else:
+                    other_vals.append(fv)
 
-            for row in rows:
-                v = (row.get(cand) or '').strip()
-                if v:
-                    vals.append(float(v))
-            if vals:
-                all_vals.extend(vals)
+            if total_vals:
+                all_vals.extend(total_vals)
+            elif other_vals:
+                all_vals.extend(other_vals)
     except Exception:
         continue
 
@@ -201,7 +209,7 @@ PY
 }
 
 bench_target() {
-  local name="$1" image="$2" port="$3"
+  local name="$1" image="$2" port="$3" terminals="$4"
   local container="bench-${name}"
   local cfg
   cfg="$(mktemp /tmp/ycsb-a-XXXXXX.xml)"
@@ -223,7 +231,7 @@ bench_target() {
     return 1
   fi
 
-  create_ycsb_a_config "$port" "$TERMINALS" "$DURATION" "$cfg"
+  create_ycsb_a_config "$port" "$terminals" "$DURATION" "$cfg"
 
   if ! wait_mysql "$port" 180; then
     echo "FAILED_WAIT::MySQL did not become ready on port $port"
@@ -235,11 +243,11 @@ bench_target() {
 
   prepare_db "$port"
 
-  log "Running BenchBase YCSB-A for ${name}"
+  log "Running BenchBase YCSB-A for ${name} (threads=${terminals})"
   local run_start_epoch
   run_start_epoch="$(date +%s)"
-  if ! (cd "$BENCHBASE_PATH" && java -jar "$BENCHBASE_JAR" -b ycsb -c "$cfg" --create=true --load=true --execute=true) >"/tmp/benchbase_${name}.log" 2>&1; then
-    echo "FAILED_BENCHBASE::$(tr '\n' ' ' </tmp/benchbase_${name}.log)"
+  if ! (cd "$BENCHBASE_PATH" && java -jar "$BENCHBASE_JAR" -b ycsb -c "$cfg" --create=true --load=true --execute=true) >"/tmp/benchbase_${name}_t${terminals}.log" 2>&1; then
+    echo "FAILED_BENCHBASE::$(tr '\n' ' ' </tmp/benchbase_${name}_t${terminals}.log)"
     runtime_exec rm -f "$container" >/dev/null 2>&1 || true
     rm -f "$cfg"
     return 1
@@ -248,10 +256,9 @@ bench_target() {
   local throughput
   throughput="$(throughput_from_latest_csv "$run_start_epoch" || true)"
 
-  # Fallback to log parsing if CSV parsing failed OR parsed value is zero.
   if [[ -z "$throughput" || "$throughput" == "0" || "$throughput" == "0.0" ]]; then
     local log_throughput
-    log_throughput="$({ python3 - "/tmp/benchbase_${name}.log" <<'PY'
+    log_throughput="$({ python3 - "/tmp/benchbase_${name}_t${terminals}.log" <<'PY'
 import re, sys
 text = open(sys.argv[1], 'r', errors='ignore').read()
 patterns = [
@@ -260,16 +267,16 @@ patterns = [
     r"Requests/sec\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
     r"\bTOTAL\b.*?([0-9]+(?:\.[0-9]+)?)\s*$",
 ]
+vals=[]
 for pat in patterns:
     m = re.findall(pat, text, flags=re.MULTILINE)
-    vals = [float(x) for x in m if x]
-    if vals:
-        print(max(vals))
-        raise SystemExit(0)
+    vals.extend([float(x) for x in m if x])
+if vals:
+    print(max(vals))
+    raise SystemExit(0)
 raise SystemExit(1)
 PY
     } || true)"
-
     if [[ -n "$log_throughput" ]]; then
       throughput="$log_throughput"
     fi
@@ -292,31 +299,32 @@ PY
 RESULT_CSV="$OUT_DIR/results.csv"
 README_OUT="$OUT_DIR/README.md"
 
-echo "version,throughput_req_per_sec" > "$RESULT_CSV"
+echo "version,threads,throughput_req_per_sec" > "$RESULT_CSV"
 
 errors=()
 successes=0
-throughputs=()
+expected=$(( ${#TARGET_NAMES[@]} * ${#THREAD_POINTS[@]} ))
 
 for i in "${!TARGET_NAMES[@]}"; do
   name="${TARGET_NAMES[$i]}"
   image="${TARGET_IMAGES[$i]}"
   port="${TARGET_PORTS[$i]}"
 
-  log "Running ${name} with ${RUNTIME} (${image})"
-  out="$(bench_target "$name" "$image" "$port" || true)"
+  for threads in "${THREAD_POINTS[@]}"; do
+    log "Running ${name} with ${RUNTIME} (${image}) threads=${threads}"
+    out="$(bench_target "$name" "$image" "$port" "$threads" || true)"
 
-  if [[ "$out" == OK::* ]]; then
-    th="${out#OK::}"
-    echo "${name},${th}" >> "$RESULT_CSV"
-    throughputs+=("$th")
-    successes=$((successes+1))
-    log "${name}: ${th} req/sec"
-  else
-    err="${out#FAILED_*::}"
-    errors+=("${name}: ${err}")
-    log "${name}: FAILED"
-  fi
+    if [[ "$out" == OK::* ]]; then
+      th="${out#OK::}"
+      echo "${name},${threads},${th}" >> "$RESULT_CSV"
+      successes=$((successes+1))
+      log "${name} threads=${threads}: ${th} req/sec"
+    else
+      err="${out#FAILED_*::}"
+      errors+=("${name} threads=${threads}: ${err}")
+      log "${name} threads=${threads}: FAILED"
+    fi
+  done
 done
 
 {
@@ -324,8 +332,8 @@ done
   echo
   printf "%s\n" "Runtime: \`$RUNTIME\`"
   printf "%s\n" "Docker command: \`$(printf '%q ' "${RUNCMD[@]}")\`"
-  printf "%s\n" "Terminals: \`$TERMINALS\`"
   printf "%s\n" "Duration: \`${DURATION}s\`"
+  printf "%s\n" "Thread points: \`${THREAD_POINTS[*]}\`"
   echo
   echo "Targets:"
   for i in "${!TARGET_NAMES[@]}"; do
@@ -335,8 +343,8 @@ done
   if (( successes > 0 )); then
     echo
     echo "Successful runs:"
-    tail -n +2 "$RESULT_CSV" | while IFS=, read -r n v; do
-      [[ -n "$n" ]] && echo "- $n: $v req/sec"
+    tail -n +2 "$RESULT_CSV" | while IFS=, read -r n t v; do
+      [[ -n "$n" ]] && echo "- $n (threads=$t): $v req/sec"
     done
   fi
 
@@ -346,31 +354,43 @@ done
     for e in "${errors[@]}"; do
       echo "- $e"
     done
-    echo
-    echo "If you saw docker socket permission errors, either:"
-    echo "- run with sudo (or ensure script auto-detects sudo docker), or"
-    echo "- add your user to docker group: sudo usermod -aG docker \$USER && re-login."
   fi
 } > "$README_OUT"
 
-if (( successes == 2 )); then
+# Plot with two lines (one per version), x-axis=thread count (4 measurements)
+if (( successes > 0 )); then
   python3 - "$RESULT_CSV" "$OUT_DIR/plot.png" <<'PY'
 import csv, sys
 import matplotlib.pyplot as plt
+from collections import defaultdict
+
 csv_path, out_png = sys.argv[1], sys.argv[2]
 rows = list(csv.DictReader(open(csv_path)))
-names = [r['version'] for r in rows]
-vals = [float(r['throughput_req_per_sec']) for r in rows]
-plt.figure(figsize=(6,4))
-b = plt.bar(names, vals, color=['#4e79a7','#f28e2b'])
+by_ver = defaultdict(list)
+for r in rows:
+    by_ver[r['version']].append((int(float(r['threads'])), float(r['throughput_req_per_sec'])))
+
+plt.figure(figsize=(7,4))
+for ver, pts in sorted(by_ver.items()):
+    pts = sorted(pts)
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    plt.plot(xs, ys, marker='o', label=ver)
+
 plt.title('BenchBase YCSB-A on InnoDB')
+plt.xlabel('Threads')
 plt.ylabel('Throughput (req/sec)')
-for bar, v in zip(b, vals):
-    plt.text(bar.get_x()+bar.get_width()/2, v, f'{v:.2f}', ha='center', va='bottom', fontsize=9)
+plt.xticks(sorted({int(float(r['threads'])) for r in rows}))
+plt.legend()
+plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.savefig(out_png, dpi=160)
 PY
   log "Saved $RESULT_CSV and $OUT_DIR/plot.png"
 else
-  log "Did not produce plot because both target benchmarks were not successful."
+  log "No successful runs; plot not generated."
+fi
+
+if (( successes < expected )); then
+  log "Completed with partial failures (${successes}/${expected} successful points)."
 fi
