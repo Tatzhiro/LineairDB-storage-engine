@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 base_path=$(pwd)/../..
 cd $base_path/third_party/benchbase
 
+ESC=$(printf '\033[')
 message () {
  printf "${ESC}1m%s${ESC}m\n" "$1"
 }
