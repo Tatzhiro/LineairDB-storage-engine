@@ -106,7 +106,7 @@ create_ycsb_a_config() {
   local out="$4"
 
   cp "$BASE_YCSB_XML" "$out"
-  sed -i -E "s|<url>jdbc:mysql://localhost:[0-9]+/benchbase\?rewriteBatchedStatements=true&amp;sslMode=DISABLED</url>|<url>jdbc:mysql://localhost:${port}/benchbase?rewriteBatchedStatements=true&amp;sslMode=DISABLED</url>|" "$out"
+  sed -i -E "s|<url>jdbc:mysql://localhost:[0-9]+/benchbase\?rewriteBatchedStatements=true&amp;sslMode=DISABLED</url>|<url>jdbc:mysql://localhost:${port}/benchbase?rewriteBatchedStatements=true\&amp;sslMode=DISABLED</url>|" "$out"
   sed -i -E "s|<terminals>[0-9]+</terminals>|<terminals>${terminals}</terminals>|" "$out"
   sed -i -E "s|<time>[0-9]+</time>|<time>${duration}</time>|" "$out"
   sed -i -E "s|<weights>[^<]+</weights>|<weights>50,0,0,50,0,0</weights>|" "$out"
