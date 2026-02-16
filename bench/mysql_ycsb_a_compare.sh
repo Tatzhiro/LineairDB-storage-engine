@@ -5,9 +5,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$ROOT_DIR/bench/results/ycsb_a_mysql_versions"
 BASE_YCSB_XML="$ROOT_DIR/bench/config/ycsb.xml"
 BENCHBASE_JAR="$ROOT_DIR/third_party/benchbase/benchbase-mysql/benchbase.jar"
-BENCHBASE_HOME="$(dirname "$BENCHBASE_JAR")"
-BENCHBASE_RESULTS_DIR_PRIMARY="$BENCHBASE_HOME/results"
-BENCHBASE_RESULTS_DIR_LEGACY="$ROOT_DIR/third_party/benchbase/results"
+BENCHBASE_PATH="$ROOT_DIR/third_party/benchbase"
+BENCHBASE_RESULTS_DIR="$BENCHBASE_PATH/results"
 
 TERMINALS="${TERMINALS:-8}"
 DURATION="${DURATION:-20}"
@@ -16,7 +15,7 @@ TARGET_NAMES=("mysql-5.7" "mysql-8.0.43")
 TARGET_IMAGES=("docker.io/library/mysql:5.7" "docker.io/library/mysql:8.0.43")
 TARGET_PORTS=("34057" "34080")
 
-mkdir -p "$OUT_DIR" "$BENCHBASE_RESULTS_DIR_PRIMARY" "$BENCHBASE_RESULTS_DIR_LEGACY"
+mkdir -p "$OUT_DIR" "$BENCHBASE_RESULTS_DIR"
 
 log() { echo "[$(date +'%H:%M:%S')] $*" >&2; }
 
@@ -115,20 +114,33 @@ create_ycsb_a_config() {
 
 throughput_from_latest_csv() {
   local run_start_epoch="$1"
-  python3 - "$BENCHBASE_RESULTS_DIR_PRIMARY" "$BENCHBASE_RESULTS_DIR_LEGACY" "$run_start_epoch" <<'PY'
+  python3 - "$BENCHBASE_RESULTS_DIR" "$run_start_epoch" <<'PY'
 import csv, sys
 from pathlib import Path
 
-search_dirs = [Path(p) for p in sys.argv[1:3] if p]
-run_start_epoch = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
-candidates = []
-for d in search_dirs:
-    if d.exists():
-        candidates.extend(d.glob('*.csv'))
+results_dir = Path(sys.argv[1])
+run_start_epoch = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
+if not results_dir.exists():
+    raise SystemExit(2)
 
 # Only consider files generated/updated by current benchmark run.
-csvs = [p for p in set(candidates) if p.stat().st_mtime >= run_start_epoch - 1]
-csvs = sorted(csvs, key=lambda p: p.stat().st_mtime, reverse=True)
+candidates = [p for p in results_dir.glob('*.csv') if p.stat().st_mtime >= run_start_epoch - 1]
+if not candidates:
+    raise SystemExit(2)
+
+# Prefer likely summary-style files first.
+def file_rank(p: Path):
+    name = p.name.lower()
+    rank = 0
+    if 'summary' in name:
+        rank -= 20
+    if 'result' in name:
+        rank -= 10
+    if 'samples' in name:
+        rank += 10
+    return (rank, -p.stat().st_mtime)
+
+csvs = sorted(candidates, key=file_rank)
 if not csvs:
     raise SystemExit(2)
 
@@ -142,6 +154,7 @@ key_aliases = (
     'throughput(req_per_sec)',
 )
 
+all_vals = []
 for path in csvs:
     try:
         with path.open(newline='') as f:
@@ -168,19 +181,22 @@ for path in csvs:
                 if t == 'total' and v:
                     vals.append(float(v))
             if vals:
-                print(max(vals))
-                raise SystemExit(0)
+                all_vals.extend(vals)
+                continue
 
             for row in rows:
                 v = (row.get(cand) or '').strip()
                 if v:
                     vals.append(float(v))
             if vals:
-                print(max(vals))
-                raise SystemExit(0)
+                all_vals.extend(vals)
     except Exception:
         continue
-raise SystemExit(3)
+
+if not all_vals:
+    raise SystemExit(3)
+
+print(max(all_vals))
 PY
 }
 
@@ -222,7 +238,7 @@ bench_target() {
   log "Running BenchBase YCSB-A for ${name}"
   local run_start_epoch
   run_start_epoch="$(date +%s)"
-  if ! (cd "$BENCHBASE_HOME" && java -jar "$BENCHBASE_JAR" -b ycsb -c "$cfg" --create=true --load=true --execute=true) >"/tmp/benchbase_${name}.log" 2>&1; then
+  if ! (cd "$BENCHBASE_PATH" && java -jar "$BENCHBASE_JAR" -b ycsb -c "$cfg" --create=true --load=true --execute=true) >"/tmp/benchbase_${name}.log" 2>&1; then
     echo "FAILED_BENCHBASE::$(tr '\n' ' ' </tmp/benchbase_${name}.log)"
     runtime_exec rm -f "$container" >/dev/null 2>&1 || true
     rm -f "$cfg"
@@ -230,31 +246,40 @@ bench_target() {
   fi
 
   local throughput
-  if ! throughput="$(throughput_from_latest_csv "$run_start_epoch")"; then
-    # Fallback: parse throughput from BenchBase log output.
-    throughput="$({ python3 - "/tmp/benchbase_${name}.log" <<'PY'
+  throughput="$(throughput_from_latest_csv "$run_start_epoch" || true)"
+
+  # Fallback to log parsing if CSV parsing failed OR parsed value is zero.
+  if [[ -z "$throughput" || "$throughput" == "0" || "$throughput" == "0.0" ]]; then
+    local log_throughput
+    log_throughput="$({ python3 - "/tmp/benchbase_${name}.log" <<'PY'
 import re, sys
 text = open(sys.argv[1], 'r', errors='ignore').read()
 patterns = [
     r"Throughput\(req/sec\)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
     r"Throughput\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
+    r"Requests/sec\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
     r"\bTOTAL\b.*?([0-9]+(?:\.[0-9]+)?)\s*$",
 ]
 for pat in patterns:
     m = re.findall(pat, text, flags=re.MULTILINE)
-    if m:
-        print(m[-1])
+    vals = [float(x) for x in m if x]
+    if vals:
+        print(max(vals))
         raise SystemExit(0)
 raise SystemExit(1)
 PY
     } || true)"
 
-    if [[ -z "$throughput" ]]; then
-      echo "FAILED_PARSE::Could not parse throughput from BenchBase CSVs/logs"
-      runtime_exec rm -f "$container" >/dev/null 2>&1 || true
-      rm -f "$cfg"
-      return 1
+    if [[ -n "$log_throughput" ]]; then
+      throughput="$log_throughput"
     fi
+  fi
+
+  if [[ -z "$throughput" ]]; then
+    echo "FAILED_PARSE::Could not parse throughput from BenchBase CSVs/logs"
+    runtime_exec rm -f "$container" >/dev/null 2>&1 || true
+    rm -f "$cfg"
+    return 1
   fi
 
   runtime_exec rm -f "$container" >/dev/null 2>&1 || true
