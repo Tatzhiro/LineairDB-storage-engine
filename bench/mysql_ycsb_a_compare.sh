@@ -11,7 +11,7 @@ BENCHBASE_RESULTS_DIR="$BENCHBASE_PATH/results"
 DURATION="${DURATION:-20}"
 
 # Force key MySQL options to be identical across versions for fair comparison.
-MYSQL_COMMON_OPTS="${MYSQL_COMMON_OPTS:---innodb_flush_log_at_trx_commit=1 --sync_binlog=1 --skip-log-bin --innodb_buffer_pool_size=1G}"
+MYSQL_COMMON_OPTS="${MYSQL_COMMON_OPTS:---innodb_flush_log_at_trx_commit=1 --sync_binlog=1}"
 read -r -a MYSQL_COMMON_OPTS_ARR <<< "$MYSQL_COMMON_OPTS"
 
 TARGET_NAMES=("mysql-5.7" "mysql-8.0.43")
