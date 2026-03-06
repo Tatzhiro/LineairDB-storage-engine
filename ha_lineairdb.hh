@@ -48,6 +48,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "lineairdb_field_types.h"
@@ -97,8 +98,35 @@ class ha_lineairdb : public handler
   LineairDB::Database *get_db();
 
 private:
+  enum class ForeignKeyDeleteAction
+  {
+    kRestrict,
+    kCascade,
+  };
+
+  struct CachedForeignKey
+  {
+    std::string name;
+    std::string parent_table_key;
+    std::string refcount_table_key;
+    std::string childbucket_table_key;
+    std::vector<uint> child_field_indices;
+    std::vector<std::string> parent_column_names;
+    ForeignKeyDeleteAction delete_action{ForeignKeyDeleteAction::kRestrict};
+  };
+
+  struct CachedParentReference
+  {
+    std::string child_schema_name;
+    std::string child_table_name;
+    std::string fk_name;
+    ForeignKeyDeleteAction delete_action{ForeignKeyDeleteAction::kRestrict};
+  };
+
   std::string db_table_name;
   std::string current_index_name;
+  std::vector<CachedForeignKey> outbound_foreign_keys_;
+  std::vector<CachedParentReference> inbound_parent_references_;
 
   KEY *key_info;
   size_t num_keys;
@@ -412,9 +440,26 @@ private:
   std::string convert_key_to_ldbformat(const uchar *key, key_part_map keypart_map);
   std::string serialize_key_from_field(Field *field);
   std::string build_secondary_key_from_row(const uchar *row_buffer, const KEY &key_info);
+  std::string build_key_from_row(const uchar *row_buffer,
+                                 const std::vector<uint> &field_indices);
+  std::string build_key_from_row(const uchar *row_buffer,
+                                 const std::vector<std::string> &field_names);
   std::string extract_key(const uchar *buf);
   std::string autogenerate_key();
   std::string extract_key_from_mysql(const uchar *row_buffer);
+  void clear_foreign_key_cache();
+  void cache_foreign_key_metadata(const TABLE *mysql_table,
+                                  const dd::Table *table_def);
+  int enforce_parent_exists_for_row(const uchar *row_buffer,
+                                    LineairDBTransaction *tx);
+  int add_hidden_fk_state_for_row(const uchar *row_buffer,
+                                  const std::string &primary_key,
+                                  LineairDBTransaction *tx);
+  int remove_hidden_fk_state_for_row(const uchar *row_buffer,
+                                     const std::string &primary_key,
+                                     LineairDBTransaction *tx);
+  int enforce_parent_delete_actions(const uchar *row_buffer,
+                                    LineairDBTransaction *tx);
 
   void set_write_buffer(uchar *buf);
   bool is_primary_key_exists();

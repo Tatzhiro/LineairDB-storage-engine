@@ -25,6 +25,7 @@ set(CMAKE_CXX_STANDARD 17)
 add_subdirectory(third_party/LineairDB)
 set(LINEAIRDB_PLUGIN_DYNAMIC "ha_lineairdb")
 set(LINEAIRDB_SOURCES ha_lineairdb.cc ha_lineairdb.hh 
+                      lineairdb_fk_state.cc lineairdb_fk_state.hh
                       lineairdb_field.cc lineairdb_field.hh
                       lineairdb_transaction.cc lineairdb_transaction.hh)
 add_definitions(-DMYSQL_SERVER)

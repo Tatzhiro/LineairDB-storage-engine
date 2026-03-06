@@ -98,21 +98,33 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 // for ::strcasecmp
 #include <strings.h>
 
+#include "lineairdb_fk_state.hh"
 #include "lineairdb_field_types.h"
 #include "my_dbug.h"
 #include "mysql/plugin.h"
+#include "sql/dd/cache/dictionary_client.h"
+#include "sql/dd/types/column.h"
+#include "sql/dd/types/foreign_key.h"
+#include "sql/dd/types/foreign_key_element.h"
+#include "sql/dd/types/index.h"
+#include "sql/dd/types/index_element.h"
+#include "sql/dd/types/table.h"
 #include "sql/field.h"
 #include "sql/sql_class.h"
 #include "sql/sql_plugin.h"
+#include "sql/sql_table.h"
 #include "sql/table.h"
 #include "storage/innobase/include/dict0mem.h"
 #include "typelib.h"
@@ -129,12 +141,232 @@ constexpr unsigned char kKeyTypeString = 0x20;
 constexpr unsigned char kKeyTypeDatetime = 0x30;
 constexpr unsigned char kKeyTypeOther = 0xF0;
 
+enum class RuntimeFkDeleteAction
+{
+  kRestrict,
+  kCascade,
+};
+
+struct RuntimeForeignKeyMetadata
+{
+  std::string name;
+  std::string parent_table_key;
+  std::string refcount_table_key;
+  std::string childbucket_table_key;
+  std::vector<std::size_t> child_column_indices;
+  std::vector<std::string> parent_column_names;
+  RuntimeFkDeleteAction delete_action{RuntimeFkDeleteAction::kRestrict};
+};
+
+struct RuntimeParentReference
+{
+  std::string child_schema_name;
+  std::string child_table_name;
+  std::string fk_name;
+  RuntimeFkDeleteAction delete_action{RuntimeFkDeleteAction::kRestrict};
+};
+
+struct RuntimeColumnMetadata
+{
+  std::string name;
+  dd::enum_column_types type;
+  bool is_unsigned{false};
+  bool is_nullable{false};
+};
+
+struct RuntimeIndexMetadata
+{
+  std::string name;
+  bool is_primary{false};
+  std::vector<std::size_t> column_indices;
+};
+
+struct RuntimeTableMetadata
+{
+  std::string schema_name;
+  std::string table_name;
+  std::string table_key;
+  std::vector<RuntimeColumnMetadata> columns;
+  std::unordered_map<std::string, std::size_t> column_index_by_name;
+  std::vector<RuntimeIndexMetadata> secondary_indexes;
+  std::vector<RuntimeForeignKeyMetadata> outbound_foreign_keys;
+  std::vector<RuntimeParentReference> inbound_parent_references;
+};
+
+std::string BuildLineairDBTableKey(const std::string &schema_name,
+                                   const std::string &table_name) {
+  char path[FN_REFLEN] = {0};
+  build_table_filename(path, sizeof(path) - 1, schema_name.c_str(),
+                       table_name.c_str(), "", 0);
+  return std::string(path);
+}
+
+RuntimeFkDeleteAction ToRuntimeDeleteAction(dd::Foreign_key::enum_rule rule) {
+  if (rule == dd::Foreign_key::RULE_CASCADE) {
+    return RuntimeFkDeleteAction::kCascade;
+  }
+  return RuntimeFkDeleteAction::kRestrict;
+}
+
+std::string BuildFkRefcountTableKey(const std::string &child_table_key,
+                                    const std::string &fk_name) {
+  return child_table_key + "#fk_refcount#" + fk_name;
+}
+
+std::string BuildFkChildbucketTableKey(const std::string &child_table_key,
+                                       const std::string &fk_name) {
+  return child_table_key + "#fk_childbucket#" + fk_name;
+}
+
+std::string BuildFkBucketKey(const std::string &parent_key, std::size_t shard_id) {
+  std::string key = parent_key;
+  key.push_back(static_cast<char>(0x1F));
+  key.push_back(static_cast<char>(shard_id & 0xFF));
+  return key;
+}
+
+RuntimeTableMetadata BuildRuntimeTableMetadata(THD *thd,
+                                               const std::string &schema_name,
+                                               const dd::Table &table_def) {
+  RuntimeTableMetadata metadata;
+  metadata.schema_name = schema_name;
+  metadata.table_name = table_def.name();
+  metadata.table_key =
+      BuildLineairDBTableKey(metadata.schema_name, metadata.table_name);
+
+  for (const dd::Column *column : table_def.columns()) {
+    if (column == nullptr) {
+      continue;
+    }
+    std::size_t column_index = metadata.columns.size();
+    metadata.column_index_by_name.emplace(std::string(column->name()),
+                                          column_index);
+    metadata.columns.push_back({std::string(column->name()), column->type(),
+                                column->is_unsigned(), column->is_nullable()});
+  }
+
+  for (const dd::Index *index : table_def.indexes()) {
+    if (index == nullptr || index->is_hidden()) {
+      continue;
+    }
+
+    RuntimeIndexMetadata index_metadata;
+    index_metadata.name = index->name();
+    index_metadata.is_primary = index->type() == dd::Index::IT_PRIMARY;
+    for (const dd::Index_element *element : index->elements()) {
+      auto it = metadata.column_index_by_name.find(
+          std::string(element->column().name()));
+      if (it != metadata.column_index_by_name.end()) {
+        index_metadata.column_indices.push_back(it->second);
+      }
+    }
+    if (!index_metadata.is_primary) {
+      metadata.secondary_indexes.push_back(std::move(index_metadata));
+    }
+  }
+
+  for (const dd::Foreign_key *fk : table_def.foreign_keys()) {
+    RuntimeForeignKeyMetadata fk_metadata;
+    fk_metadata.name = fk->name();
+    fk_metadata.parent_table_key = BuildLineairDBTableKey(
+        std::string(fk->referenced_table_schema_name()),
+        std::string(fk->referenced_table_name()));
+    fk_metadata.refcount_table_key =
+        BuildFkRefcountTableKey(metadata.table_key, fk_metadata.name);
+    fk_metadata.childbucket_table_key =
+        BuildFkChildbucketTableKey(metadata.table_key, fk_metadata.name);
+    fk_metadata.delete_action = ToRuntimeDeleteAction(fk->delete_rule());
+
+    for (const dd::Foreign_key_element *element : fk->elements()) {
+      auto it = metadata.column_index_by_name.find(
+          std::string(element->column().name()));
+      if (it != metadata.column_index_by_name.end()) {
+        fk_metadata.child_column_indices.push_back(it->second);
+      }
+      fk_metadata.parent_column_names.emplace_back(element->referenced_column_name());
+    }
+
+    metadata.outbound_foreign_keys.push_back(std::move(fk_metadata));
+  }
+
+  if (thd != nullptr) {
+    auto *mutable_table_def = const_cast<dd::Table *>(&table_def);
+    mutable_table_def->reload_foreign_key_parents(thd);
+  }
+
+  for (const dd::Foreign_key_parent *parent_ref : table_def.foreign_key_parents()) {
+    if (parent_ref == nullptr) {
+      continue;
+    }
+    metadata.inbound_parent_references.push_back(
+        {std::string(parent_ref->child_schema_name()),
+         std::string(parent_ref->child_table_name()),
+         std::string(parent_ref->fk_name()),
+         ToRuntimeDeleteAction(parent_ref->delete_rule())});
+  }
+
+  return metadata;
+}
+
+const RuntimeForeignKeyMetadata *FindForeignKeyMetadata(
+    const RuntimeTableMetadata &metadata, const std::string &fk_name) {
+  for (const auto &fk : metadata.outbound_foreign_keys) {
+    if (fk.name == fk_name) {
+      return &fk;
+    }
+  }
+  return nullptr;
+}
+
+std::optional<std::string> ReadExactValue(LineairDBTransaction *tx,
+                                          const std::string &table_key,
+                                          const std::string &key) {
+  tx->choose_table(table_key);
+  auto value = tx->read(key);
+  if (value.first == nullptr || value.second == 0) {
+    return std::nullopt;
+  }
+  return std::string(reinterpret_cast<const char *>(value.first), value.second);
+}
+
+std::vector<std::string> DecodeRowValues(const std::string &raw_row,
+                                         std::size_t expected_column_count) {
+  LineairDBField field_codec;
+  field_codec.make_mysql_table_row(
+      reinterpret_cast<const std::byte *>(raw_row.data()), raw_row.size());
+  std::vector<std::string> values;
+  values.reserve(expected_column_count);
+  for (std::size_t i = 0; i < expected_column_count; ++i) {
+    values.push_back(field_codec.get_column_of_row(i));
+  }
+  return values;
+}
+
+std::size_t IntegerPackLength(dd::enum_column_types type) {
+  switch (type) {
+  case dd::enum_column_types::TINY:
+    return 1;
+  case dd::enum_column_types::SHORT:
+  case dd::enum_column_types::YEAR:
+    return 2;
+  case dd::enum_column_types::LONGLONG:
+    return 8;
+  case dd::enum_column_types::LONG:
+  case dd::enum_column_types::INT24:
+  default:
+    return 4;
+  }
+}
+
 } // namespace
 
 static std::shared_ptr<LineairDB::Database>
 get_or_allocate_database(LineairDB::Config conf);
 
 bool terminate_tx(LineairDBTransaction *&tx);
+static bool lineairdb_check_fk_column_compat(
+    const Ha_fk_column_type *child_column_type,
+    const Ha_fk_column_type *parent_column_type, bool check_charsets);
 static int lineairdb_commit(handlerton *hton, THD *thd, bool shouldCommit);
 static int lineairdb_abort(handlerton *hton, THD *thd, bool);
 
@@ -217,12 +449,14 @@ static int lineairdb_init_func(void *p) {
   lineairdb_hton = (handlerton *)p;
   lineairdb_hton->state = SHOW_OPTION_YES;
   lineairdb_hton->create = lineairdb_create_handler;
-  lineairdb_hton->flags = HTON_CAN_RECREATE;
+  lineairdb_hton->flags = HTON_CAN_RECREATE | HTON_SUPPORTS_FOREIGN_KEYS;
   lineairdb_hton->is_supported_system_table =
       lineairdb_is_supported_system_table;
   lineairdb_hton->db_type = DB_TYPE_UNKNOWN;
   lineairdb_hton->commit = lineairdb_commit;
   lineairdb_hton->rollback = lineairdb_abort;
+  lineairdb_hton->foreign_keys_flags = 0;
+  lineairdb_hton->check_fk_column_compat = lineairdb_check_fk_column_compat;
 
   return 0;
 }
@@ -234,6 +468,29 @@ get_or_allocate_database(LineairDB::Config conf) {
   std::call_once(flag,
                  [&]() { db = std::make_shared<LineairDB::Database>(conf); });
   return db;
+}
+
+static bool lineairdb_check_fk_column_compat(
+    const Ha_fk_column_type *child_column_type,
+    const Ha_fk_column_type *parent_column_type, bool check_charsets) {
+  if (child_column_type == nullptr || parent_column_type == nullptr) {
+    return false;
+  }
+
+  if (child_column_type->type != parent_column_type->type ||
+      child_column_type->char_length != parent_column_type->char_length ||
+      child_column_type->elements_count != parent_column_type->elements_count ||
+      child_column_type->numeric_scale != parent_column_type->numeric_scale ||
+      child_column_type->is_unsigned != parent_column_type->is_unsigned) {
+    return false;
+  }
+
+  if (check_charsets &&
+      child_column_type->field_charset != parent_column_type->field_charset) {
+    return false;
+  }
+
+  return true;
 }
 
 LineairDB_share::LineairDB_share() {
@@ -320,7 +577,8 @@ void ha_lineairdb::set_key_and_key_part_info(const TABLE *const table) {
   handler::ha_open() in handler.cc
 */
 
-int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table *) {
+int ha_lineairdb::open(const char *table_name, int, uint,
+                       const dd::Table *table_def) {
   DBUG_TRACE;
   if (!(share = get_share()))
     return 1;
@@ -337,6 +595,8 @@ int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table *) {
   } else {
     ref_length = sizeof(uint16_t) + serialize_hidden_primary_key(0).size();
   }
+
+  cache_foreign_key_metadata(table, table_def);
 
   return 0;
 }
@@ -358,6 +618,7 @@ int ha_lineairdb::open(const char *table_name, int, uint, const dd::Table *) {
 
 int ha_lineairdb::close(void) {
   DBUG_TRACE;
+  clear_foreign_key_cache();
   return 0;
 }
 
@@ -453,6 +714,11 @@ int ha_lineairdb::write_row(uchar *buf) {
     return HA_ERR_LOCK_DEADLOCK;
   }
 
+  int fk_result = enforce_parent_exists_for_row(buf, tx);
+  if (fk_result != 0) {
+    return fk_result;
+  }
+
   tx->choose_table(db_table_name);
   bool is_successful = tx->write(key, write_buffer_);
   if (!is_successful)
@@ -480,6 +746,11 @@ int ha_lineairdb::write_row(uchar *buf) {
     }
   }
 
+  fk_result = add_hidden_fk_state_for_row(buf, key, tx);
+  if (fk_result != 0) {
+    return fk_result;
+  }
+
   tx->add_rowcount_delta(share, +1);
 
   return 0;
@@ -503,10 +774,25 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data) {
   set_write_buffer(new_data);
 
   auto tx = get_transaction(ha_thd());
+  bool fk_changed = false;
+  for (const auto &fk : outbound_foreign_keys_) {
+    if (build_key_from_row(old_data, fk.child_field_indices) !=
+        build_key_from_row(new_data, fk.child_field_indices)) {
+      fk_changed = true;
+      break;
+    }
+  }
 
   if (tx->is_aborted()) {
     thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  if (fk_changed) {
+    int fk_result = enforce_parent_exists_for_row(new_data, tx);
+    if (fk_result != 0) {
+      return fk_result;
+    }
   }
 
   tx->choose_table(db_table_name);
@@ -545,6 +831,18 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data) {
     }
   }
 
+  if (fk_changed) {
+    int fk_result = remove_hidden_fk_state_for_row(old_data, key, tx);
+    if (fk_result != 0) {
+      return fk_result;
+    }
+
+    fk_result = add_hidden_fk_state_for_row(new_data, key, tx);
+    if (fk_result != 0) {
+      return fk_result;
+    }
+  }
+
   return 0;
 }
 
@@ -568,6 +866,11 @@ int ha_lineairdb::delete_row(const uchar *buf) {
   if (tx->is_aborted()) {
     thd_mark_transaction_to_rollback(ha_thd(), 1);
     return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  int fk_result = enforce_parent_delete_actions(buf, tx);
+  if (fk_result != 0) {
+    return fk_result;
   }
 
   tx->choose_table(db_table_name);
@@ -595,6 +898,11 @@ int ha_lineairdb::delete_row(const uchar *buf) {
         return HA_ERR_LOCK_DEADLOCK;
       }
     }
+  }
+
+  fk_result = remove_hidden_fk_state_for_row(buf, key, tx);
+  if (fk_result != 0) {
+    return fk_result;
   }
 
   tx->add_rowcount_delta(share, -1);
@@ -1480,7 +1788,7 @@ uint ha_lineairdb::calculate_key_parts_from_length(KEY *key, uint key_length) {
 */
 
 int ha_lineairdb::create(const char *table_name, TABLE *table, HA_CREATE_INFO *,
-                         dd::Table *) {
+                         dd::Table *table_def) {
   DBUG_TRACE;
   db_table_name = std::string(table_name);
   auto current_db = get_db();
@@ -1499,6 +1807,13 @@ int ha_lineairdb::create(const char *table_name, TABLE *table, HA_CREATE_INFO *,
       if (!is_successful) {
         return HA_ERR_TABLE_EXIST;
       }
+    }
+  }
+  cache_foreign_key_metadata(table, table_def);
+  for (const auto &fk : outbound_foreign_keys_) {
+    if (!current_db->CreateTable(fk.refcount_table_key) ||
+        !current_db->CreateTable(fk.childbucket_table_key)) {
+      return HA_ERR_TABLE_EXIST;
     }
   }
   return 0;
@@ -2308,6 +2623,612 @@ std::string ha_lineairdb::build_secondary_key_from_row(const uchar *row_buffer,
   tmp_restore_column_map(table->read_set, org_bitmap);
 
   return secondary_key;
+}
+
+std::string ha_lineairdb::build_key_from_row(
+    const uchar *row_buffer, const std::vector<uint> &field_indices) {
+  if (row_buffer == nullptr || table == nullptr) {
+    return {};
+  }
+
+  my_bitmap_map *org_bitmap = tmp_use_all_columns(table, table->read_set);
+  ptrdiff_t offset = row_buffer - table->record[0];
+  std::string key;
+
+  for (uint field_index : field_indices) {
+    if (field_index >= table->s->fields) {
+      key.clear();
+      break;
+    }
+
+    Field *field = table->field[field_index];
+    field->move_field_offset(offset);
+    const bool is_null = field->is_nullable() && field->is_null();
+    if (is_null) {
+      field->move_field_offset(-offset);
+      key.clear();
+      break;
+    }
+    key += serialize_key_from_field(field);
+    field->move_field_offset(-offset);
+  }
+
+  tmp_restore_column_map(table->read_set, org_bitmap);
+  return key;
+}
+
+std::string ha_lineairdb::build_key_from_row(
+    const uchar *row_buffer, const std::vector<std::string> &field_names) {
+  if (table == nullptr || row_buffer == nullptr) {
+    return {};
+  }
+
+  std::vector<uint> field_indices;
+  field_indices.reserve(field_names.size());
+  for (const auto &field_name : field_names) {
+    bool found = false;
+    for (uint i = 0; i < table->s->fields; ++i) {
+      if (field_name == table->field[i]->field_name) {
+        field_indices.push_back(i);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      return {};
+    }
+  }
+  return build_key_from_row(row_buffer, field_indices);
+}
+
+void ha_lineairdb::clear_foreign_key_cache() {
+  outbound_foreign_keys_.clear();
+  inbound_parent_references_.clear();
+}
+
+void ha_lineairdb::cache_foreign_key_metadata(const TABLE *mysql_table,
+                                              const dd::Table *table_def) {
+  clear_foreign_key_cache();
+  if (mysql_table == nullptr || table_def == nullptr) {
+    return;
+  }
+
+  std::unordered_map<std::string, uint> field_index_by_name;
+  for (uint i = 0; i < mysql_table->s->fields; ++i) {
+    field_index_by_name.emplace(mysql_table->field[i]->field_name, i);
+  }
+
+  for (const dd::Foreign_key *fk : table_def->foreign_keys()) {
+    CachedForeignKey cached_fk;
+    cached_fk.name = fk->name();
+    cached_fk.parent_table_key = BuildLineairDBTableKey(
+        std::string(fk->referenced_table_schema_name()),
+        std::string(fk->referenced_table_name()));
+    cached_fk.refcount_table_key =
+        BuildFkRefcountTableKey(db_table_name, cached_fk.name);
+    cached_fk.childbucket_table_key =
+        BuildFkChildbucketTableKey(db_table_name, cached_fk.name);
+    cached_fk.delete_action =
+        fk->delete_rule() == dd::Foreign_key::RULE_CASCADE
+            ? ForeignKeyDeleteAction::kCascade
+            : ForeignKeyDeleteAction::kRestrict;
+
+    for (const dd::Foreign_key_element *element : fk->elements()) {
+      auto it = field_index_by_name.find(std::string(element->column().name()));
+      if (it != field_index_by_name.end()) {
+        cached_fk.child_field_indices.push_back(it->second);
+      }
+      cached_fk.parent_column_names.emplace_back(
+          element->referenced_column_name());
+    }
+
+    outbound_foreign_keys_.push_back(std::move(cached_fk));
+  }
+
+  if (ha_thd() != nullptr) {
+    const_cast<dd::Table *>(table_def)->reload_foreign_key_parents(ha_thd());
+  }
+
+  for (const dd::Foreign_key_parent *parent_ref :
+       table_def->foreign_key_parents()) {
+    if (parent_ref == nullptr) {
+      continue;
+    }
+
+    inbound_parent_references_.push_back(
+        {std::string(parent_ref->child_schema_name()),
+         std::string(parent_ref->child_table_name()),
+         std::string(parent_ref->fk_name()),
+         parent_ref->delete_rule() == dd::Foreign_key::RULE_CASCADE
+             ? ForeignKeyDeleteAction::kCascade
+             : ForeignKeyDeleteAction::kRestrict});
+  }
+}
+
+namespace {
+
+LineairDBFieldType ConvertDdType(dd::enum_column_types type) {
+  switch (type) {
+  case dd::enum_column_types::TINY:
+  case dd::enum_column_types::SHORT:
+  case dd::enum_column_types::LONG:
+  case dd::enum_column_types::LONGLONG:
+  case dd::enum_column_types::INT24:
+  case dd::enum_column_types::YEAR:
+    return LineairDBFieldType::LINEAIRDB_INT;
+  case dd::enum_column_types::DATE:
+  case dd::enum_column_types::TIME:
+  case dd::enum_column_types::DATETIME:
+  case dd::enum_column_types::TIMESTAMP:
+  case dd::enum_column_types::TIME2:
+  case dd::enum_column_types::DATETIME2:
+  case dd::enum_column_types::TIMESTAMP2:
+    return LineairDBFieldType::LINEAIRDB_DATETIME;
+  case dd::enum_column_types::VARCHAR:
+  case dd::enum_column_types::VAR_STRING:
+  case dd::enum_column_types::STRING:
+  case dd::enum_column_types::ENUM:
+  case dd::enum_column_types::SET:
+    return LineairDBFieldType::LINEAIRDB_STRING;
+  default:
+    return LineairDBFieldType::LINEAIRDB_OTHER;
+  }
+}
+
+void AppendRuntimeKeyPartEncoding(std::string &out, bool is_null,
+                                  LineairDBFieldType type,
+                                  const std::string &payload) {
+  constexpr size_t kLengthFieldSize = 2;
+  const size_t max_payload_length = std::numeric_limits<uint16_t>::max();
+  size_t copy_length = std::min(payload.size(), max_payload_length);
+  out.push_back(
+      static_cast<char>(is_null ? kKeyMarkerNull : kKeyMarkerNotNull));
+  switch (type) {
+  case LineairDBFieldType::LINEAIRDB_INT:
+    out.push_back(static_cast<char>(kKeyTypeInt));
+    break;
+  case LineairDBFieldType::LINEAIRDB_STRING:
+    out.push_back(static_cast<char>(kKeyTypeString));
+    break;
+  case LineairDBFieldType::LINEAIRDB_DATETIME:
+    out.push_back(static_cast<char>(kKeyTypeDatetime));
+    break;
+  case LineairDBFieldType::LINEAIRDB_OTHER:
+  default:
+    out.push_back(static_cast<char>(kKeyTypeOther));
+    break;
+  }
+
+  if (type == LineairDBFieldType::LINEAIRDB_STRING) {
+    out.append(payload.data(), copy_length);
+    out.push_back('\0');
+    uint16_t length_field = static_cast<uint16_t>(copy_length);
+    out.push_back(static_cast<char>((length_field >> 8) & 0xFF));
+    out.push_back(static_cast<char>(length_field & 0xFF));
+  } else {
+    uint16_t length_field = static_cast<uint16_t>(copy_length);
+    out.push_back(static_cast<char>((length_field >> 8) & 0xFF));
+    out.push_back(static_cast<char>(length_field & 0xFF));
+    out.append(payload.data(), copy_length);
+  }
+}
+
+std::string EncodeRuntimeInteger(std::string_view raw, std::size_t pack_length) {
+  long long value = std::stoll(std::string(raw));
+  std::uint64_t bits = static_cast<std::uint64_t>(value);
+  unsigned char buf[8] = {0};
+  for (std::size_t i = 0; i < pack_length && i < sizeof(buf); ++i) {
+    buf[i] = static_cast<unsigned char>((bits >> (i * 8)) & 0xFF);
+  }
+
+  std::uint64_t sortable = 0;
+  for (std::size_t i = 0; i < pack_length; ++i) {
+    sortable |= static_cast<std::uint64_t>(buf[i]) << (i * 8);
+  }
+
+  if (pack_length == 1) {
+    sortable ^= 0x80ULL;
+  } else if (pack_length == 2) {
+    sortable ^= 0x8000ULL;
+  } else if (pack_length == 4) {
+    sortable ^= 0x80000000ULL;
+  } else {
+    sortable ^= 0x8000000000000000ULL;
+    pack_length = 8;
+  }
+
+  std::string encoded(pack_length, '\0');
+  for (std::size_t i = 0; i < pack_length; ++i) {
+    encoded[i] = static_cast<char>(
+        (sortable >> ((pack_length - 1 - i) * 8)) & 0xFF);
+  }
+  return encoded;
+}
+
+std::string SerializeRuntimeColumnValue(const RuntimeColumnMetadata &column,
+                                        std::string_view raw_value) {
+  LineairDBFieldType type = ConvertDdType(column.type);
+  std::string payload;
+  switch (type) {
+  case LineairDBFieldType::LINEAIRDB_INT:
+    payload = EncodeRuntimeInteger(raw_value, IntegerPackLength(column.type));
+    break;
+  case LineairDBFieldType::LINEAIRDB_STRING:
+  case LineairDBFieldType::LINEAIRDB_DATETIME:
+  case LineairDBFieldType::LINEAIRDB_OTHER:
+  default:
+    payload.assign(raw_value.data(), raw_value.size());
+    break;
+  }
+
+  std::string encoded;
+  AppendRuntimeKeyPartEncoding(encoded, false, type, payload);
+  return encoded;
+}
+
+std::optional<std::string> BuildKeyFromValues(
+    const RuntimeTableMetadata &metadata,
+    const std::vector<std::size_t> &column_indices,
+    const std::vector<std::string> &row_values) {
+  std::string key;
+  for (std::size_t column_index : column_indices) {
+    if (column_index >= metadata.columns.size() ||
+        column_index >= row_values.size()) {
+      return std::nullopt;
+    }
+    key += SerializeRuntimeColumnValue(metadata.columns[column_index],
+                                       row_values[column_index]);
+  }
+  return key;
+}
+
+std::optional<std::string> BuildKeyFromNames(
+    const RuntimeTableMetadata &metadata,
+    const std::vector<std::string> &column_names,
+    const std::vector<std::string> &row_values) {
+  std::vector<std::size_t> indices;
+  indices.reserve(column_names.size());
+  for (const auto &column_name : column_names) {
+    auto it = metadata.column_index_by_name.find(column_name);
+    if (it == metadata.column_index_by_name.end()) {
+      return std::nullopt;
+    }
+    indices.push_back(it->second);
+  }
+  return BuildKeyFromValues(metadata, indices, row_values);
+}
+
+int WriteExactValue(LineairDBTransaction *tx, const std::string &table_key,
+                    const std::string &key, const std::string &value) {
+  tx->choose_table(table_key);
+  bool ok = value.empty() ? tx->delete_value(key) : tx->write(key, value);
+  if (!ok || tx->is_aborted()) {
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+  return 0;
+}
+
+std::uint64_t ReadRefcountValue(LineairDBTransaction *tx,
+                                const std::string &table_key,
+                                const std::string &parent_key) {
+  auto value = ReadExactValue(tx, table_key, parent_key);
+  if (!value.has_value()) {
+    return 0;
+  }
+  return lineairdb::fk::state::DecodeRefcount(*value);
+}
+
+int UpdateHiddenStateForRuntimeRow(LineairDBTransaction *tx,
+                                   const RuntimeTableMetadata &metadata,
+                                   const std::vector<std::string> &row_values,
+                                   const std::string &primary_key, bool add) {
+  for (const auto &fk : metadata.outbound_foreign_keys) {
+    auto parent_key =
+        BuildKeyFromValues(metadata, fk.child_column_indices, row_values);
+    if (!parent_key.has_value()) {
+      continue;
+    }
+
+    std::uint64_t current_count =
+        ReadRefcountValue(tx, fk.refcount_table_key, *parent_key);
+    std::uint64_t next_count =
+        add ? current_count + 1 : (current_count > 0 ? current_count - 1 : 0);
+
+    int status = 0;
+    if (next_count == 0) {
+      tx->choose_table(fk.refcount_table_key);
+      if (!tx->delete_value(*parent_key) || tx->is_aborted()) {
+        return HA_ERR_LOCK_DEADLOCK;
+      }
+    } else {
+      status = WriteExactValue(tx, fk.refcount_table_key, *parent_key,
+                               lineairdb::fk::state::EncodeRefcount(next_count));
+      if (status != 0) {
+        return status;
+      }
+    }
+
+    std::size_t shard = lineairdb::fk::state::BucketForChild(primary_key);
+    std::string bucket_key = BuildFkBucketKey(*parent_key, shard);
+    auto bucket_value = ReadExactValue(tx, fk.childbucket_table_key, bucket_key)
+                            .value_or(std::string());
+    if (add) {
+      lineairdb::fk::state::BucketInsert(bucket_value, primary_key);
+    } else {
+      lineairdb::fk::state::BucketRemove(bucket_value, primary_key);
+    }
+
+    status = WriteExactValue(tx, fk.childbucket_table_key, bucket_key, bucket_value);
+    if (status != 0) {
+      return status;
+    }
+  }
+  return 0;
+}
+
+int DeleteRuntimeRowRecursive(THD *thd, LineairDBTransaction *tx,
+                              const RuntimeTableMetadata &metadata,
+                              const std::string &primary_key,
+                              const std::string &raw_row);
+
+int EnforceParentActionsForRuntimeRow(THD *thd, LineairDBTransaction *tx,
+                                      const RuntimeTableMetadata &metadata,
+                                      const std::vector<std::string> &row_values) {
+  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  for (const auto &parent_ref : metadata.inbound_parent_references) {
+    const dd::Table *child_table_def = nullptr;
+    if (thd->dd_client()->acquire(parent_ref.child_schema_name.c_str(),
+                                  parent_ref.child_table_name.c_str(),
+                                  &child_table_def)) {
+      return HA_ERR_INTERNAL_ERROR;
+    }
+    if (child_table_def == nullptr) {
+      continue;
+    }
+
+    RuntimeTableMetadata child_metadata = BuildRuntimeTableMetadata(
+        thd, parent_ref.child_schema_name, *child_table_def);
+    const RuntimeForeignKeyMetadata *child_fk =
+        FindForeignKeyMetadata(child_metadata, parent_ref.fk_name);
+    if (child_fk == nullptr) {
+      continue;
+    }
+
+    auto parent_key =
+        BuildKeyFromNames(metadata, child_fk->parent_column_names, row_values);
+    if (!parent_key.has_value()) {
+      continue;
+    }
+
+    std::uint64_t refcount =
+        ReadRefcountValue(tx, child_fk->refcount_table_key, *parent_key);
+    if (refcount == 0) {
+      continue;
+    }
+
+    if (parent_ref.delete_action == RuntimeFkDeleteAction::kRestrict) {
+      return HA_ERR_ROW_IS_REFERENCED;
+    }
+
+    for (std::size_t shard = 0; shard < lineairdb::fk::state::kBucketCount;
+         ++shard) {
+      auto bucket_value = ReadExactValue(
+          tx, child_fk->childbucket_table_key, BuildFkBucketKey(*parent_key, shard));
+      if (!bucket_value.has_value()) {
+        continue;
+      }
+
+      for (const auto &child_pk : lineairdb::fk::state::DecodeBucket(*bucket_value)) {
+        auto child_row = ReadExactValue(tx, child_metadata.table_key, child_pk);
+        if (!child_row.has_value()) {
+          continue;
+        }
+        int status =
+            DeleteRuntimeRowRecursive(thd, tx, child_metadata, child_pk, *child_row);
+        if (status != 0) {
+          return status;
+        }
+      }
+    }
+  }
+
+  return 0;
+}
+
+int DeleteRuntimeRowRecursive(THD *thd, LineairDBTransaction *tx,
+                              const RuntimeTableMetadata &metadata,
+                              const std::string &primary_key,
+                              const std::string &raw_row) {
+  std::vector<std::string> row_values =
+      DecodeRowValues(raw_row, metadata.columns.size());
+
+  int status =
+      EnforceParentActionsForRuntimeRow(thd, tx, metadata, row_values);
+  if (status != 0) {
+    return status;
+  }
+
+  tx->choose_table(metadata.table_key);
+  if (!tx->delete_value(primary_key) || tx->is_aborted()) {
+    return HA_ERR_LOCK_DEADLOCK;
+  }
+
+  for (const auto &index : metadata.secondary_indexes) {
+    auto secondary_key = BuildKeyFromValues(metadata, index.column_indices, row_values);
+    if (!secondary_key.has_value()) {
+      continue;
+    }
+    tx->choose_table(metadata.table_key);
+    if (!tx->delete_secondary_index(index.name, *secondary_key, primary_key) ||
+        tx->is_aborted()) {
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+  }
+
+  return UpdateHiddenStateForRuntimeRow(tx, metadata, row_values, primary_key,
+                                        false);
+}
+
+} // namespace
+
+int ha_lineairdb::enforce_parent_exists_for_row(const uchar *row_buffer,
+                                                LineairDBTransaction *tx) {
+  for (const auto &fk : outbound_foreign_keys_) {
+    std::string parent_key = build_key_from_row(row_buffer, fk.child_field_indices);
+    if (parent_key.empty()) {
+      continue;
+    }
+
+    tx->choose_table(fk.parent_table_key);
+    auto result = tx->read(parent_key);
+    if (result.first == nullptr || result.second == 0) {
+      return HA_ERR_NO_REFERENCED_ROW;
+    }
+    if (tx->is_aborted()) {
+      return HA_ERR_LOCK_DEADLOCK;
+    }
+  }
+
+  return 0;
+}
+
+int ha_lineairdb::add_hidden_fk_state_for_row(const uchar *row_buffer,
+                                              const std::string &primary_key,
+                                              LineairDBTransaction *tx) {
+  for (const auto &fk : outbound_foreign_keys_) {
+    std::string parent_key = build_key_from_row(row_buffer, fk.child_field_indices);
+    if (parent_key.empty()) {
+      continue;
+    }
+
+    std::uint64_t current_count =
+        ReadRefcountValue(tx, fk.refcount_table_key, parent_key);
+    int status = WriteExactValue(
+        tx, fk.refcount_table_key, parent_key,
+        lineairdb::fk::state::EncodeRefcount(current_count + 1));
+    if (status != 0) {
+      return status;
+    }
+
+    std::size_t shard = lineairdb::fk::state::BucketForChild(primary_key);
+    std::string bucket_key = BuildFkBucketKey(parent_key, shard);
+    std::string bucket_value = ReadExactValue(tx, fk.childbucket_table_key, bucket_key)
+                                   .value_or(std::string());
+    lineairdb::fk::state::BucketInsert(bucket_value, primary_key);
+    status = WriteExactValue(tx, fk.childbucket_table_key, bucket_key, bucket_value);
+    if (status != 0) {
+      return status;
+    }
+  }
+
+  return 0;
+}
+
+int ha_lineairdb::remove_hidden_fk_state_for_row(const uchar *row_buffer,
+                                                 const std::string &primary_key,
+                                                 LineairDBTransaction *tx) {
+  for (const auto &fk : outbound_foreign_keys_) {
+    std::string parent_key = build_key_from_row(row_buffer, fk.child_field_indices);
+    if (parent_key.empty()) {
+      continue;
+    }
+
+    std::uint64_t current_count =
+        ReadRefcountValue(tx, fk.refcount_table_key, parent_key);
+    int status = 0;
+    if (current_count <= 1) {
+      tx->choose_table(fk.refcount_table_key);
+      if (!tx->delete_value(parent_key) || tx->is_aborted()) {
+        return HA_ERR_LOCK_DEADLOCK;
+      }
+    } else {
+      status = WriteExactValue(
+          tx, fk.refcount_table_key, parent_key,
+          lineairdb::fk::state::EncodeRefcount(current_count - 1));
+      if (status != 0) {
+        return status;
+      }
+    }
+
+    std::size_t shard = lineairdb::fk::state::BucketForChild(primary_key);
+    std::string bucket_key = BuildFkBucketKey(parent_key, shard);
+    std::string bucket_value = ReadExactValue(tx, fk.childbucket_table_key, bucket_key)
+                                   .value_or(std::string());
+    lineairdb::fk::state::BucketRemove(bucket_value, primary_key);
+    status = WriteExactValue(tx, fk.childbucket_table_key, bucket_key, bucket_value);
+    if (status != 0) {
+      return status;
+    }
+  }
+
+  return 0;
+}
+
+int ha_lineairdb::enforce_parent_delete_actions(const uchar *row_buffer,
+                                                LineairDBTransaction *tx) {
+  THD *thd = ha_thd();
+  if (thd == nullptr) {
+    return 0;
+  }
+
+  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  for (const auto &parent_ref : inbound_parent_references_) {
+    const dd::Table *child_table_def = nullptr;
+    if (thd->dd_client()->acquire(parent_ref.child_schema_name.c_str(),
+                                  parent_ref.child_table_name.c_str(),
+                                  &child_table_def)) {
+      return HA_ERR_INTERNAL_ERROR;
+    }
+    if (child_table_def == nullptr) {
+      continue;
+    }
+
+    RuntimeTableMetadata child_metadata = BuildRuntimeTableMetadata(
+        thd, parent_ref.child_schema_name, *child_table_def);
+    const RuntimeForeignKeyMetadata *child_fk =
+        FindForeignKeyMetadata(child_metadata, parent_ref.fk_name);
+    if (child_fk == nullptr) {
+      continue;
+    }
+
+    std::string parent_key = build_key_from_row(row_buffer, child_fk->parent_column_names);
+    if (parent_key.empty()) {
+      continue;
+    }
+
+    std::uint64_t refcount =
+        ReadRefcountValue(tx, child_fk->refcount_table_key, parent_key);
+    if (refcount == 0) {
+      continue;
+    }
+
+    if (parent_ref.delete_action == ForeignKeyDeleteAction::kRestrict) {
+      return HA_ERR_ROW_IS_REFERENCED;
+    }
+
+    for (std::size_t shard = 0; shard < lineairdb::fk::state::kBucketCount;
+         ++shard) {
+      auto bucket_value = ReadExactValue(
+          tx, child_fk->childbucket_table_key, BuildFkBucketKey(parent_key, shard));
+      if (!bucket_value.has_value()) {
+        continue;
+      }
+
+      for (const auto &child_pk : lineairdb::fk::state::DecodeBucket(*bucket_value)) {
+        auto child_row = ReadExactValue(tx, child_metadata.table_key, child_pk);
+        if (!child_row.has_value()) {
+          continue;
+        }
+        int status =
+            DeleteRuntimeRowRecursive(thd, tx, child_metadata, child_pk, *child_row);
+        if (status != 0) {
+          return status;
+        }
+      }
+    }
+  }
+
+  return 0;
 }
 
 void ha_lineairdb::store_primary_key_in_ref(const std::string &primary_key) {
