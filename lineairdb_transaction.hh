@@ -54,6 +54,8 @@ public:
       std::function<bool(std::string_view,
                          const std::pair<const void *, const size_t>)>
           operation);
+  bool insert(std::string key, const std::string value);
+  bool update(std::string key, const std::string value);
   bool write(std::string key, const std::string value);
   bool write_secondary_index(std::string index_name, std::string secondary_key, const std::string value);
   std::vector<std::pair<const std::byte *const, const size_t>> read_secondary_index(std::string index_name, std::string secondary_key);

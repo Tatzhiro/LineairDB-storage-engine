@@ -2,23 +2,30 @@ import sys
 import mysql.connector
 from utils.connection import get_connection
 import argparse
+import time
+
+
+def unique_table_name(prefix):
+    return f"{prefix}_{int(time.time() * 1000000)}"
 
 
 def test_primary_key_exact_match(db, cursor):
     """Exact match search test with PRIMARY KEY"""
     print("PRIMARY KEY EXACT MATCH TEST")
+    users_table = unique_table_name("users")
+    users_no_pk_table = unique_table_name("users_no_pk")
     
     cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
-    cursor.execute('''
-        CREATE TABLE ha_lineairdb_test.users (
+    cursor.execute(f'''
+        CREATE TABLE ha_lineairdb_test.{users_table} (
             id INT NOT NULL PRIMARY KEY,
             name VARCHAR(50) NOT NULL,
             age INT NOT NULL
         ) ENGINE=LineairDB
     ''')
-    cursor.execute('''
-        CREATE TABLE ha_lineairdb_test.users_no_pk (
+    cursor.execute(f'''
+        CREATE TABLE ha_lineairdb_test.{users_no_pk_table} (
             id INT NOT NULL,
             name VARCHAR(50) NOT NULL,
             age INT NOT NULL
@@ -36,16 +43,16 @@ def test_primary_key_exact_match(db, cursor):
     
     for id_val, name, age in test_data:
         cursor.execute(
-            f'INSERT INTO ha_lineairdb_test.users VALUES ({id_val}, "{name}", {age})'
+            f'INSERT INTO ha_lineairdb_test.{users_table} VALUES ({id_val}, "{name}", {age})'
         )
         cursor.execute(
-            f'INSERT INTO ha_lineairdb_test.users_no_pk VALUES ({id_val}, "{name}", {age})'
+            f'INSERT INTO ha_lineairdb_test.{users_no_pk_table} VALUES ({id_val}, "{name}", {age})'
         )
     db.commit()
 
     # Full scan test
     print("\tFull scan:")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.users')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{users_table}')
     rows = cursor.fetchall()
     for row in rows:
         print(f"\t  {row}")
@@ -53,7 +60,7 @@ def test_primary_key_exact_match(db, cursor):
 
     # Full scan test
     print("\tFull scan (no PK):")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.users_no_pk')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{users_no_pk_table}')
     rows = cursor.fetchall()
     for row in rows:
         print(f"\t  {row}")
@@ -61,7 +68,7 @@ def test_primary_key_exact_match(db, cursor):
     
     # Exact match test
     print("\tExact match: id=5")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.users WHERE id = 5')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{users_table} WHERE id = 5')
     rows = cursor.fetchall()
     
     if len(rows) != 1 or rows[0][0] != 5 or rows[0][1] != 'carol':
@@ -71,7 +78,7 @@ def test_primary_key_exact_match(db, cursor):
     
     # Non-existent key
     print("\tNon-existent key: id=100")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.users WHERE id = 100')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{users_table} WHERE id = 100')
     rows = cursor.fetchall()
     
     if len(rows) != 0:
@@ -81,7 +88,7 @@ def test_primary_key_exact_match(db, cursor):
     
     # Minimum value
     print("\tMinimum value: id=1")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.users WHERE id = 1')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{users_table} WHERE id = 1')
     rows = cursor.fetchall()
     
     if len(rows) != 1 or rows[0][1] != 'alice':
@@ -91,7 +98,7 @@ def test_primary_key_exact_match(db, cursor):
     
     # Maximum value
     print("\tMaximum value: id=15")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.users WHERE id = 15')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{users_table} WHERE id = 15')
     rows = cursor.fetchall()
     
     if len(rows) != 1 or rows[0][1] != 'eve':
@@ -102,14 +109,58 @@ def test_primary_key_exact_match(db, cursor):
     return 0
 
 
+def test_primary_key_duplicate_insert(db, cursor):
+    """Duplicate PRIMARY KEY insert should fail without overwriting the row."""
+    print("\nPRIMARY KEY DUPLICATE INSERT TEST")
+    table_name = unique_table_name("users_dup_pk")
+
+    cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
+    cursor.execute('CREATE DATABASE ha_lineairdb_test')
+    cursor.execute(f'''
+        CREATE TABLE ha_lineairdb_test.{table_name} (
+            id INT NOT NULL PRIMARY KEY,
+            name VARCHAR(50) NOT NULL,
+            age INT NOT NULL
+        ) ENGINE=LineairDB
+    ''')
+
+    cursor.execute(
+        f'INSERT INTO ha_lineairdb_test.{table_name} VALUES (1, "alice", 25)'
+    )
+    db.commit()
+
+    try:
+        cursor.execute(
+            f'INSERT INTO ha_lineairdb_test.{table_name} VALUES (1, "bob", 30)'
+        )
+        print("\t❌ Failed: duplicate insert unexpectedly succeeded")
+        return 1
+    except mysql.connector.Error as err:
+        detail = str(err)
+
+    db.rollback()
+    cursor.execute(
+        f'SELECT id, name, age FROM ha_lineairdb_test.{table_name} ORDER BY id'
+    )
+    rows = cursor.fetchall()
+    expected = [(1, 'alice', 25)]
+    if rows != expected:
+        print(f"\t❌ Failed: Expected {expected}, got {rows}")
+        return 1
+
+    print(f"\t✅ Passed: duplicate insert failed as expected ({detail})")
+    return 0
+
+
 def test_primary_key_range_queries(db, cursor):
     """PRIMARY KEY range query test"""
     print("\nPRIMARY KEY RANGE QUERY TEST")
+    table_name = unique_table_name("products")
     
     cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
-    cursor.execute('''
-        CREATE TABLE ha_lineairdb_test.products (
+    cursor.execute(f'''
+        CREATE TABLE ha_lineairdb_test.{table_name} (
             id INT NOT NULL PRIMARY KEY,
             name VARCHAR(50) NOT NULL,
             price INT NOT NULL
@@ -129,19 +180,19 @@ def test_primary_key_range_queries(db, cursor):
     
     for id_val, name, price in test_data:
         cursor.execute(
-            f'INSERT INTO ha_lineairdb_test.products VALUES ({id_val}, "{name}", {price})'
+            f'INSERT INTO ha_lineairdb_test.{table_name} VALUES ({id_val}, "{name}", {price})'
         )
     db.commit()
     
     print("\tAll rows:")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.products')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{table_name}')
     all_rows = cursor.fetchall()
     for row in all_rows:
         print(f"\t  {row}")
     
     # Range query: id > 15
     print("\n\tRange query: id > 15")
-    cursor.execute('SELECT id, name FROM ha_lineairdb_test.products WHERE id > 15')
+    cursor.execute(f'SELECT id, name FROM ha_lineairdb_test.{table_name} WHERE id > 15')
     rows = cursor.fetchall()
     print(f"\t  Result: {rows}")
     
@@ -154,7 +205,7 @@ def test_primary_key_range_queries(db, cursor):
     
     # Range query: id < 15
     print("\n\tRange query: id < 15")
-    cursor.execute('SELECT id, name FROM ha_lineairdb_test.products WHERE id < 15')
+    cursor.execute(f'SELECT id, name FROM ha_lineairdb_test.{table_name} WHERE id < 15')
     rows = cursor.fetchall()
     print(f"\t  Result: {rows}")
     
@@ -167,7 +218,7 @@ def test_primary_key_range_queries(db, cursor):
     
     # Range query: id >= 10 AND id <= 20
     print("\n\tRange query: id >= 10 AND id <= 20")
-    cursor.execute('SELECT id, name FROM ha_lineairdb_test.products WHERE id >= 10 AND id <= 20')
+    cursor.execute(f'SELECT id, name FROM ha_lineairdb_test.{table_name} WHERE id >= 10 AND id <= 20')
     rows = cursor.fetchall()
     print(f"\t  Result: {rows}")
     
@@ -180,7 +231,7 @@ def test_primary_key_range_queries(db, cursor):
     
     # BETWEEN
     print("\n\tRange query: id BETWEEN 5 AND 15")
-    cursor.execute('SELECT id, name FROM ha_lineairdb_test.products WHERE id BETWEEN 5 AND 15')
+    cursor.execute(f'SELECT id, name FROM ha_lineairdb_test.{table_name} WHERE id BETWEEN 5 AND 15')
     rows = cursor.fetchall()
     print(f"\t  Result: {rows}")
     
@@ -197,11 +248,12 @@ def test_primary_key_range_queries(db, cursor):
 def test_primary_key_max_query(db, cursor):
     """MAX() aggregation test on PRIMARY KEY"""
     print("\nPRIMARY KEY MAX() QUERY TEST")
+    table_name = unique_table_name("usertable")
 
     cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
-    cursor.execute('''
-        CREATE TABLE ha_lineairdb_test.usertable (
+    cursor.execute(f'''
+        CREATE TABLE ha_lineairdb_test.{table_name} (
             ycsb_key INT NOT NULL PRIMARY KEY,
             field1 VARCHAR(50) NOT NULL
         ) ENGINE=LineairDB
@@ -217,12 +269,12 @@ def test_primary_key_max_query(db, cursor):
 
     for ycsb_key, field1 in test_data:
         cursor.execute(
-            f'INSERT INTO ha_lineairdb_test.usertable VALUES ({ycsb_key}, "{field1}")'
+            f'INSERT INTO ha_lineairdb_test.{table_name} VALUES ({ycsb_key}, "{field1}")'
         )
     db.commit()
 
     print("\tMAX(ycsb_key)")
-    cursor.execute('SELECT MAX(ycsb_key) FROM ha_lineairdb_test.usertable')
+    cursor.execute(f'SELECT MAX(ycsb_key) FROM ha_lineairdb_test.{table_name}')
     row = cursor.fetchone()
     max_key = row[0] if row else None
 
@@ -239,11 +291,12 @@ def test_primary_key_max_query(db, cursor):
 def test_primary_key_exclusive_range(db, cursor):
     """PRIMARY KEY exclusive range boundary test (< and >)"""
     print("\nPRIMARY KEY EXCLUSIVE RANGE BOUNDARY TEST")
+    table_name = unique_table_name("items")
     
     cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
-    cursor.execute('''
-        CREATE TABLE ha_lineairdb_test.items (
+    cursor.execute(f'''
+        CREATE TABLE ha_lineairdb_test.{table_name} (
             id INT NOT NULL PRIMARY KEY,
             name VARCHAR(50) NOT NULL
         ) ENGINE=LineairDB
@@ -251,12 +304,12 @@ def test_primary_key_exclusive_range(db, cursor):
     
     # Insert values 1, 2, 3, 4, 5
     for i in range(1, 6):
-        cursor.execute(f'INSERT INTO ha_lineairdb_test.items VALUES ({i}, "item_{i}")')
+        cursor.execute(f'INSERT INTO ha_lineairdb_test.{table_name} VALUES ({i}, "item_{i}")')
     db.commit()
     
     # Test: id < 3 should return 1, 2 (NOT 3)
     print("\tRange query: id < 3 (exclusive)")
-    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id < 3 ORDER BY id')
+    cursor.execute(f'SELECT id FROM ha_lineairdb_test.{table_name} WHERE id < 3 ORDER BY id')
     rows = cursor.fetchall()
     result_ids = [row[0] for row in rows]
     
@@ -269,7 +322,7 @@ def test_primary_key_exclusive_range(db, cursor):
     
     # Test: id > 3 should return 4, 5 (NOT 3)
     print("\tRange query: id > 3 (exclusive)")
-    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id > 3 ORDER BY id')
+    cursor.execute(f'SELECT id FROM ha_lineairdb_test.{table_name} WHERE id > 3 ORDER BY id')
     rows = cursor.fetchall()
     result_ids = [row[0] for row in rows]
     
@@ -282,7 +335,7 @@ def test_primary_key_exclusive_range(db, cursor):
     
     # Test: id <= 3 should return 1, 2, 3
     print("\tRange query: id <= 3 (inclusive)")
-    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id <= 3 ORDER BY id')
+    cursor.execute(f'SELECT id FROM ha_lineairdb_test.{table_name} WHERE id <= 3 ORDER BY id')
     rows = cursor.fetchall()
     result_ids = [row[0] for row in rows]
     
@@ -293,7 +346,7 @@ def test_primary_key_exclusive_range(db, cursor):
     
     # Test: id >= 3 should return 3, 4, 5
     print("\tRange query: id >= 3 (inclusive)")
-    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id >= 3 ORDER BY id')
+    cursor.execute(f'SELECT id FROM ha_lineairdb_test.{table_name} WHERE id >= 3 ORDER BY id')
     rows = cursor.fetchall()
     result_ids = [row[0] for row in rows]
     
@@ -304,7 +357,7 @@ def test_primary_key_exclusive_range(db, cursor):
     
     # Test: 2 < id < 4 should return only 3
     print("\tRange query: 2 < id < 4 (both exclusive)")
-    cursor.execute('SELECT id FROM ha_lineairdb_test.items WHERE id > 2 AND id < 4 ORDER BY id')
+    cursor.execute(f'SELECT id FROM ha_lineairdb_test.{table_name} WHERE id > 2 AND id < 4 ORDER BY id')
     rows = cursor.fetchall()
     result_ids = [row[0] for row in rows]
     
@@ -319,11 +372,12 @@ def test_primary_key_exclusive_range(db, cursor):
 def test_composite_primary_key_exclusive_range(db, cursor):
     """Composite PRIMARY KEY exclusive range boundary test"""
     print("\nCOMPOSITE PRIMARY KEY EXCLUSIVE RANGE TEST")
+    table_name = unique_table_name("sales")
     
     cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
-    cursor.execute('''
-        CREATE TABLE ha_lineairdb_test.sales (
+    cursor.execute(f'''
+        CREATE TABLE ha_lineairdb_test.{table_name} (
             year INT NOT NULL,
             month INT NOT NULL,
             amount INT NOT NULL,
@@ -341,12 +395,12 @@ def test_composite_primary_key_exclusive_range(db, cursor):
     ]
     
     for year, month, amount in test_data:
-        cursor.execute(f'INSERT INTO ha_lineairdb_test.sales VALUES ({year}, {month}, {amount})')
+        cursor.execute(f'INSERT INTO ha_lineairdb_test.{table_name} VALUES ({year}, {month}, {amount})')
     db.commit()
     
     # Test: year=2024 AND month < 6 should return months 1, 3 (NOT 6)
     print("\tComposite key range: year=2024 AND month < 6")
-    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month < 6 ORDER BY month')
+    cursor.execute(f'SELECT month FROM ha_lineairdb_test.{table_name} WHERE year = 2024 AND month < 6 ORDER BY month')
     rows = cursor.fetchall()
     result_months = [row[0] for row in rows]
     
@@ -359,7 +413,7 @@ def test_composite_primary_key_exclusive_range(db, cursor):
     
     # Test: year=2024 AND month > 6 should return months 9, 12 (NOT 6)
     print("\tComposite key range: year=2024 AND month > 6")
-    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month > 6 ORDER BY month')
+    cursor.execute(f'SELECT month FROM ha_lineairdb_test.{table_name} WHERE year = 2024 AND month > 6 ORDER BY month')
     rows = cursor.fetchall()
     result_months = [row[0] for row in rows]
     
@@ -372,7 +426,7 @@ def test_composite_primary_key_exclusive_range(db, cursor):
     
     # Test: year=2024 AND month <= 6 should return months 1, 3, 6
     print("\tComposite key range: year=2024 AND month <= 6")
-    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month <= 6 ORDER BY month')
+    cursor.execute(f'SELECT month FROM ha_lineairdb_test.{table_name} WHERE year = 2024 AND month <= 6 ORDER BY month')
     rows = cursor.fetchall()
     result_months = [row[0] for row in rows]
     
@@ -383,7 +437,7 @@ def test_composite_primary_key_exclusive_range(db, cursor):
     
     # Test: year=2024 AND month >= 6 should return months 6, 9, 12
     print("\tComposite key range: year=2024 AND month >= 6")
-    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month >= 6 ORDER BY month')
+    cursor.execute(f'SELECT month FROM ha_lineairdb_test.{table_name} WHERE year = 2024 AND month >= 6 ORDER BY month')
     rows = cursor.fetchall()
     result_months = [row[0] for row in rows]
     
@@ -394,7 +448,7 @@ def test_composite_primary_key_exclusive_range(db, cursor):
     
     # Test: year=2024 AND 3 < month < 9 should return only 6
     print("\tComposite key range: year=2024 AND 3 < month < 9")
-    cursor.execute('SELECT month FROM ha_lineairdb_test.sales WHERE year = 2024 AND month > 3 AND month < 9 ORDER BY month')
+    cursor.execute(f'SELECT month FROM ha_lineairdb_test.{table_name} WHERE year = 2024 AND month > 3 AND month < 9 ORDER BY month')
     rows = cursor.fetchall()
     result_months = [row[0] for row in rows]
     
@@ -409,13 +463,14 @@ def test_composite_primary_key_exclusive_range(db, cursor):
 def test_primary_key_composite(db, cursor):
     """Composite PRIMARY KEY test"""
     print("\nCOMPOSITE PRIMARY KEY TEST")
+    table_name = unique_table_name("order_items")
     
     cursor.execute('DROP DATABASE IF EXISTS ha_lineairdb_test')
     cursor.execute('CREATE DATABASE ha_lineairdb_test')
     
     # Composite PRIMARY KEY
-    cursor.execute('''
-        CREATE TABLE ha_lineairdb_test.order_items (
+    cursor.execute(f'''
+        CREATE TABLE ha_lineairdb_test.{table_name} (
             order_id INT NOT NULL,
             item_id INT NOT NULL,
             quantity INT NOT NULL,
@@ -435,19 +490,19 @@ def test_primary_key_composite(db, cursor):
     
     for order_id, item_id, quantity in test_data:
         cursor.execute(
-            f'INSERT INTO ha_lineairdb_test.order_items VALUES ({order_id}, {item_id}, {quantity})'
+            f'INSERT INTO ha_lineairdb_test.{table_name} VALUES ({order_id}, {item_id}, {quantity})'
         )
     db.commit()
     
     print("\tAll rows:")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.order_items')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{table_name}')
     all_rows = cursor.fetchall()
     for row in all_rows:
         print(f"\t  {row}")
     
     # Composite key exact match
     print("\n\tComposite key exact match: order_id=1 AND item_id=2")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.order_items WHERE order_id = 1 AND item_id = 2')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{table_name} WHERE order_id = 1 AND item_id = 2')
     rows = cursor.fetchall()
     print(f"\t  Result: {rows}")
     
@@ -458,7 +513,7 @@ def test_primary_key_composite(db, cursor):
     
     # Composite key prefix match
     print("\n\tComposite key prefix match: order_id=1")
-    cursor.execute('SELECT * FROM ha_lineairdb_test.order_items WHERE order_id = 1')
+    cursor.execute(f'SELECT * FROM ha_lineairdb_test.{table_name} WHERE order_id = 1')
     rows = cursor.fetchall()
     print(f"\t  Result: {rows}")
     
@@ -478,6 +533,7 @@ def main():
     
     # Run each test
     result |= test_primary_key_exact_match(db, cursor)
+    result |= test_primary_key_duplicate_insert(db, cursor)
     result |= test_primary_key_range_queries(db, cursor)
     result |= test_primary_key_max_query(db, cursor)
     result |= test_primary_key_exclusive_range(db, cursor)

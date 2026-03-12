@@ -533,6 +533,22 @@ bool LineairDBTransaction::write(std::string key, const std::string value) {
   return true;
 }
 
+bool LineairDBTransaction::insert(std::string key, const std::string value) {
+  if (table_is_not_chosen())
+    return false;
+  tx->Insert(key, reinterpret_cast<const std::byte *>(value.c_str()),
+             value.length());
+  return true;
+}
+
+bool LineairDBTransaction::update(std::string key, const std::string value) {
+  if (table_is_not_chosen())
+    return false;
+  tx->Update(key, reinterpret_cast<const std::byte *>(value.c_str()),
+             value.length());
+  return true;
+}
+
 bool LineairDBTransaction::write_secondary_index(std::string index_name,
                                                  std::string secondary_key,
                                                  const std::string value) {

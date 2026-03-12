@@ -454,7 +454,7 @@ int ha_lineairdb::write_row(uchar *buf) {
   }
 
   tx->choose_table(db_table_name);
-  bool is_successful = tx->write(key, write_buffer_);
+  bool is_successful = tx->insert(key, write_buffer_);
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
 
@@ -510,7 +510,7 @@ int ha_lineairdb::update_row(const uchar *old_data, uchar *new_data) {
   }
 
   tx->choose_table(db_table_name);
-  bool is_successful = tx->write(key, write_buffer_);
+  bool is_successful = tx->update(key, write_buffer_);
   if (!is_successful)
     return HA_ERR_LOCK_DEADLOCK;
 
