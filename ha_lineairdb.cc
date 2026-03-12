@@ -118,7 +118,7 @@
 #include "typelib.h"
 
 #define BLOB_MEMROOT_ALLOC_SIZE (8192)
-#define FENCE false
+#define FENCE true
 
 namespace {
 constexpr unsigned char kKeyMarkerNotNull = 0x00;
@@ -459,8 +459,7 @@ int ha_lineairdb::write_row(uchar *buf) {
     return HA_ERR_LOCK_DEADLOCK;
 
   if (tx->is_aborted()) {
-    thd_mark_transaction_to_rollback(ha_thd(), 1);
-    return HA_ERR_LOCK_DEADLOCK;
+    return HA_ERR_FOUND_DUPP_KEY;
   }
 
   for (uint i = 0; i < table->s->keys; i++) {
